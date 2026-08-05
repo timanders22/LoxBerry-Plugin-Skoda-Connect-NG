@@ -1,0 +1,70 @@
+<h2>Skoda Connect</h2>
+
+<p>Bindet Skoda-Fahrzeuge &uuml;ber das MySkoda-Konto an Loxone an:
+Ladezustand, Tankf&uuml;llstand, Reichweite, Kilometerstand, Verriegelung,
+T&uuml;ren und Fenster, Klimatisierung, Standort, Warnleuchten sowie
+Inspektions- und &Ouml;lservice-Fristen. Auf Wunsch lassen sich
+Klimatisierung, Ladevorgang, Ladegrenze und Scheibenheizung schalten.</p>
+
+<h3>Nachfolger eines eingestellten Plugins</h3>
+<p>Das fr&uuml;here Plugin <i>SkodaConnect</i> von M. Schlenstedt ist als
+<b>EOL</b> gekennzeichnet: Skoda hat die Schnittstelle umgestellt, und die
+zugrunde liegende Bibliothek <i>skodaconnect</i> wurde vom eigenen Projekt
+ausdr&uuml;cklich als &bdquo;DEPRECATED&ldquo; erkl&auml;rt. Dieses Plugin ist
+kein Update davon, sondern ein Neubau auf der freien Nachfolgebibliothek
+<i>myskoda</i>. Aus dem alten Plugin wurde kein Code &uuml;bernommen &mdash; er
+spricht eine Schnittstelle an, die es nicht mehr gibt.</p>
+
+<h3>Voraussetzung, die stolpern l&auml;sst: Python 3.13</h3>
+<p><i>myskoda</i> verlangt ab Fassung 2.0.0 <b>Python 3.13 oder neuer</b>.
+Debian 12 (Bookworm) liefert 3.11, Debian 13 (Trixie) liefert 3.13. Auf einem
+zu alten System bricht die Installation mit einer benannten Meldung ab, statt
+ein totes Plugin zu hinterlassen. Vor dem Ausprobieren also
+<span style='font-family:monospace;'>python3 -V</span> auf dem LoxBerry
+pr&uuml;fen. Auch die letzte &auml;ltere myskoda-Fassung (1.2.3) hilft auf
+Debian 12 nicht &mdash; sie verlangt 3.12.</p>
+
+<h3>Zugangsdaten</h3>
+<p>Es sind die Zugangsdaten des <b>MySkoda-Kontos</b> &mdash; dieselben wie in
+der MySkoda-App. Sie liegen in einer eigenen Datei mit den Rechten 0600 und
+stehen nie in der Loxone-Projektdatei. Das Passwort wird nirgends angezeigt;
+im Reiter <i>Test</i> steht nur seine L&auml;nge.</p>
+
+<h3>So gehen Sie vor</h3>
+<ol>
+<li><b>Einstellungen:</b> Benutzername und Passwort eintragen, speichern, dann
+<i>Dienst starten</i>.</li>
+<li><b>Test:</b> Die Selbstpr&uuml;fung sagt Zeile f&uuml;r Zeile, ob es
+tr&auml;gt. Jedes Kreuz nennt die Abhilfe mit.</li>
+<li><b>MQTT:</b> Das Abo im MQTT-Gateway eintragen. Ohne diesen Eintrag kommt am
+Miniserver nichts an.</li>
+<li><b>Einbindung in Loxone:</b> Schritt f&uuml;r Schritt, mit vollst&auml;ndiger
+Baustein-Liste zum Nachbauen.</li>
+</ol>
+
+<h3>Abholtakt</h3>
+<p>Nicht zu dicht takten. Die Skoda-Cloud weist zu h&auml;ufige Anfragen mit
+HTTP 429 ab, und ein st&auml;ndig geweckter Wagen kostet Ruhestrom. F&uuml;nf
+Minuten sind ein guter Anfang. Wird ein Wert sofort gebraucht, ist der
+Abruf-Befehl der richtige Weg &mdash; nicht ein k&uuml;rzerer Takt.</p>
+
+<h3>Steuerung</h3>
+<p>Schreibende Befehle sind ab Werk <b>gesperrt</b> und m&uuml;ssen
+ausdr&uuml;cklich freigegeben werden. Ver- und Entriegeln bietet dieses Plugin
+bewusst <b>nicht</b> an. Wichtig zu wissen: der Dienst wartet nicht auf die
+Best&auml;tigung des Fahrzeugs. Eine Antwort mit <i>OK=1</i> hei&szlig;t, dass
+die Cloud den Auftrag angenommen hat &mdash; ob das Fahrzeug ihn ausf&uuml;hrt,
+zeigt erst der n&auml;chste Abruf.</p>
+
+<h3>Was ungepr&uuml;ft ist</h3>
+<p>Dieses Plugin wurde ohne Skoda-Konto und ohne Fahrzeug gebaut. Ungepr&uuml;ft
+ist deshalb, ob die Anmeldung gelingt, ob ein bestimmtes Fahrzeug alle
+abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die erwartete
+Wirkung haben. Bleibt ein Wert leer, zeigt der Knopf <i>Rohdaten als JSON
+ansehen</i> im Reiter <i>Test</i>, was der Dienst tats&auml;chlich bekommen
+hat.</p>
+
+<h3>Grundlage</h3>
+<p>Die Cloud-Anbindung nutzt die Bibliothek <i>myskoda</i> des Projekts
+skodaconnect (MIT). Sie ist keine amtliche Skoda-Schnittstelle und kann sich
+jederzeit &auml;ndern.</p>

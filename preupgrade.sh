@@ -1,23 +1,30 @@
 #!/bin/bash
+# Skoda Connect - preupgrade
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Vor dem Upgrade: laufenden Dienst anhalten und die Konfiguration ausserhalb
+# des Plugin-Ordners sichern. Die Zugangsdaten liegen in einer eigenen Datei
+# und werden getrennt gesichert (Rechte 0600 bleiben erhalten).
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-skodaconnect}"
+BASE="${ARGV5:-$LBHOMEDIR}"
 
-ARGV0=$0 # Zero argument is shell command
-ARGV1=$1 # First argument is temp folder during install
-ARGV2=$2 # Second argument is Plugin-Name for scipts etc.
-ARGV3=$3 # Third argument is Plugin installation folder
-ARGV4=$4 # Forth argument is Plugin version
-ARGV5=$5 # Fifth argument is Base folder of LoxBerry
+PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
+if [ -f "$PID" ]; then
+    kill "$(cat "$PID")" 2>/dev/null || true
+    sleep 2
+    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    rm -f "$PID"
+    echo "<INFO> Laufender Dienst angehalten."
+fi
 
-echo "<INFO> Creating temporary folders for upgrading"
-mkdir -p /tmp/$ARGV1\_upgrade
-mkdir -p /tmp/$ARGV1\_upgrade/config
-#mkdir -p /tmp/$ARGV1\_upgrade/log
-#mkdir -p /tmp/$ARGV1\_upgrade/files
-
-echo "<INFO> Backing up existing config files"
-cp -p -v -r $ARGV5/config/plugins/$ARGV3/ /tmp/$ARGV1\_upgrade/config
-
-#echo "<INFO> Backing up existing log files"
-#cp -p -v -r $ARGV5/log/plugins/$ARGV3/ /tmp/$ARGV1\_upgrade/log
-
-# Exit with Status 0
+CFGDIR="$BASE/config/plugins/$PFOLDER"
+for f in skoda.json zugang.json; do
+    if [ -f "$CFGDIR/$f" ]; then
+        cp -p "$CFGDIR/$f" "$BASE/config/plugins/$PFOLDER.backup.$f" || true
+    fi
+done
+chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null || true
+echo "<OK> preupgrade abgeschlossen."
 exit 0
