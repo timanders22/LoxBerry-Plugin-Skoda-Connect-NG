@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.3 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.4 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -15,14 +15,24 @@ Ladegrenze und Scheibenheizung schalten.
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
 
+## Was 0.9.4 ändert
+
+Nur eine Richtigstellung, kein Code. In 0.9.3 stand als Begründung für die
+mitgezogenen Adressen, `raw.githubusercontent.com` folge einer Umbenennung
+nicht. Das ist **falsch** — es folgt ihr; nachgeprüft am alten Repo-Namen.
+Der Irrtum stammt aus einem anderen Fall, in dem eine Datei schlicht noch
+nicht im Repository lag. Die Adressen bleiben trotzdem auf dem heutigen Namen,
+aber aus dem richtigen Grund (siehe unten).
+
 ## Was 0.9.3 ändert
 
 **Das Repository heißt jetzt `LoxBerry-Plugin-Skoda-Connect-NG`.** Damit ist
 schon am Namen zu sehen, dass dies nicht das alte Plugin ist. `RELEASECFG`,
-`PRERELEASECFG`, `ARCHIVEURL` und `INFOURL` sind mitgezogen — das ist nötig,
-nicht kosmetisch: `github.com` leitet nach einer Umbenennung weiter,
-`raw.githubusercontent.com` aber nicht, dort käme `404: Not Found` und das
-Auto-Update liefe still ins Leere.
+`PRERELEASECFG`, `ARCHIVEURL` und `INFOURL` sind mitgezogen. GitHub leitet nach
+einer Umbenennung zwar weiter — `raw.githubusercontent.com` ebenso,
+nachgeprüft —, aber auf ein Weiterleitungsziel sollte sich ein Auto-Update
+nicht stützen: Es verschwindet in dem Augenblick, in dem jemand den alten Namen
+neu vergibt.
 
 **Der Plugin-Ordner bleibt `skodaconnect`** und damit auch die Adresse, die
 Loxone aufruft. Im Miniserver muss nichts angefasst werden.
