@@ -1,0 +1,7 @@
+# Uebersetzungsreste von Python. Sie gehoeren nicht ins Archiv: LoxBerry
+# entpackt das Plugin und laesst Python selbst uebersetzen. Eine mitgelieferte
+# .pyc passt spaetestens nach der naechsten Aenderung an skoda.py nicht mehr
+# zur Quelle - und sie traegt den Pfad des Rechners, auf dem sie entstanden
+# ist, mit sich herum.
+__pycache__/
+*.py[cod]

@@ -44,13 +44,23 @@ function sk_paths()
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
     // sich bei jedem Fork.
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'skodaconnect') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
-                $dir = $kand;
-                break;
-            }
-        }
+    /* Frueher stand hier ein Rueckfall auf den festen Namen "skodaconnect",
+     * sobald config/plugins/<ordner> noch fehlte - etwa im Augenblick der
+     * Installation. Genau diesen Namen traegt aber AUCH das eingestellte
+     * Vorgaengerplugin von M. Schlenstedt. Wer es noch installiert hat,
+     * bekommt dieses hier von LoxBerry als "skodaconnect_01" - und der
+     * Rueckfall haette dann in die Konfiguration des FREMDEN Plugins gezeigt,
+     * also dort gelesen und geschrieben.
+     *
+     * LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und bleibt deshalb.
+     * Der feste Name greift nur noch dort, wo der ermittelte nachweislich
+     * kein Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst
+     * er "html". */
+    $lbp = getenv('LBPPLUGINDIR');
+    if ($lbp) {
+        $dir = $lbp;
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+        $dir = 'skodaconnect';
     }
     if ($home) {
         $p = array(
@@ -60,6 +70,7 @@ function sk_paths()
             'config'    => $home . '/config/plugins/' . $dir . '/skoda.json',
             'zugang'    => $home . '/config/plugins/' . $dir . '/zugang.json',
             'sicherung' => $home . '/config/plugins/' . $dir . '.backup.skoda.json',
+            'zugang_sicherung' => $home . '/config/plugins/' . $dir . '.backup.zugang.json',
             'datadir'   => $home . '/data/plugins/' . $dir,
             'bindir'    => $home . '/bin/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
@@ -75,6 +86,7 @@ function sk_paths()
             'config'    => $basis . '/config/skoda.json',
             'zugang'    => $basis . '/config/zugang.json',
             'sicherung' => $basis . '/config/skoda.backup.json',
+            'zugang_sicherung' => $basis . '/config/zugang.backup.json',
             'datadir'   => $basis . '/data',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
@@ -183,8 +195,48 @@ function sk_zugang_speichern($email, $passwort, $spin)
                       : (isset($alt['spin']) ? $alt['spin'] : ''),
     );
     $json = json_encode($neu, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $ok = @file_put_contents($p['zugang'], $json) !== false;
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine LEERE Datei - hier waeren das die Zugangsdaten.
+    $ok = $json !== false && @file_put_contents($p['zugang'], $json) !== false;
     @chmod($p['zugang'], 0600);
+    return $ok;
+}
+
+/**
+ * Loescht Benutzername, Passwort und S-PIN restlos.
+ *
+ * Warum das eine eigene Funktion und einen eigenen Schalter braucht:
+ * sk_zugang_speichern() behaelt ein leeres Passwortfeld absichtlich bei -
+ * sonst stuende irgendwann ein leeres Passwort in der Datei, ohne dass es
+ * jemand merkt. Genau diese Vorsicht macht aber den umgekehrten Weg
+ * unmoeglich: Wer sich vertippt hat oder das Konto aus der Hand gibt, kam
+ * bis 0.9.1 ueber die Oberflaeche nicht mehr an die Daten heran. Loeschen
+ * muss man ausdruecklich wollen - deshalb das Haekchen, nicht das leere Feld.
+ *
+ * Die Datei wird ueberschrieben und dann entfernt. Nur unlink() wuerde den
+ * Inhalt auf der Karte stehen lassen, bis der Platz neu vergeben wird.
+ *
+ * MIT WEG MUSS DIE SICHERUNG. preupgrade.sh legt eine Kopie der
+ * Zugangsdatei NEBEN dem Plugin-Konfigordner ab, und postinstall.sh spielt
+ * sie zurueck, wenn die richtige Datei fehlt oder leer ist - genau dafuer
+ * ist sie da. Wuerde hier nur zugang.json geloescht, stuende das Passwort
+ * weiterhin auf der Karte und waere bei der naechsten Neuinstallation
+ * wieder da. Ein Loeschen, das nicht loescht, ist schlimmer als keines.
+ */
+function sk_zugang_loeschen()
+{
+    $p = sk_paths();
+    $ok = true;
+    foreach (array($p['zugang'], $p['zugang_sicherung']) as $f) {
+        if (!is_file($f)) {
+            continue;
+        }
+        $laenge = (int) @filesize($f);
+        if ($laenge > 0) {
+            @file_put_contents($f, str_repeat('0', $laenge));
+        }
+        $ok = @unlink($f) && $ok;
+    }
     return $ok;
 }
 
@@ -236,6 +288,46 @@ function sk_alter()
     return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
 }
 
+/**
+ * Die letzten $anzahl Zeilen einer Datei, neueste zuerst.
+ *
+ * Bis 0.9.1 las die Oberflaeche das ganze Protokoll mit file() ein und warf
+ * 95 Prozent davon wieder weg. Nachgemessen an einem 512 kB grossen Protokoll
+ * (7521 Zeilen, 400 gewuenscht), PHP 7.4 und 8.1 gleich:
+ *
+ *   file() + array_reverse   0,3 ms   Spitze 1503 kB
+ *   exec("tail -n 400")      1,9 ms   Spitze   79 kB
+ *   rueckwaerts mit fseek    0,1 ms   Spitze  167 kB
+ *
+ * Der Speicherhinweis war also berechtigt, der vorgeschlagene Weg ueber tail
+ * aber der schlechteste von dreien: ein Prozessstart kostet mehr, als das
+ * Einlesen je gespart hat. Rueckwaerts lesen ist in beidem besser - und
+ * braucht keine Shell, die man wieder absichern muesste.
+ */
+function sk_log_ende($datei, $anzahl = 400, $block = 8192)
+{
+    $fp = @fopen($datei, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    // So lange blockweise nach vorn, bis genug Zeilen beisammen sind. Eine
+    // Zeile mehr als noetig, damit die oberste nicht halbiert ausgeliefert wird.
+    while ($pos > 0 && count($zeilen) <= $anzahl) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = explode("\n", $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen), 'strlen'));
+    return array_slice(array_reverse($zeilen), 0, $anzahl);
+}
+
 /* ---------------- Dienst ---------------- */
 
 function sk_dienst_pid()
@@ -258,7 +350,20 @@ function sk_dienst_soll()
     return is_file(sk_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
 }
 
-/** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
+/**
+ * $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe)
+ *
+ * Hier und an den drei anderen exec-Stellen stand bis 0.9.1
+ * escapeshellcmd($pfad). Das ist nicht dasselbe wie escapeshellarg(): es
+ * entschaerft Sonderzeichen, setzt aber KEINE Anfuehrungszeichen - ein
+ * Leerzeichen im Pfad bleibt ein Trennzeichen. Nachgestellt mit
+ * /tmp/sk/mit ordner/venv/bin/python3:
+ *   escapeshellcmd -> Code 127, "sh: 1: /tmp/sk/mit: not found"
+ *   escapeshellarg -> Code 0, das Programm lief
+ * Im Regelfall ist der Pfad /opt/loxberry/bin/plugins/<name> und enthaelt
+ * kein Leerzeichen, der Fehler war also nicht ausloesbar. Geaendert wurde
+ * trotzdem: escapeshellarg ist das richtige Werkzeug und kostet nichts.
+ */
 function sk_dienst($befehl)
 {
     if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
@@ -270,7 +375,7 @@ function sk_dienst($befehl)
     }
     $ausgabe = array();
     $code = 0;
-    @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    @exec(escapeshellarg($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
@@ -282,7 +387,7 @@ function sk_bibliothek_fassung()
         return '';
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' -c ' . escapeshellarg(
+    @exec(escapeshellarg($py) . ' -c ' . escapeshellarg(
         'import importlib.metadata as m; print(m.version("myskoda"))'
     ) . ' 2>/dev/null', $ausgabe);
     return trim(implode('', $ausgabe));
@@ -296,7 +401,7 @@ function sk_python_fassung()
         return '';
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' -c ' . escapeshellarg(
+    @exec(escapeshellarg($py) . ' -c ' . escapeshellarg(
         'import sys; print("%d.%d.%d" % sys.version_info[:3])'
     ) . ' 2>/dev/null', $ausgabe);
     return trim(implode('', $ausgabe));
@@ -315,7 +420,7 @@ function sk_selbsttest()
              . "       Abhilfe: Plugin neu installieren; die Installation legt beides an.";
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
+    @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
     return implode("\n", $ausgabe);
 }
 

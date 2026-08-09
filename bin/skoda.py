@@ -63,6 +63,30 @@ ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
 DATEI_LOG = PLOG / "skoda.log"
 
+# ---------------------------------------------------------------------------
+# Zeitgrenzen
+#
+# aiohttp haengt NICHT unbegrenzt - nachgemessen mit aiohttp 3.14 gegen ein
+# Gegenstueck, das die Verbindung annimmt und danach schweigt:
+#   Vorgabe der Bibliothek: ClientTimeout(total=300, sock_connect=30)
+# Die verbreitete Sorge "friert auf unbestimmte Zeit ein" trifft also nicht zu.
+# Fuenf Minuten sind hier trotzdem unbrauchbar: ein Fahrzeug wird ueber NEUN
+# Endpunkte abgefragt, macht im schlechtesten Fall 45 Minuten fuer einen
+# Durchgang - bei einem Takt von fuenf Minuten. Der Dienst waere dann nicht
+# abgestuerzt, sondern einfach weg, und die Warteschlange (die im selben
+# Ablauf haengt) nimmt in dieser Zeit keinen Befehl mehr an.
+#
+# Deshalb zwei Netze:
+#   1. asyncio.wait_for je Aufruf - greift auch bei Haengern, die nichts mit
+#      dem Netz zu tun haben, etwa einer Sperre in der Bibliothek.
+#   2. ClientTimeout auf der Sitzung als Auffanglinie darunter.
+# Nachgemessen: 120 abgebrochene Abrufe hinterlassen 0 belegte Verbindungen -
+# wait_for raeumt die Verbindung ordentlich ab, der Vorrat laeuft nicht leer.
+GRENZE_ABRUF = 30      # ein Lese-Endpunkt
+GRENZE_BEFEHL = 60     # ein Schreibbefehl - ein schlafendes Fahrzeug braucht laenger
+GRENZE_ANMELDUNG = 60  # der Anmeldeweg umfasst mehrere Abrufe hintereinander
+GRENZE_SITZUNG = 90    # Auffanglinie je einzelnem HTTP-Abruf
+
 # Muessen zu sk_vorgaben() in webfrontend/html/sk_lib.php passen.
 VORGABEN = {
     "intervall": 300,
@@ -711,7 +735,11 @@ async def warteschlange(ms, vins: list[str], cfg: dict) -> bool:
             antwort_schreiben(kennung, 0, "Befehlsdatei war leer oder unlesbar.")
             continue
         try:
-            ok, meldung, zusatz = await befehl_ausfuehren(ms, vins, cfg, b)
+            # Mit Grenze: diese Schleife laeuft im Sekundentakt zwischen zwei
+            # Abrufen. Ein haengender Befehl wuerde nicht nur sich selbst
+            # aufhalten, sondern den ganzen Dienst - auch den naechsten Abruf.
+            ok, meldung, zusatz = await asyncio.wait_for(
+                befehl_ausfuehren(ms, vins, cfg, b), timeout=GRENZE_BEFEHL)
         except Exception as err:  # noqa: BLE001 - jeder Fehler gehoert gemeldet, nicht verschluckt
             ok, meldung, zusatz = 0, fehlertext(err), {}
         antwort_schreiben(kennung, ok, meldung, zusatz)
@@ -728,9 +756,9 @@ async def warteschlange(ms, vins: list[str], cfg: dict) -> bool:
 # Werte gueltig. Was ausgefallen ist, steht in "ausfaelle" - schweigend eine
 # leere Antwort zu liefern waere schlimmer als ein benannter Fehler.
 # ---------------------------------------------------------------------------
-async def endpunkt(ausfaelle: dict, name: str, koro):
+async def endpunkt(ausfaelle: dict, name: str, koro, grenze: int = GRENZE_ABRUF):
     try:
-        return await koro
+        return await asyncio.wait_for(koro, timeout=grenze)
     except Exception as err:  # noqa: BLE001
         ausfaelle[name] = fehlertext(err)
         melde_gebremst(f"ep_{name}", f"Abruf '{name}' fehlgeschlagen: {ausfaelle[name]}", 900)
@@ -922,17 +950,19 @@ async def anmelden(ms, z: dict, cfg: dict) -> str:
         token = sitzung_lesen()
         if token:
             try:
-                await ms.connect(refresh_token=token)
+                await asyncio.wait_for(ms.connect(refresh_token=token),
+                                       timeout=GRENZE_ANMELDUNG)
             except Exception as err:  # noqa: BLE001
                 _LOG.info("Gemerkte Sitzung nicht mehr gueltig (%s) - Anmeldung mit "
                           "Benutzername und Passwort.", fehlertext(err))
                 sitzung_loeschen()
             else:
                 return "gemerkte Sitzung"
-    await ms.connect(email=z["email"], password=z["passwort"])
+    await asyncio.wait_for(ms.connect(email=z["email"], password=z["passwort"]),
+                           timeout=GRENZE_ANMELDUNG)
     if cfg.get("sitzung_merken"):
         try:
-            sitzung_schreiben(await ms.get_refresh_token())
+            sitzung_schreiben(await asyncio.wait_for(ms.get_refresh_token(), timeout=GRENZE_ABRUF))
         except Exception as err:  # noqa: BLE001
             _LOG.info("Sitzung liess sich nicht merken: %s", fehlertext(err))
     return "Benutzername und Passwort"
@@ -948,7 +978,7 @@ def signal_behandeln(*_):
 
 
 async def dienst(einmal: bool = False) -> int:
-    from aiohttp import ClientSession
+    from aiohttp import ClientSession, ClientTimeout
     from myskoda import MySkoda
 
     cfg = config()
@@ -961,7 +991,7 @@ async def dienst(einmal: bool = False) -> int:
     _LOG.info("Dienst startet (Takt %s s, Steuerung %s).",
               cfg["intervall"], "ein" if cfg.get("steuerung_ein") else "aus")
 
-    async with ClientSession() as sitzung:
+    async with ClientSession(timeout=ClientTimeout(total=GRENZE_SITZUNG, connect=15)) as sitzung:
         # mqtt_enabled=False mit Absicht: die Ereignisleitung der Bibliothek
         # laeuft ueber Firebase Cloud Messaging und meldet dazu ein Geraet beim
         # Anbieter an. Fuer einen Dienst, der ohnehin im Takt abruft, ist das
@@ -993,7 +1023,8 @@ async def dienst(einmal: bool = False) -> int:
             fahrzeuge: dict[str, dict] = {}
             try:
                 if not vins or zyklus % cfg["takt_stamm"] == 0:
-                    vins = sorted(await ms.list_vehicle_vins())
+                    vins = sorted(await asyncio.wait_for(
+                        ms.list_vehicle_vins(), timeout=GRENZE_ABRUF))
                 for i, vin in enumerate(vins, start=1):
                     stammdaten.setdefault(vin, {})
                     fahrzeuge[str(i)] = await fahrzeug_abrufen(
@@ -1013,7 +1044,13 @@ async def dienst(einmal: bool = False) -> int:
                         weg = await anmelden(ms, z, cfg)
                         _LOG.info("Neu angemeldet ueber %s.", weg)
                     except Exception as err2:  # noqa: BLE001
-                        _LOG.error("Neuanmeldung fehlgeschlagen: %s", fehlertext(err2))
+                        # Der Grund der NEUANMELDUNG ist der aussagekraeftige.
+                        # Bis 0.9.1 blieb hier der alte Text stehen, und der
+                        # Zustand meldete weiter "Sitzung abgelaufen", obwohl
+                        # in Wahrheit das Passwort nicht mehr stimmte - man
+                        # sucht dann an der falschen Stelle.
+                        fehler = fehlertext(err2)
+                        _LOG.error("Neuanmeldung fehlgeschlagen: %s", fehler)
 
             if ok and fahrzeuge:
                 stand = {"ts": int(time.time()), "fahrzeuge": fahrzeuge}
@@ -1041,7 +1078,7 @@ async def dienst(einmal: bool = False) -> int:
                 rest -= 1
 
         try:
-            await ms.disconnect()
+            await asyncio.wait_for(ms.disconnect(), timeout=GRENZE_ABRUF)
         except Exception:  # noqa: BLE001
             pass
     _LOG.info("Dienst beendet.")

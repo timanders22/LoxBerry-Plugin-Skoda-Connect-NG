@@ -47,10 +47,19 @@ if ($sk_p['home'] !== '' && is_file($sk_p['home'] . '/libs/phplib/loxberry_syste
     require_once $sk_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
-/* Aktiver Reiter. Wer einen Reiter hinzufuegt, muss diese Positivliste
- * mitziehen - sonst springt die Seite nach jedem Absenden zurueck auf
- * Einstellungen, obwohl der Reiter sichtbar und anklickbar ist. */
-$sk_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+/* EINE Quelle fuer Reihenfolge, Beschriftung und Positivliste. Bis 0.9.1
+ * standen die Reiternamen an drei Stellen: in diesem Muster, in der
+ * Reiterleiste und in den fuenf Flaechen-ids. Wer einen Reiter ergaenzt und
+ * eine davon vergisst, bekommt keinen Fehler, sondern eine Seite, die nach
+ * dem Absenden auf Einstellungen zurueckspringt. */
+$sk_reiter = array(
+    'settings' => sk_t('REITER.EINSTELLUNGEN'),
+    'mqtt'     => 'MQTT',
+    'loxone'   => sk_t('REITER.LOXONE'),
+    'test'     => sk_t('REITER.TEST'),
+    'log'      => sk_t('REITER.LOG'),
+);
+$sk_muster = '/^tab-(' . implode('|', array_keys($sk_reiter)) . ')$/';
 $sk_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($sk_muster, (string) $_POST['activetab'])) {
     $sk_tab = (string) $_POST['activetab'];
@@ -87,6 +96,22 @@ if ($sk_post && isset($_POST['speichern'])) {
         'wartezeit'    => array(0, 30),
     ) as $sk_feld => $sk_grenzen) {
         $sk_wert = isset($_POST[$sk_feld]) ? trim((string) $_POST[$sk_feld]) : '';
+        /* Ein LEERES Feld ist keine falsche Eingabe, sondern gar keine.
+         * Bis 0.9.1 lief es in dieselbe harte Fehlermeldung wie "abc": wer
+         * beim Bearbeiten den Inhalt herausloescht und speichert, bekam
+         * "bitte eine ganze Zahl eintragen" und musste raten, was vorher
+         * dort stand.
+         *
+         * Zurueckgefallen wird bewusst auf den BISHER GESPEICHERTEN Wert,
+         * nicht auf den Werkswert, wie vorgeschlagen: Wer den Takt auf 300
+         * gestellt hat und das Feld versehentlich leert, bekaeme sonst
+         * stillschweigend wieder 60 - eine Aenderung, die er nie eingegeben
+         * hat. Und gesagt wird es, statt es still zu tun. */
+        if ($sk_wert === '') {
+            $sk_meldungen[] = sprintf(sk_t('EINST.LEER_UEBERNOMMEN'),
+                sk_t('EINST.L_' . strtoupper($sk_feld)), (int) $sk_cfg[$sk_feld]);
+            continue;
+        }
         if (!preg_match('/^[0-9]+$/', $sk_wert)) {
             $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_ZAHL'), sk_t('EINST.L_' . strtoupper($sk_feld)));
             continue;
@@ -108,7 +133,8 @@ if ($sk_post && isset($_POST['speichern'])) {
     $sk_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $sk_cfg['sitzung_merken'] = isset($_POST['sitzung_merken']) ? 1 : 0;
 
-    $sk_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['mqtt_topic']));
+    $sk_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        isset($_POST['mqtt_topic']) ? (string) $_POST['mqtt_topic'] : ''));
     if ($sk_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $sk_topic)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
     } else {
@@ -118,10 +144,20 @@ if ($sk_post && isset($_POST['speichern'])) {
     /* Zugangsdaten: eigene Datei mit Rechten 0600. Ein leer zurueckgegebenes
      * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
      * Passwort in der Datei, ohne dass es jemand merkt. */
-    $sk_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['email']));
+    $sk_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        isset($_POST['email']) ? (string) $_POST['email'] : ''));
     $sk_pw = isset($_POST['passwort']) ? (string) $_POST['passwort'] : '';
     $sk_spin = isset($_POST['spin']) ? trim((string) $_POST['spin']) : '';
-    if ($sk_email !== '' && !filter_var($sk_email, FILTER_VALIDATE_EMAIL)) {
+    if (isset($_POST['zugang_loeschen'])) {
+        // Ausdruecklich gewollt: alles weg. Was im selben Absenden im
+        // Formular stand, wird bewusst verworfen - sonst waere unklar, ob
+        // Loeschen oder Eintragen gewonnen hat.
+        if (sk_zugang_loeschen()) {
+            $sk_meldungen[] = sk_t('EINST.ZUGANG_GELOESCHT');
+        } else {
+            $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_LOESCHEN');
+        }
+    } elseif ($sk_email !== '' && !filter_var($sk_email, FILTER_VALIDATE_EMAIL)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_EMAIL');
     } elseif ($sk_spin !== '' && !preg_match('/^[0-9]{4}$/', $sk_spin)) {
         // Ist die FORM eines Geheimnisses erkennbar falsch, wird beim Speichern
@@ -221,12 +257,7 @@ $sk_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
     ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
     : (gethostname() ?: 'loxberry');
 $sk_basis = 'http://' . $sk_host . '/plugins/' . $sk_p['plugin'] . '/index.php';
-$sk_logzeilen = array();
-if (is_file($sk_p['log'])) {
-    $sk_logzeilen = array_slice(
-        array_reverse(file($sk_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
-        0, 400);
-}
+$sk_logzeilen = is_file($sk_p['log']) ? sk_log_ende($sk_p['log'], 400) : array();
 
 $sk_rahmen = class_exists('LBWeb', false);
 if ($sk_rahmen) {
@@ -361,15 +392,13 @@ if ($sk_rahmen) {
      Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
      faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= sk_e(sk_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= sk_e(sk_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= sk_e(sk_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= sk_e(sk_t('REITER.LOG')) ?></a>
+<?php foreach ($sk_reiter as $sk_r => $sk_beschriftung) { ?>
+	<a class="sm-tab<?= $sk_tab === 'tab-' . $sk_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $sk_r ?>" href="index.php?form=<?= $sk_r ?>"><?= sk_e($sk_beschriftung) ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $sk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <?php if ($sk_pyv !== '' && version_compare($sk_pyv, '3.13.0', '<')) { ?>
 <div class="sm-fehler"><?= sk_t('EINST.PYTHON_ZU_ALT') ?></div>
@@ -428,6 +457,15 @@ if ($sk_rahmen) {
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_SITZUNG_MERKEN') ?></div>
 </div>
+<?php if ($sk_zg['email'] !== '' || $sk_zg['laenge'] > 0 || $sk_zg['spin_laenge'] > 0) { ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="zugang_loeschen" value="1">
+    <?= sk_e(sk_t('EINST.L_ZUGANG_LOESCHEN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_ZUGANG_LOESCHEN') ?></div>
+</div>
+<?php } ?>
 
 <h2><?= sk_e(sk_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-warnung"><?= sk_t('EINST.TAKT_WARNUNG') ?></div>
@@ -516,7 +554,7 @@ if ($sk_rahmen) {
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $sk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= sk_e(sk_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 
@@ -556,7 +594,7 @@ if ($sk_rahmen) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $sk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= sk_e(sk_t('LOX.H_TITEL')) ?></h2>
 <p><?= sk_t('LOX.EINLEITUNG') ?></p>
 
@@ -765,7 +803,7 @@ function sk_bausteine()
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $sk_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= sk_e(sk_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
@@ -843,7 +881,7 @@ function sk_bausteine()
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $sk_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= sk_e(sk_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {

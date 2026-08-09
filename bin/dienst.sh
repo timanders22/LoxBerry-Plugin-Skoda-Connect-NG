@@ -26,8 +26,18 @@ laeuft() {
     P=$(cat "$PID" 2>/dev/null)
     [ -n "$P" ] || return 1
     kill -0 "$P" 2>/dev/null || return 1
-    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "skoda.py" "/proc/$P/cmdline" 2>/dev/null || return 1
+    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+    #
+    # /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Geprueft wird
+    # das ZWEITE Argument gegen den vollen Pfad - der Dienst wird immer als
+    #   "$PY" "$SKRIPT"
+    # gestartet, dort steht er also. Eine Teilstringsuche ueber die ganze
+    # Zeile ("grep -a skoda.py") traefe dagegen drei Sorten Unbeteiligter:
+    #   - ein zweites Exemplar dieses Plugins (LoxBerry haengt bei
+    #     Namenskonflikt 01, 02 ... an den Ordnernamen an),
+    #   - jeden Editor oder "tail", der die Datei gerade offen hat,
+    #   - bei pgrep -f zusaetzlich die eigene Suche.
+    [ "$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | sed -n '2p')" = "$SKRIPT" ] || return 1
     return 0
 }
 

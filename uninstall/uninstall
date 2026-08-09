@@ -1,0 +1,122 @@
+#!/bin/bash
+# Skoda Connect - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt beim Deinstallieren alle Ordner weg, die dem Plugin
+# gehoeren: bin/, data/, log/, config/, templates/ und die beiden
+# webfrontend-Ordner. Die virtuelle Python-Umgebung liegt in
+# bin/plugins/<ordner>/venv und geht damit mit.
+#
+# Zwei Dinge liegen aber AUSSERHALB dieser Ordner und blieben sonst
+# fuer immer liegen:
+#
+#   1. Die beiden Sicherungsdateien
+#        config/plugins/<ordner>.backup.skoda.json
+#        config/plugins/<ordner>.backup.zugang.json
+#      Sie liegen bewusst neben dem Plugin-Konfigordner, damit sie ein
+#      Update und sogar eine Neuinstallation ueberstehen (preupgrade.sh
+#      legt sie an, postinstall.sh spielt sie zurueck). Beim
+#      Deinstallieren ist genau das falsch: in zugang.json stehen
+#      Benutzername und Passwort des MySkoda-Kontos. Wer das Plugin
+#      entfernt, erwartet nicht, dass seine Zugangsdaten auf der Karte
+#      bleiben.
+#
+#   2. Der laufende Abrufdienst. Er wurde mit nohup gestartet und
+#      haengt an keinem Elternprozess, den LoxBerry beenden wuerde.
+#      Ohne diese Datei laeuft er nach der Deinstallation weiter -
+#      bis zum naechsten Neustart, und meldet sich dabei weiter bei
+#      Skoda an.
+#
+# Was NICHT aufgeraeumt werden muss: MQTT. Der Dienst sendet mit
+# "publish", nicht mit "retain" (bin/skoda.py, mqtt_senden). Im Broker
+# bleibt deshalb nichts stehen.
+
+PDIR=$3                      # Installationsordner des Plugins
+[ -n "$PDIR" ] || PDIR="skodaconnect"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+PDATA="$BASE/data/plugins/$PDIR"
+PBIN="$BASE/bin/plugins/$PDIR"
+PCONFIG="$BASE/config/plugins"
+
+# ---------------------------------------------------------------
+# 1. Dienst anhalten
+# ---------------------------------------------------------------
+# Erst ueber die PID-Datei. Die Nummer allein genuegt nicht: sie kann
+# nach einem Neustart einem voellig anderen Programm gehoeren. Geprueft
+# wird deshalb die Befehlszeile - und zwar ARGUMENTWEISE. /proc/<pid>/
+# cmdline trennt die Argumente mit Nullbytes; ein "grep skoda.py"
+# darueber wuerde auch einen Editor treffen, in dem die Datei gerade
+# offen ist. Geprueft wird deshalb das ZWEITE Argument gegen den vollen
+# Pfad - der Dienst wird immer als "<python> <pfad>/skoda.py" gestartet.
+# Der volle Pfad statt nur des Dateinamens, damit die Deinstallation des
+# einen Exemplars nicht den Dienst eines zweiten abschiesst (LoxBerry
+# haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an).
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$PBIN/skoda.py" ]
+}
+
+beenden() {
+    P="$1"
+    kill "$P" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$P" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -9 "$P" 2>/dev/null
+    sleep 1
+    return 0
+}
+
+GEFUNDEN=0
+PIDDATEI="$PDATA/dienst.pid"
+if [ -f "$PIDDATEI" ]; then
+    P=$(cat "$PIDDATEI" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser_dienst "$P"; then
+        beenden "$P"
+        GEFUNDEN=1
+        echo "<OK> Laufender Abrufdienst beendet (PID $P)."
+    fi
+fi
+
+# Zweiter Durchgang ohne PID-Datei: sie kann fehlen, wenn der Dienst
+# von Hand gestartet oder die Datei geloescht wurde.
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser_dienst "$P" && kill -0 "$P" 2>/dev/null; then
+        beenden "$P"
+        GEFUNDEN=1
+        echo "<OK> Weiterer Abrufdienst beendet (PID $P)."
+    fi
+done
+
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
+rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 2. Sicherungsdateien ausserhalb der Plugin-Ordner
+# ---------------------------------------------------------------
+for f in skoda.json zugang.json; do
+    BK="$PCONFIG/$PDIR.backup.$f"
+    if [ -f "$BK" ]; then
+        rm -f "$BK" && echo "<OK> Sicherung entfernt: $PDIR.backup.$f"
+    fi
+done
+echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfernt."
+
+# ---------------------------------------------------------------
+# 3. Hinweis auf das, was LoxBerry selbst wegraeumt
+# ---------------------------------------------------------------
+echo "<INFO> Die virtuelle Python-Umgebung ($PBIN/venv, rund 60 MB) wird mit"
+echo "<INFO> dem bin-Ordner des Plugins entfernt - dafuer ist nichts zu tun."
+
+exit 0
