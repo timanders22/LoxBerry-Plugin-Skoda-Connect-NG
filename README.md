@@ -282,7 +282,7 @@ Nachgestellt mit dem Pfad `/tmp/sk/mit ordner/venv/bin/python3`:
 `escapeshellcmd` liefert Code 127 (`sh: 1: /tmp/sk/mit: not found`), weil es
 Sonderzeichen entschärft, aber **keine** Anführungszeichen setzt;
 `escapeshellarg` liefert Code 0. Der Pfad lautet im Betrieb
-`/opt/loxberry/bin/plugins/<name>` und enthält kein Leerzeichen. Alle vier
+`<LoxBerry-Wurzel>/bin/plugins/<name>` und enthält kein Leerzeichen. Alle vier
 Stellen wurden trotzdem umgestellt — `escapeshellarg` ist das richtige
 Werkzeug und kostet nichts.
 
