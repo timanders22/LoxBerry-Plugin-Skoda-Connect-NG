@@ -129,17 +129,9 @@ if ($sk_post && isset($_POST['speichern'])) {
         $sk_fehler[] = sk_t('EINST.FEHLER_TEMP_TAUSCH');
     }
 
-    $sk_cfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $sk_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $sk_cfg['sitzung_merken'] = isset($_POST['sitzung_merken']) ? 1 : 0;
 
-    $sk_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        isset($_POST['mqtt_topic']) ? (string) $_POST['mqtt_topic'] : ''));
-    if ($sk_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $sk_topic)) {
-        $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
-    } else {
-        $sk_cfg['mqtt_topic'] = trim($sk_topic, '/');
-    }
 
     /* Zugangsdaten: eigene Datei mit Rechten 0600. Ein leer zurueckgegebenes
      * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
@@ -182,6 +174,37 @@ if ($sk_post && isset($_POST['speichern'])) {
         }
     }
     $sk_tab = 'tab-settings';
+
+    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
+     * kommt aus sk_config(), die Werte ueberleben also unveraendert. Stuende
+     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
+     * der Einstellungen MQTT stillschweigend abschalten. */
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
+ * ruehrt ausschliesslich die MQTT-Werte an. */
+if ($sk_post && isset($_POST['save_mqtt'])) {
+    $sk_mcfg = sk_config();
+    $sk_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $sk_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($sk_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $sk_mtopic)) {
+        $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
+    } else {
+        $sk_mcfg['mqtt_topic'] = trim($sk_mtopic, '/');
+    }
+    if (!$sk_fehler) {
+        if (sk_config_speichern($sk_mcfg)) {
+        $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+        }
+    }
+    $sk_tab = 'tab-mqtt';
 }
 
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
@@ -513,18 +536,8 @@ if ($sk_rahmen) {
   <div class="sm-hilfe"><?= sk_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
-<h2>MQTT</h2>
-<div class="sm-feld">
-  <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($sk_cfg['mqtt_ein']) ? 'checked' : '' ?>>
-    <?= sk_e(sk_t('EINST.L_MQTT_EIN')) ?>
-  </label>
-</div>
-<div class="sm-feld">
-  <label for="mqtt_topic"><?= sk_e(sk_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= sk_e($sk_cfg['mqtt_topic']) ?>" placeholder="skoda">
-  <div class="sm-hilfe"><?= sk_t('EINST.H_MQTT_TOPIC') ?></div>
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= sk_e(sk_t('ALLG.SPEICHERN')) ?></button>
@@ -555,6 +568,27 @@ if ($sk_rahmen) {
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $sk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($sk_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_MQTT_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="mqtt_topic"><?= sk_e(sk_t('EINST.L_MQTT_TOPIC')) ?></label>
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= sk_e($sk_cfg['mqtt_topic']) ?>" placeholder="skoda">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_MQTT_TOPIC') ?></div>
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= sk_e(sk_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= sk_e(sk_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 
