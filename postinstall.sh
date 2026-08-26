@@ -147,6 +147,102 @@ chmod 755 "$PBIN/dienst.sh" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/zugang.json"
 
+# ---------- Die S-PIN abraeumen, die es nicht mehr gibt (0.9.11) ----------
+#
+# Bis 0.9.10 nahm das Formular eine S-PIN an und legte sie in zugang.json ab.
+# Benutzt wurde sie NIE: das Plugin bietet weder Ver- noch Entriegeln an, und
+# nur dafuer verlangt MySkoda sie. Mit 0.9.11 ist das Feld fort - und damit
+# muss auch der gespeicherte Wert fort. Ein Feld zu entfernen und den Wert
+# liegen zu lassen waere die schlechteste der drei Moeglichkeiten: ein
+# Geheimnis, das niemand mehr sieht und niemand mehr verwaltet.
+#
+# Ueberschrieben wird vor dem Neuschreiben. Auf einem Journaling-Dateisystem
+# und auf Flash-Speicher ist das kein sicheres Loeschen - es ist der
+# Unterschied zwischen "steht noch da" und "muss man suchen".
+SPIN_WEG=0
+for Z in "$PCONFIG/zugang.json" "$BASE/config/plugins/$PFOLDER.backup.zugang.json"; do
+    [ -f "$Z" ] || continue
+    if ! grep -q '"spin"' "$Z" 2>/dev/null; then
+        continue
+    fi
+    PYBIN="python3"
+    [ -x "$PBIN/venv/bin/python3" ] && PYBIN="$PBIN/venv/bin/python3"
+    if "$PYBIN" - "$Z" <<'PYENDE'
+import json, os, sys
+p = sys.argv[1]
+with open(p, 'r', encoding='utf-8') as f:
+    d = json.load(f)
+if not isinstance(d, dict) or 'spin' not in d:
+    sys.exit(2)
+d.pop('spin', None)
+neu = json.dumps(d, ensure_ascii=False, indent=1)
+# Erst den alten Platz ueberschreiben, dann den neuen Inhalt schreiben.
+groesse = os.path.getsize(p)
+with open(p, 'r+b') as f:
+    f.write(b'0' * groesse)
+    f.flush()
+    os.fsync(f.fileno())
+    f.seek(0)
+    f.truncate(0)
+    f.write(neu.encode('utf-8'))
+    f.flush()
+    os.fsync(f.fileno())
+os.chmod(p, 0o600)
+PYENDE
+    then
+        SPIN_WEG=$((SPIN_WEG + 1))
+        echo "<OK> Die nicht mehr benutzte S-PIN wurde aus $(basename "$Z") entfernt."
+    else
+        echo "<FAIL> Die S-PIN liess sich aus $Z NICHT entfernen."
+        echo "<FAIL> Bitte die Datei von Hand pruefen - sie enthaelt noch ein Geheimnis,"
+        echo "<FAIL> das dieses Plugin nicht mehr benutzt."
+    fi
+done
+if [ "$SPIN_WEG" -gt 0 ]; then
+    echo "<INFO> Das Feld S-PIN gibt es in der Oberflaeche nicht mehr. Es kehrt zurueck,"
+    echo "<INFO> wenn das Plugin Ver- und Entriegeln anbietet - dann wird es gebraucht."
+fi
+
+# ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
+#
+# Der Merker entsteht nur in preupgrade.sh und nur dann, wenn dort ein
+# laufender Vorgang angehalten wurde. Bei einer Erstinstallation gibt es
+# ihn nicht, und dann passiert hier nichts.
+#
+# Er behebt keinen Stillstand: der Sollmerker unter data/ ueberlebt das
+# Upgrade (gemessen an sbin/plugininstall.pl), und der Cron-Waechter holt
+# den Dienst binnen einer Minute zurueck. Dieser Start hier ist sofort und
+# unabhaengig vom Waechter - das ist der ganze Gewinn, und mehr wird nicht
+# behauptet.
+#
+# Er wird IN JEDEM FALL entfernt, auch wenn der Start scheitert. Ein
+# liegengebliebener Merker startete den Dienst bei einer spaeteren
+# Installation ungefragt - auch dann, wenn er absichtlich abgeschaltet
+# worden war.
+MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
+if [ -f "$MERKER" ]; then
+    rm -f "$MERKER"
+    if [ ! -x "$PBIN/dienst.sh" ]; then
+        echo "<INFO> $PBIN/dienst.sh fehlt - der Dienst wurde nicht gestartet."
+    else
+        # Als loxberry und nicht als root: der Dienst schreibt in data/
+        # und log/. Was root dort anlegt, kann die Oberflaeche danach
+        # nicht mehr ueberschreiben.
+        if [ "$(id -u)" = "0" ]; then
+            AUSGABE=$(su -s /bin/bash -c "$PBIN/dienst.sh start" loxberry 2>&1)
+        else
+            AUSGABE=$("$PBIN/dienst.sh" start 2>&1)
+        fi
+        case "$AUSGABE" in
+            *gestartet*|*laeuft*)
+                echo "<OK> Dienst wieder gestartet: $AUSGABE" ;;
+            *)
+                echo "<INFO> Der Dienst liess sich nicht wieder starten: $AUSGABE"
+                echo "<INFO> Reiter Einstellungen, Knopf 'Dienst starten'." ;;
+        esac
+    fi
+fi
+
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des MySkoda-Kontos"
 echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."

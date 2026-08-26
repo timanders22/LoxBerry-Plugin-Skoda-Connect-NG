@@ -195,7 +195,6 @@ function sk_zugang()
     return array(
         'email'       => isset($z['email']) ? (string) $z['email'] : '',
         'laenge'      => isset($z['passwort']) ? strlen((string) $z['passwort']) : 0,
-        'spin_laenge' => isset($z['spin']) ? strlen((string) $z['spin']) : 0,
     );
 }
 
@@ -207,7 +206,13 @@ function sk_zugang()
  * Genau dieser Fehler hat im ACTi-Plugin 21 vergebliche Anmeldeversuche
  * verursacht.
  */
-function sk_zugang_speichern($email, $passwort, $spin)
+/* Ohne S-PIN, und das mit Absicht (0.9.11): das Plugin bietet weder Ver-
+ * noch Entriegeln an, und nur dafuer verlangt MySkoda sie. Ein
+ * Geheimnis, das nichts bewirkt, ist reines Risiko - es lag dauerhaft
+ * auf der Platte und wanderte bei jedem Upgrade in eine Zweitschrift
+ * daneben. Ein vorhandener Wert wird beim Speichern MIT ENTFERNT: der
+ * neue Inhalt kennt den Schluessel nicht mehr. */
+function sk_zugang_speichern($email, $passwort)
 {
     $p = sk_paths();
     if (!is_dir($p['configdir'])) {
@@ -219,9 +224,6 @@ function sk_zugang_speichern($email, $passwort, $spin)
         'passwort' => ($passwort !== null && $passwort !== '')
                       ? $passwort
                       : (isset($alt['passwort']) ? $alt['passwort'] : ''),
-        'spin'     => ($spin !== null && $spin !== '')
-                      ? $spin
-                      : (isset($alt['spin']) ? $alt['spin'] : ''),
     );
     $json = json_encode($neu, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
@@ -369,9 +371,35 @@ function sk_dienst_pid()
     if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
         return 0;
     }
-    // Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+    /* Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+     *
+     * Bis 0.9.10 stand hier strpos($cmd, 'skoda.py'). Der Rahmen war schon
+     * richtig - geprueft wird nur die Nummer aus der eigenen PID-Datei, es
+     * wird nichts gesucht -, aber die Pruefung selbst zu weich:
+     * /proc/<pid>/cmdline enthaelt ALLE Argumente, durch Nullbytes getrennt.
+     * Hat die wiederverwendete Nummer einen Editor mit geoeffneter skoda.py
+     * erwischt, galt der als laufender Dienst. Die Oberflaeche reihte dann
+     * Befehle ein, die niemand abarbeitet, und meldete "eingereiht" statt
+     * "laeuft nicht".
+     *
+     * Verglichen wird jetzt argumentweise gegen den vollen Pfad. Das trifft
+     * auch den Fall zweier Exemplare des Plugins: LoxBerry haengt bei
+     * Namenskonflikt 01, 02 ... an den Ordnernamen an. */
     $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'skoda.py') !== false ? $pid : 0;
+    $argv = explode("\0", $cmd);
+    $skript = sk_paths()['bindir'] . '/skoda.py';
+    /* Zwei Bedingungen, nicht eine:
+     *   argv[1] ist genau unser Skript UND
+     *   argv[0] ist ein Python.
+     * Die zweite braucht es, weil "nano /pfad/skoda.py" ebenfalls den vollen
+     * Pfad als zweites Argument fuehrt. Der Dienst wird immer als
+     * "<venv>/bin/python3 <pfad>/skoda.py" gestartet. */
+    if (isset($argv[0], $argv[1])
+        && $argv[1] === $skript
+        && preg_match('#(^|/)python[0-9.]*$#', $argv[0])) {
+        return $pid;
+    }
+    return 0;
 }
 
 function sk_dienst_soll()
@@ -529,7 +557,7 @@ function sk_verlauf_lesen($nummer, $tag = '')
 function sk_mqtt_zustand()
 {
     $p = sk_paths();
-    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0,
+    $leer = array('gefunden' => 0, 'autostart' => 0, 'fassung' => 0, 'udpport' => 0,
                   'broker' => '', 'brokerport' => '', 'websocket' => '');
     if ($p['home'] === '') {
         return $leer;
@@ -554,12 +582,43 @@ function sk_mqtt_zustand()
     return array(
         'gefunden'   => 1,
         'autostart'  => in_array((string) $auto, array('1', 'true'), true) ? 1 : 0,
+        /* Die FASSUNG des MQTT-Gateways, ab Werk 1. Sie entscheidet, was der
+         * Anwender eintragen muss: unter V1 jedes Thema von Hand, ab V2
+         * erscheint die Themengruppe von selbst in den Subscriptions.
+         * 0 heisst "nicht feststellbar" - dann wird nichts behauptet,
+         * sondern es werden beide Faelle genannt. */
+        'fassung'    => (int) $hol('Gatewayversion', 'gatewayversion'),
         'udpport'    => (int) $hol('Udpinport', 'udpinport'),
         'broker'     => (string) $hol('Brokerhost', 'brokerhost'),
         'brokerport' => (string) $hol('Brokerport', 'brokerport'),
         'websocket'  => (string) $hol('Websocketport', 'websocketport'),
     );
 }
+
+/**
+ * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
+ *
+ * Bis hierher stand an den Ausgabestellen unbedingt "Ohne diesen Eintrag
+ * kommt am Miniserver nichts an". Das gilt fuer Gateway V1, wo jedes Thema
+ * von Hand einzutragen ist. Ab V2 erscheint die Themengruppe von selbst in
+ * den Subscriptions - der Satz schickte jeden V2-Anwender zu einem
+ * Eingabeplatz, den es nicht gibt.
+ *
+ * Drei Ausgaenge, nicht zwei: ist die Fassung nicht feststellbar, werden
+ * BEIDE Faelle genannt statt einer behauptet.
+ */
+function sk_abo_text()
+{
+    $m = sk_mqtt_zustand();
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    if ($f <= 0) {
+        return sk_t('MQTT.ABO_UNBEKANNT');
+    }
+    $gemessen = ' <span class="sm-mono">'
+              . sprintf(sk_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
+    return sk_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
+}
+
 
 /** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung. */
 function sk_mqtt_themen()
@@ -706,6 +765,25 @@ function sk_wartung_felder()
     );
 }
 
+/**
+ * Der Suchtext eines Feldes fuer den virtuellen Eingang in Loxone.
+ *
+ * Das Semikolon gehoert DAZU. Ohne es nimmt Loxone die erste Fundstelle,
+ * und die kann zu einem anderen Feld gehoeren, dessen Name auf diesen
+ * endet. Gemessen an der Antwort des Wartungs-Endpunkts: das Muster
+ * \iKM= trifft dort INSPKM=15000, nicht KM=48210. Beide Zahlen sehen aus
+ * wie ein Kilometerstand - der Fehler faellt an keiner Stelle auf.
+ *
+ * Und es gibt diese Funktion, damit der Suchtext an EINER Stelle
+ * entsteht. Vorher stand er fuenfmal woertlich da: einmal in der Vorlage
+ * und viermal in der Oberflaeche. Vier Kopien einer Regel sind vier
+ * Gelegenheiten, sie an einer Stelle zu vergessen.
+ */
+function sk_check($feld)
+{
+    return '\i;' . $feld . '=\i\v';
+}
+
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function sk_vorlage($nummer = 1)
 {
@@ -725,7 +803,7 @@ function sk_vorlage($nummer = 1)
         $cmds[] = array(
             'title'   => 'SKODA_' . $nummer . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
+            'check'   => sk_check($feld),
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
@@ -814,4 +892,44 @@ function sk_t($schluessel)
     $a = $teile[0];
     $s = $teile[1];
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+ * sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function sk_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(sk_t('EINST.SICH_KEIN_JSON')), 0);
+    }
+    $neu = sk_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = sk_t('EINST.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }

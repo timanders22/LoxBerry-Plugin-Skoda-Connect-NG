@@ -248,7 +248,6 @@ def zugang() -> dict:
     return {
         "email": str(z.get("email") or "").strip(),
         "passwort": str(z.get("passwort") or ""),
-        "spin": str(z.get("spin") or ""),
     }
 
 
@@ -1176,16 +1175,9 @@ def selbsttest() -> int:
     else:
         fehler += 1
         zeilen.append("[FEHL] Kein Passwort hinterlegt")
-    if z["spin"]:
-        if z["spin"].isdigit() and len(z["spin"]) == 4:
-            zeilen.append("[OK]   S-PIN hinterlegt (vier Ziffern)")
-        else:
-            fehler += 1
-            zeilen.append(f"[FEHL] Die S-PIN hat {len(z['spin'])} Zeichen - erwartet werden "
-                          f"genau vier Ziffern")
-    else:
-        zeilen.append("[INFO] Keine S-PIN hinterlegt (nur fuer Ver- und Entriegeln noetig, "
-                      "das dieses Plugin nicht anbietet)")
+    # Die Zeile ueber die S-PIN ist mit 0.9.11 entfallen: das Plugin hat
+    # sie nie benutzt, und ein Selbsttest, der ueber ein unbenutztes
+    # Geheimnis Auskunft gibt, laesst es wichtig aussehen.
     try:
         rechte = oct(DATEI_ZUGANG.stat().st_mode & 0o777)
         passt = (DATEI_ZUGANG.stat().st_mode & 0o077) == 0

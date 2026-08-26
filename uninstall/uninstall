@@ -125,4 +125,11 @@ echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfern
 echo "<INFO> Die virtuelle Python-Umgebung ($PBIN/venv, rund 60 MB) wird mit"
 echo "<INFO> dem bin-Ordner des Plugins entfernt - dafuer ist nichts zu tun."
 
+# Ein Merker, der die Deinstallation ueberlebt, startet den Dienst bei
+# einer spaeteren Installation ungefragt wieder.
+# $PDIR, nicht $PFOLDER: diese Datei nennt den Installationsordner PDIR.
+# Mit dem falschen Namen zeigte der Pfad auf ".lief_vorher" ohne Ordner -
+# der Merker waere liegen geblieben, und rm haette KEINEN Fehler gemeldet.
+rm -f "$BASE/config/plugins/$PDIR.lief_vorher"
+
 exit 0

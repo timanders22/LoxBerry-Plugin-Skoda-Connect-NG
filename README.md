@@ -15,6 +15,102 @@ Ladegrenze und Scheibenheizung schalten.
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
 
+## Was 0.9.11 ändert
+
+Fünf Korrekturen. Die erste verlangt **einen Handgriff in Loxone Config**, die
+zweite entfernt ein Geheimnis von der Platte, und eine weitere schließt eine
+Lücke, in der bisher gar nicht geprüft wurde.
+
+### Der Suchtext des Kilometerstands war zweideutig — bitte nachtragen
+
+Der virtuelle Eingang für `KM` trug bisher den Suchtext `\iKM=\i\v`. Die
+Antwort des Wartungs-Abrufs führt aber `INSPKM=` und `OELKM=` **vor** `KM=`,
+und Loxone nimmt die erste Fundstelle. Der Kilometerstand las damit die
+Inspektionsvorgabe. Beide Zahlen sehen aus wie ein Kilometerstand — der Fehler
+meldet sich nicht.
+
+Alle Suchtexte tragen jetzt das Semikolon: `\i;KM=\i\v`, und sie entstehen an
+**einer** Stelle im Quelltext statt an fünf.
+
+> **Was Sie tun müssen:** Wer die Importdatei neu erzeugt, bekommt die
+> berichtigten Suchtexte automatisch. Wer die Eingänge behalten will, ändert in
+> Loxone Config bei den **drei Eingängen mit `KM` im Namen** den Suchtext von
+> `\iNAME=` auf `\i;NAME=`.
+
+### Die S-PIN ist fort — samt dem gespeicherten Wert
+
+Das Formular nahm eine vierstellige S-PIN an und legte sie in `zugang.json`
+ab. Benutzt wurde sie **nie**: MySkoda verlangt sie nur für Ver- und
+Entriegeln, und das bietet dieses Plugin nicht an. Der Hilfetext sagte das
+selbst — „das Feld ist für eine spätere Fassung vorbereitet".
+
+Diese Vorbereitung kostete die Ziffernfolge, mit der sich das Fahrzeug
+aufschließen lässt: dauerhaft auf der Platte, und bei jedem Upgrade in eine
+Zweitschrift daneben kopiert. Ein Geheimnis, das nichts bewirkt, ist reines
+Risiko.
+
+Das Feld ist deshalb fort, und der Installateur **entfernt einen vorhandenen
+Wert** aus `zugang.json` und aus der Zweitschrift — überschreibend, und er sagt
+in der Installationsmeldung, dass er es getan hat. Ein Feld zu entfernen und
+den Wert liegen zu lassen wäre die schlechteste der Möglichkeiten gewesen: ein
+Geheimnis, das niemand mehr sieht und niemand mehr verwaltet. Kommt die
+Fassung, die Ver- und Entriegeln anbietet, kehrt das Feld zurück.
+
+### Nach einer Aktualisierung läuft der Dienst wieder
+
+`preupgrade.sh` hält den Dienst an. Ein Merker **neben** dem
+Konfigurationsordner sagt dem `postinstall.sh`, dass er lief, und der startet
+ihn wieder — sofort und ohne Umweg. Der Merker wird nur gesetzt, wenn der
+Vorgang wirklich lief, und in jedem Fall wieder entfernt.
+
+> **Was diese Korrektur NICHT ist, und das gehört hierher.** Ursprünglich stand
+> hier, das Plugin habe nach jeder Aktualisierung stillgestanden, weil der
+> Installateur `data/` ausräume. **Das war falsch und nie gemessen.** Nachgelesen
+> in `sbin/plugininstall.pl`: beim Upgrade werden `config/` und `data/` des
+> Plugins angelegt, falls sie fehlen, und der Archivinhalt wird darüber kopiert
+> (`:891`, `:895`, `:996`, `:1000`); gelöscht werden sie nur in
+> `purge_installation` (`:1604`, `:1606`), und die läuft ausschließlich beim
+> **Deinstallieren** (`:233`). Der Sollmerker `soll_laufen` überlebt das Upgrade
+> also, und der Cron-Wächter holt den Dienst binnen einer Minute von selbst
+> zurück. Diese Korrektur verkürzt ein Fenster von bis zu 60 Sekunden und macht
+> den Start unabhängig vom Wächter — sie behebt keinen Stillstand.
+
+### Die Prozessprüfung war zu weich
+
+`sk_dienst_pid()` fragte `strpos($cmd, 'skoda.py')`. `/proc/<pid>/cmdline`
+enthält alle Argumente, durch Nullbytes getrennt — hatte die wiederverwendete
+Nummer aus der PID-Datei einen Editor mit geöffneter `skoda.py` erwischt, galt
+der als laufender Dienst. Die Oberfläche reihte dann Befehle ein, die niemand
+abarbeitet, und meldete „eingereiht" statt „läuft nicht". Verglichen wird jetzt
+**argumentweise** gegen den vollen Pfad, wie in der Schwesterlinie Volkswagen
+seit 0.9.0.
+
+### Die Reiter werden jetzt geprüft — vorher tat es niemand
+
+Die Reiterleiste entsteht in einer Schleife über `$sk_reiter`. Das ist die
+richtige Lösung: die Namen stehen nur einmal da. Nur sucht
+`hausstandard_pruefen.py` die Reiter als wörtliche Zeichenketten im Quelltext
+und findet in einer erzeugten Leiste keine — die Spalte `tab` blieb ein
+**Strich**. Ein Strich liest sich wie „nichts zu beanstanden", er heißt aber
+„nichts gemessen". Einen eigenen Test dafür gab es nicht.
+
+Der Reiter *Test* prüft es jetzt selbst, am Quelltext der Oberfläche: eine
+Fläche ohne Eintrag in der Liste (der Reiter ist unerreichbar und die Seite
+springt nach jedem Absenden zurück) und ein Eintrag ohne Fläche (der Reiter
+bleibt leer). Die Leiste selbst wird **nicht** verglichen, und das ist keine
+Lücke: sie entsteht aus derselben Liste. Geeicht mit
+`Werkzeuge/reiterpruefung_eichung.py` — beide Fälle werden rot, und zwar mit
+dem richtigen Grund.
+
+### Baustein #14 hatte vier Eingänge
+
+Bei `UND` und `ODER` ist die Zahl der Eingänge eine Baustein-Eigenschaft, die
+Loxone Config selbst setzt; ein dritter Eingang kostet beim nächsten Öffnen
+alle Verbindungen, die daran hingen. #14 nennt jetzt zwei Eingänge mit je zwei
+Quellen — an einem ODER dasselbe Ergebnis. Bei #30 (ein UND) bleibt es bei
+einer Quelle je Eingang: dort verwandelte dieselbe Form das UND still in ein
+ODER.
+
 ## Was 0.9.4 ändert
 
 Nur eine Richtigstellung, kein Code. In 0.9.3 stand als Begründung für die

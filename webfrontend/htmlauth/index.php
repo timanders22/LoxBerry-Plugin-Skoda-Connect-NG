@@ -139,7 +139,6 @@ if ($sk_post && isset($_POST['speichern'])) {
     $sk_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
         isset($_POST['email']) ? (string) $_POST['email'] : ''));
     $sk_pw = isset($_POST['passwort']) ? (string) $_POST['passwort'] : '';
-    $sk_spin = isset($_POST['spin']) ? trim((string) $_POST['spin']) : '';
     if (isset($_POST['zugang_loeschen'])) {
         // Ausdruecklich gewollt: alles weg. Was im selben Absenden im
         // Formular stand, wird bewusst verworfen - sonst waere unklar, ob
@@ -151,13 +150,8 @@ if ($sk_post && isset($_POST['speichern'])) {
         }
     } elseif ($sk_email !== '' && !filter_var($sk_email, FILTER_VALIDATE_EMAIL)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_EMAIL');
-    } elseif ($sk_spin !== '' && !preg_match('/^[0-9]{4}$/', $sk_spin)) {
-        // Ist die FORM eines Geheimnisses erkennbar falsch, wird beim Speichern
-        // abgewiesen, statt den Benutzer in eine Fehlermeldung des Anbieters
-        // laufen zu lassen.
-        $sk_fehler[] = sk_t('EINST.FEHLER_SPIN');
     } else {
-        if (!sk_zugang_speichern($sk_email, $sk_pw, $sk_spin)) {
+        if (!sk_zugang_speichern($sk_email, $sk_pw)) {
             $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_SPEICHERN');
         }
     }
@@ -286,6 +280,54 @@ $sk_rahmen = class_exists('LBWeb', false);
 if ($sk_rahmen) {
     LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($sk_post && isset($_POST['sk_sichern'])) {
+    $sk_js = json_encode(sk_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($sk_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="skoda_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $sk_js;
+        exit;
+    }
+    $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($sk_post && isset($_POST['sk_zurueck'])) {
+    if (!isset($_FILES['sk_sicherung']) || !is_array($_FILES['sk_sicherung'])
+        || !isset($_FILES['sk_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['sk_sicherung']['tmp_name'])) {
+        $sk_fehler[] = sk_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['sk_sicherung']['size'] > 262144) {
+        $sk_fehler[] = sk_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($sk_neu, $sk_mangel, $sk_n) = sk_sicherung_lesen(
+            (string) @file_get_contents($_FILES['sk_sicherung']['tmp_name']));
+        if ($sk_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $sk_fehler[] = sk_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $sk_mangel);
+        } elseif (sk_config_speichern($sk_neu)) {
+            $sk_meldungen[] = sprintf(sk_t('EINST.SICH_UEBERNOMMEN'), $sk_n);
+        } else {
+            $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard, wortgetreu aus VORLAGE_hausstandard.css.html uebernommen.
@@ -469,18 +511,13 @@ if ($sk_rahmen) {
   <div class="sm-hilfe"><?= sk_t('EINST.H_PASSWORT') ?></div>
 </div>
 <div class="sm-feld">
-  <label for="spin"><?= sk_e(sk_t('EINST.L_SPIN')) ?></label>
-  <input data-role="none" type="password" id="spin" name="spin" value="" maxlength="4" placeholder="<?= $sk_zg['spin_laenge'] > 0 ? sk_e(sk_t('EINST.SPIN_GESETZT')) : sk_e(sk_t('EINST.SPIN_LEER')) ?>">
-  <div class="sm-hilfe"><?= sk_t('EINST.H_SPIN') ?></div>
-</div>
-<div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="sitzung_merken" value="1" <?= !empty($sk_cfg['sitzung_merken']) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_SITZUNG_MERKEN')) ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_SITZUNG_MERKEN') ?></div>
 </div>
-<?php if ($sk_zg['email'] !== '' || $sk_zg['laenge'] > 0 || $sk_zg['spin_laenge'] > 0) { ?>
+<?php if ($sk_zg['email'] !== '' || $sk_zg['laenge'] > 0) { ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="zugang_loeschen" value="1">
@@ -564,6 +601,25 @@ if ($sk_rahmen) {
 </table>
 <p class="sm-hilfe"><?= sk_t('EINST.VIN_HINWEIS') ?></p>
 <?php } ?>
+
+<h2><?= sk_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= sk_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= sk_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sk_sichern" value="1"><?= sk_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="sk_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="sk_zurueck" value="1"><?= sk_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -609,7 +665,7 @@ if ($sk_rahmen) {
 </table>
 
 <h2><?= sk_e(sk_t('MQTT.H_ABO')) ?></h2>
-<div class="sm-warnung"><?= sk_t('MQTT.ABO_WARNUNG') ?></div>
+<div class="sm-warnung"><?= sk_abo_text() ?></div>
 <div class="sm-step">
 <?= sk_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic']) ?>/#</span></p>
@@ -639,7 +695,7 @@ if ($sk_rahmen) {
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S2_TITEL')) ?></b><br>
 <?= sk_t('LOX.S2_TEXT') ?>
 <p><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= sk_t('LOX.S2_WARNUNG') ?></div>
+<div class="sm-warnung"><?= sk_abo_text() ?></div>
 </div>
 
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S3_TITEL')) ?></b><br>
@@ -656,7 +712,7 @@ if ($sk_rahmen) {
     <th><?= sk_e(sk_t('LOX.T_EINHEIT')) ?></th><th><?= sk_e(sk_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (sk_status_felder() as $sk_feld => $sk_info) { ?>
 <tr><td><span class="sm-mono">SKODA_1_<?= sk_e($sk_feld) ?></span></td>
-    <td><span class="sm-mono">\i<?= sk_e($sk_feld) ?>=\i\v</span></td>
+    <td><span class="sm-mono"><?= sk_e(sk_check($sk_feld)) ?></span></td>
     <td><?= $sk_info[0] ?></td><td><?= sk_t($sk_info[1]) ?></td></tr>
 <?php } ?>
 </table>
@@ -693,7 +749,7 @@ if ($sk_rahmen) {
 <table class="sm-tbl">
 <tr><th><?= sk_e(sk_t('LOX.T_BEFEHL')) ?></th><th><?= sk_e(sk_t('LOX.T_EINHEIT')) ?></th><th><?= sk_e(sk_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (sk_laden_felder() as $sk_feld => $sk_info) { ?>
-<tr><td><span class="sm-mono">\i<?= sk_e($sk_feld) ?>=\i\v</span></td>
+<tr><td><span class="sm-mono"><?= sk_e(sk_check($sk_feld)) ?></span></td>
     <td><?= $sk_info[0] ?></td><td><?= sk_t($sk_info[1]) ?></td></tr>
 <?php } ?>
 </table>
@@ -701,14 +757,14 @@ if ($sk_rahmen) {
 <table class="sm-tbl">
 <tr><th><?= sk_e(sk_t('LOX.T_BEFEHL')) ?></th><th><?= sk_e(sk_t('LOX.T_EINHEIT')) ?></th><th><?= sk_e(sk_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (sk_wartung_felder() as $sk_feld => $sk_info) { ?>
-<tr><td><span class="sm-mono">\i<?= sk_e($sk_feld) ?>=\i\v</span></td>
+<tr><td><span class="sm-mono"><?= sk_e(sk_check($sk_feld)) ?></span></td>
     <td><?= $sk_info[0] ?></td><td><?= sk_t($sk_info[1]) ?></td></tr>
 <?php } ?>
 </table>
 <?= sk_t('LOX.S4_POSITION') ?>
 <table class="sm-tbl">
 <tr><td><span class="sm-mono"><?= sk_e($sk_basis) ?>?token=<?= sk_e($sk_token) ?>&amp;aktion=position&amp;fahrzeug=1</span></td>
-    <td><span class="sm-mono">\iBREITE=\i\v</span> / <span class="sm-mono">\iLAENGE=\i\v</span></td></tr>
+    <td><span class="sm-mono"><?= sk_e(sk_check('BREITE')) ?></span> / <span class="sm-mono"><?= sk_e(sk_check('LAENGE')) ?></span></td></tr>
 </table>
 </div>
 
@@ -784,7 +840,7 @@ function sk_bausteine()
         array(11, 'BAUSTEIN.T_VE',      'BAUSTEIN.N11', 'BAUSTEIN.P11', '&mdash;'),
         array(12, 'BAUSTEIN.T_VE',      'BAUSTEIN.N12', 'BAUSTEIN.P12', '&mdash;'),
         array(13, 'BAUSTEIN.T_NICHT',   'BAUSTEIN.N13', '',             'I &larr; #5'),
-        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 &larr; #13, I2 &larr; #6, I3 &larr; #7, I4 &larr; #8'),
+        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 &larr; #13, #6 &middot; I2 &larr; #7, #8'),
         array(15, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I &larr; #14'),
         array(16, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N16', 'BAUSTEIN.P16', 'I &larr; #15'),
         array(17, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N17', 'BAUSTEIN.P17', 'I &larr; #1'),

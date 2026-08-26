@@ -105,10 +105,84 @@ function sk_pruefungen()
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_MQTT'), sk_t('TEST.A_MQTT_AUS'));
     }
 
+    /* ---- Reiter: Liste, Beschriftungen und Bereiche ----
+     * Der Fall, den kein Werkzeug dieses Hauses hier gesehen hat: die Leiste
+     * entsteht in einer Schleife, und hausstandard_pruefen.py sucht
+     * woertliche Namen im Quelltext - es meldete einen Strich, also "nichts
+     * gemessen", was sich wie "nichts zu beanstanden" liest. */
+    $r = sk_reiter_lesen();
+    if ($r === null || !$r['liste'] || !$r['bereiche']) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_REITER'),
+            sk_t('TEST.A_REITER_UNKLAR'));
+    } else {
+        $abw = array();
+        $ohne_bereich = array_values(array_diff($r['liste'], $r['bereiche']));
+        if ($ohne_bereich) {
+            $abw[] = sprintf(sk_t('TEST.A_REITER_OHNE_BEREICH'),
+                sk_e(implode(', ', $ohne_bereich)));
+        }
+        $ohne_liste = array_values(array_diff($r['bereiche'], $r['liste']));
+        if ($ohne_liste) {
+            $abw[] = sprintf(sk_t('TEST.A_REITER_OHNE_LISTE'),
+                sk_e(implode(', ', $ohne_liste)));
+        }
+        $ohne_text = array_values(array_diff($r['liste'], $r['text']));
+        if ($ohne_text) {
+            $abw[] = sprintf(sk_t('TEST.A_REITER_OHNE_TEXT'),
+                sk_e(implode(', ', $ohne_text)));
+        }
+        // Ein woertlicher Eintrag in der Leiste, den die Liste nicht kennt.
+        // Heute gibt es keinen - aber wer die Schleife spaeter aufloest,
+        // soll es hier erfahren und nicht am Bildschirm.
+        $leiste_fremd = array_values(array_diff($r['leiste_fest'], $r['liste']));
+        if ($leiste_fremd) {
+            $abw[] = sprintf(sk_t('TEST.A_REITER_LEISTE_FEST'),
+                sk_e(implode(', ', $leiste_fremd)));
+        }
+        $zeilen[] = sk_pruefzeile($abw ? 0 : 1, sk_t('TEST.F_REITER'),
+            $abw ? sprintf(sk_t('TEST.A_REITER_FEHL'), implode(' ', $abw))
+                 : sprintf(sk_t('TEST.A_REITER_OK'), count($r['liste'])));
+    }
+
     $zeilen[] = sk_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, sk_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? sk_t('TEST.A_STEUERUNG_EIN') : sk_t('TEST.A_STEUERUNG_AUS'));
 
     return $zeilen;
+}
+
+/**
+ * Welche Reiternamen kennen die Liste und die Bereiche?
+ *
+ * Gelesen wird der QUELLTEXT der Oberflaeche, nicht der Zustand zur Laufzeit.
+ * Nur so faellt ein Bereich auf, den es in der Datei gibt und den zur Laufzeit
+ * niemand oeffnet.
+ *
+ * Die Reiterleiste wird NICHT verglichen, und das ist keine Luecke: sie
+ * entsteht in einer Schleife ueber dieselbe Liste und kann deshalb nicht
+ * abweichen. Woertliche Eintraege in der Leiste - die es hier nicht gibt -
+ * wuerden trotzdem auffallen; sie werden mitgelesen.
+ */
+function sk_reiter_lesen()
+{
+    $f = __DIR__ . '/index.php';
+    if (!is_file($f)) {
+        return null;
+    }
+    $t = (string) @file_get_contents($f);
+    $aus = array('liste' => array(), 'text' => array(),
+                 'bereiche' => array(), 'leiste_fest' => array());
+    if (preg_match('/\$sk_reiter\s*=\s*array\((.*?)\);/s', $t, $m)) {
+        preg_match_all("/'([a-z0-9]+)'\s*=>/", $m[1], $x);
+        $aus['liste'] = $x[1];
+        // Liste und Beschriftung stehen hier in EINER Tabelle - es gibt
+        // nichts, was auseinanderlaufen koennte.
+        $aus['text'] = $x[1];
+    }
+    preg_match_all('/id="tab-([a-z0-9]+)"/', $t, $z);
+    $aus['bereiche'] = $z[1];
+    preg_match_all('/data-ziel="tab-([a-z0-9]+)"/', $t, $y);
+    $aus['leiste_fest'] = $y[1];
+    return $aus;
 }
 
 /**
