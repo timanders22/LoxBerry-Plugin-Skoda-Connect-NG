@@ -72,6 +72,23 @@ $sk_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 $sk_testausgabe = '';
 $sk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($sk_post && isset($_POST['vorlage'])) {
     $sk_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage']) ? (int) $_POST['vorlage'] : 1;
@@ -277,9 +294,6 @@ $sk_basis = 'http://' . $sk_host . '/plugins/' . $sk_p['plugin'] . '/index.php';
 $sk_logzeilen = is_file($sk_p['log']) ? sk_log_ende($sk_p['log'], 400) : array();
 
 $sk_rahmen = class_exists('LBWeb', false);
-if ($sk_rahmen) {
-    LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -326,6 +340,11 @@ if ($sk_post && isset($_POST['sk_zurueck'])) {
             $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($sk_rahmen) {
+    LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
