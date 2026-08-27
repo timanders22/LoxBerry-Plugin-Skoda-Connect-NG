@@ -85,9 +85,22 @@ anhalten() {
     fi
     P=$(cat "$PID")
     kill "$P" 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    # 70 Sekunden, nicht 10.
+    #
+    # Das Signal setzt nur einen Merker; geprueft wird er im Sekundentakt der
+    # Wartezeit und am Kopf der Hauptschleife - NICHT waehrend eines Abrufs.
+    # Ein einzelner haengender Endpunkt braucht schon 30 s (GRENZE_ABRUF), ein
+    # laufender Schreibbefehl bis zu 60 (GRENZE_BEFEHL). Mit zehn Sekunden war
+    # das harte Toeten bei jeder Stoerung der Normalfall statt der Ausnahme -
+    # und ein kill -9 mitten in der Warteschlange laesst einen Befehl spurlos
+    # verschwinden: die Datei ist schon geloescht, die Antwort noch nicht
+    # geschrieben. Der Ausloeser sieht dann OK=2 und wartet auf etwas, das
+    # nicht mehr kommt.
+    i=0
+    while [ "$i" -lt 70 ]; do
         laeuft || break
         sleep 1
+        i=$((i + 1))
     done
     if laeuft; then
         kill -9 "$P" 2>/dev/null
@@ -110,6 +123,13 @@ case "$1" in
         echo "gestoppt"
         exit 1
         ;;
+    wachzeichen)
+        # Ein einziges MQTT-Thema: laeuft der Dienst? Ohne virtuelle Umgebung
+        # gibt es nichts zu melden - und kein Fehler, denn der Cron laeuft auch
+        # in der Minute zwischen Entpacken und Einrichten.
+        [ -x "$PY" ] && "$PY" "$SKRIPT" --wachzeichen >/dev/null 2>&1
+        exit 0
+        ;;
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
@@ -119,7 +139,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Aufruf: $0 {start|stop|restart|status|waechter}"
+        echo "Aufruf: $0 {start|stop|restart|status|waechter|wachzeichen}"
         exit 2
         ;;
 esac

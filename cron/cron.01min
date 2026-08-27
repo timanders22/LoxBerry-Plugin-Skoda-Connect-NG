@@ -3,3 +3,10 @@
 # Startet den Dienst neu, wenn er laufen soll, aber nicht laeuft.
 # REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins ersetzt.
 "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+
+# Das vierte Lebenszeichen. Es gehoert HIERHER und nicht in den Dienst: ob der
+# Dauerlaeufer laeuft, MISST der Cron-Lauf - ein Dienst, der seinen eigenen Tod
+# melden soll, ist der falsche Zeuge, und ueber den UDP-Eingang des Gateways
+# gibt es keinen letzten Willen. Der Aufruf redet mit niemandem ausser dem
+# Gateway und tut gar nichts, wenn MQTT im Plugin ausgeschaltet ist.
+"REPLACELBPBINDIR/dienst.sh" wachzeichen >/dev/null 2>&1

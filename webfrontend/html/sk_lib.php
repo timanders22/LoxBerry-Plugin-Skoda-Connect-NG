@@ -134,14 +134,166 @@ function sk_vorgaben()
         'takt_wartung'   => 24,
         'mqtt_ein'       => 0,
         'mqtt_topic'     => 'skoda',
+        'mqtt_retain'    => 0,
         'steuerung_ein'  => 0,
         'temp_min'       => 16,
         'temp_max'       => 29,
         'verlauf_tage'   => 8,
         'sitzung_merken' => 1,
+        'abstand_abruf'  => 60,
+        'befehle_stunde' => 30,
+        'entprellung'    => 20,
+        'heim_breite'    => '',
+        'heim_laenge'    => '',
+        'heim_radius'    => 150,
+        'empf_thema'     => '',
+        'empf_grenze'    => '',
+        'empf_kleiner'   => 1,
+        'abfahrt_ein'    => 0,
+        'abfahrt_thema'  => '',
+        'abfahrt_vorlauf' => 20,
+        'abfahrt_temp'   => 21,
         'aktionstoken'   => '',
         'wartezeit'      => 8,
     );
+}
+
+/**
+ * Die zulaessigen Werte je Einstellung - an EINER Stelle.
+ *
+ * Drei Verbraucher lesen daraus: das Formular beim Speichern, die
+ * Sicherungsdatei beim Zurueckspielen und die Lesefunktion sk_config_lage().
+ * Eine zweite Wahrheit ueber zulaessige Werte gibt es nicht; sonst laesst die
+ * eine Stelle durch, was die andere abweist, und niemand merkt es.
+ *
+ * WARUM ES DIESE FUNKTION SEIT 0.9.13 GIBT. Bis 0.9.12 prueste
+ * sk_sicherung_lesen() nur den SCHLUESSEL und uebernahm den Wert unbesehen.
+ * Gemessen mit einer von Hand gebauten Datei ging alles davon durch:
+ *
+ *     intervall      "abc"             (das Formular verlangt 60 bis 3600)
+ *     takt_stamm     -99
+ *     temp_min 99 / temp_max -5        (das Formular weist die Vertauschung ab)
+ *     verlauf_tage   [1,2]             ein Feld
+ *     sitzung_merken {"x":1}           ein Objekt
+ *     mqtt_topic     "a b;c/../../etc" (Leerzeichen zerlegt die Gateway-Zeile)
+ *
+ * Form: 'schluessel' => array(art, ...)
+ *   ganz:   array('ganz', min, max)
+ *   schalt: array('schalt')                 genau 0 oder 1
+ *   text:   array('text', muster, maxlaenge)
+ *   zahl:   array('zahl', min, max)         Kommazahl, '' erlaubt
+ */
+function sk_regeln()
+{
+    return array(
+        'intervall'      => array('ganz', 60, 3600),
+        'takt_stamm'     => array('ganz', 1, 240),
+        'takt_wartung'   => array('ganz', 1, 240),
+        'mqtt_ein'       => array('schalt'),
+        'mqtt_retain'    => array('schalt'),
+        'mqtt_topic'     => array('text', '#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', 64),
+        'steuerung_ein'  => array('schalt'),
+        'temp_min'       => array('ganz', 10, 30),
+        'temp_max'       => array('ganz', 10, 30),
+        'verlauf_tage'   => array('ganz', 1, 90),
+        'sitzung_merken' => array('schalt'),
+        'abstand_abruf'  => array('ganz', 0, 3600),
+        'befehle_stunde' => array('ganz', 1, 240),
+        'entprellung'    => array('ganz', 0, 600),
+        'heim_breite'    => array('zahl', -90, 90),
+        'heim_laenge'    => array('zahl', -180, 180),
+        'heim_radius'    => array('ganz', 10, 5000),
+        /* Themen duerfen + und # tragen - das sind die MQTT-Platzhalter. Was
+         * sie NICHT duerfen: Leerzeichen und Steuerzeichen. */
+        'empf_thema'     => array('text', '#^[A-Za-z0-9_/+\#-]{0,128}$#', 128),
+        'empf_grenze'    => array('zahl', -1000000, 1000000),
+        'empf_kleiner'   => array('schalt'),
+        'abfahrt_ein'    => array('schalt'),
+        'abfahrt_thema'  => array('text', '#^[A-Za-z0-9_/+\#-]{0,128}$#', 128),
+        'abfahrt_vorlauf' => array('ganz', 5, 180),
+        'abfahrt_temp'   => array('ganz', 10, 30),
+        /* Das Aktionstoken: bewusst WEIT gefasst. sk_token_erzeugen() bildet
+         * nur Kleinbuchstaben und Ziffern - aber ein Token kann von Hand
+         * gesetzt, aus einer aelteren Fassung uebernommen oder von einem
+         * Pruefstand vorgegeben sein. Ein zu enges Muster wiese es ab, die
+         * Vorgabe (leer) traete an seine Stelle, und sk_token() erzeugte ein
+         * neues - womit JEDE im Miniserver eingetragene Adresse ungueltig
+         * waere. Stumm, denn ein virtueller Eingang wertet die 403 nicht aus.
+         * Zugelassen ist, was ohne Kodierung in eine Adresse passt. */
+        'aktionstoken'   => array('text', '#^[A-Za-z0-9_.\-]{0,64}$#', 64),
+        'wartezeit'      => array('ganz', 0, 30),
+    );
+}
+
+/**
+ * Taugt der Wert ueberhaupt fuer eine Zeile dieser Konfiguration?
+ *
+ * Die erste von zwei Wachen. Sie fragt nicht, ob der Wert zur Einstellung
+ * passt, sondern ob er ueberhaupt ein Wert ist: kein Feld, kein Objekt, kein
+ * Steuerzeichen, nicht endlos lang.
+ */
+function sk_wert_taugt($v)
+{
+    if (is_array($v) || is_object($v) || is_null($v) || is_bool($v)) {
+        return false;
+    }
+    $s = (string) $v;
+    if (strlen($s) > 4096) {
+        return false;
+    }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESE Einstellung zulaessig?
+ *
+ * Rueckgabe: array(ok, bereinigter Wert). Bereinigt heisst ausschliesslich:
+ * die Zahl als int oder float statt als Zeichenkette. Es wird nichts gekappt
+ * und nichts zurechtgebogen. Beim Speichern ueber das Formular waere Kappen
+ * vertretbar, denn der Bediener sieht das Ergebnis sofort - bei einer Datei
+ * saehe niemand, dass aus 99999 eine 3600 wurde.
+ */
+function sk_wert_pruefen($schluessel, $wert)
+{
+    $regeln = sk_regeln();
+    if (!isset($regeln[$schluessel]) || !sk_wert_taugt($wert)) {
+        return array(false, null);
+    }
+    $r = $regeln[$schluessel];
+    $s = trim((string) $wert);
+    switch ($r[0]) {
+        case 'ganz':
+            if (!preg_match('/^-?[0-9]+$/', $s)) {
+                return array(false, null);
+            }
+            $n = (int) $s;
+            return ($n >= $r[1] && $n <= $r[2]) ? array(true, $n) : array(false, null);
+        case 'schalt':
+            /* Genau 0 oder 1, und das ist keine Kosmetik. Die Zeichenkette "0"
+             * ist in PHP leer und in Python wahr:
+             *   PHP    empty("0")         -> true    Oberflaeche: "gesperrt"
+             *   Python not cfg.get(...)   -> False   Dienst: fuehrt aus
+             * Eine Sicherungsdatei mit "steuerung_ein": "0" - ueber das
+             * Formular nicht erzeugbar - liess die Oberflaeche "Schreibende
+             * Befehle gesperrt" anzeigen, waehrend ein Knopf im Reiter Test
+             * das Auto klimatisierte. Gemessen am 27.08.2026. */
+            return ($s === '0' || $s === '1') ? array(true, (int) $s) : array(false, null);
+        case 'text':
+            if (strlen($s) > $r[2]) {
+                return array(false, null);
+            }
+            return preg_match($r[1], $s) ? array(true, $s) : array(false, null);
+        case 'zahl':
+            if ($s === '') {
+                return array(true, '');
+            }
+            if (!preg_match('/^-?[0-9]+([.,][0-9]+)?$/', $s)) {
+                return array(false, null);
+            }
+            $f = (float) str_replace(',', '.', $s);
+            return ($f >= $r[1] && $f <= $r[2]) ? array(true, $f) : array(false, null);
+    }
+    return array(false, null);
 }
 
 function sk_json_lesen($pfad)
@@ -155,6 +307,35 @@ function sk_json_lesen($pfad)
 
 function sk_config()
 {
+    $lage = sk_config_lage();
+    return $lage['cfg'];
+}
+
+/**
+ * Wie sk_config(), gibt aber den ganzen Befund zurueck.
+ *
+ *   array('cfg' => ..., 'fehlend' => array(schluessel),
+ *         'fremd' => array(schluessel), 'abgewiesen' => array(schluessel))
+ *
+ * 'fehlend'    steht in den Vorgaben, nicht in der Datei  -> kommt aus der Vorgabe
+ * 'fremd'      steht in der Datei, nicht in den Vorgaben  -> wirkt NICHT
+ * 'abgewiesen' steht in der Datei, ist aber unzulaessig   -> Vorgabe tritt ein
+ *
+ * Der Reiter Test nennt alle drei. Ein fremder Schluessel wirkt nicht, und
+ * genau das ueberrascht: man hat etwas eingestellt, es steht in der Datei, und
+ * es tut nichts.
+ */
+function sk_config_lage()
+{
+    /* Der Zwischenspeicher liegt in einem Global, nicht in einer statischen
+     * Variablen: er muss nach jedem Schreiben im selben Seitenaufbau
+     * verworfen werden koennen, und eine Statik laesst sich von aussen nicht
+     * zuruecksetzen. Bis 0.9.12 gab es ihn gar nicht - dafuer stand der
+     * Handler fuer das Zurueckspielen HINTER dem Laden der Anzeigewerte, was
+     * auf dasselbe hinauslief. */
+    if (isset($GLOBALS['sk_cfg_speicher']) && is_array($GLOBALS['sk_cfg_speicher'])) {
+        return $GLOBALS['sk_cfg_speicher'];
+    }
     $p = sk_paths();
     // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
@@ -162,8 +343,48 @@ function sk_config()
         @mkdir($p['configdir'], 0775, true);
         @copy($p['sicherung'], $p['config']);
     }
-    $cfg = sk_json_lesen($p['config']);
-    return array_merge(sk_vorgaben(), $cfg);
+    $datei = sk_json_lesen($p['config']);
+    $vorgaben = sk_vorgaben();
+    $cfg = $vorgaben;
+    $fremd = array();
+    $abgewiesen = array();
+    foreach ($datei as $k => $w) {
+        if (!array_key_exists($k, $vorgaben)) {
+            $fremd[] = (string) $k;
+            continue;
+        }
+        list($ok, $rein) = sk_wert_pruefen($k, $w);
+        if ($ok) {
+            $cfg[$k] = $rein;
+        } else {
+            /* Die Vorgabe steht schon drin. Gemeldet wird trotzdem: eine
+             * Datei kann von Hand geschrieben, aus einer Sicherung
+             * zurueckgespielt oder aus einer aelteren Fassung uebernommen
+             * sein - geprueft wird an beiden Enden. */
+            $abgewiesen[] = (string) $k;
+        }
+    }
+    $GLOBALS['sk_cfg_speicher'] = array(
+        'cfg'        => $cfg,
+        'fehlend'    => array_values(array_diff(array_keys($vorgaben), array_keys($datei))),
+        'fremd'      => $fremd,
+        'abgewiesen' => $abgewiesen,
+    );
+    return $GLOBALS['sk_cfg_speicher'];
+}
+
+/**
+ * Den Zwischenspeicher von sk_config_lage() verwerfen.
+ *
+ * Noetig nach JEDEM Schreiben im selben Seitenaufbau. Gemessen am 27.08.2026
+ * an 0.9.12: die Konfigurationsdatei trug nach dem Zurueckspielen die neuen
+ * Werte, die Seite zeigte aber das alte Aktionstoken und jedes Feld auf altem
+ * Stand - und wer daraufhin auf Speichern drueckte, schrieb sieben von zwoelf
+ * Werten wieder zurueck.
+ */
+function sk_config_zwischenspeicher_leeren()
+{
+    unset($GLOBALS['sk_cfg_speicher']);
 }
 
 function sk_config_speichern($cfg)
@@ -179,7 +400,52 @@ function sk_config_speichern($cfg)
         return false;
     }
     @copy($p['config'], $p['sicherung']);
+    sk_config_zwischenspeicher_leeren();
     return true;
+}
+
+/** Die Fassung aus der plugin.cfg, oder ''. */
+function sk_fassung()
+{
+    static $f = null;
+    if ($f !== null) {
+        return $f;
+    }
+    $f = '';
+    $p = sk_paths();
+    foreach (array(dirname(dirname(dirname(__FILE__))) . '/plugin.cfg',
+                   $p['home'] . '/config/plugins/' . $p['plugin'] . '/plugin.cfg') as $k) {
+        if ($k === '' || !is_file($k)) {
+            continue;
+        }
+        /* Zeilenweise, nicht parse_ini_file: die plugin.cfg traegt Kommentare
+         * mit Sonderzeichen und unquotierte Werte. */
+        foreach (file($k, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $z) {
+            if (preg_match('/^\s*VERSION\s*=\s*([0-9][0-9.]*)/', $z, $m)) {
+                $f = $m[1];
+                return $f;
+            }
+        }
+    }
+    return $f;
+}
+
+/**
+ * Eine Zeile in die Logdatei des Plugins - fuer Handgriffe der Oberflaeche.
+ *
+ * WARUM. Bis 0.9.12 schrieb die Oberflaeche NIE ins Protokoll: kein Eintrag,
+ * wenn das Aktionstoken neu gewuerfelt, eine Sicherung eingespielt, der Zugang
+ * geloescht oder ein Schaltbefehl aus dem Reiter Test abgesetzt wurde. Nach
+ * einem fremden Formular (siehe sk_formtoken) oder einem versehentlichen
+ * Zurueckspielen gab es damit keine Spur.
+ */
+function sk_log_zeile($text)
+{
+    $p = sk_paths();
+    @mkdir($p['logdir'], 0775, true);
+    $z = '[' . date('Y-m-d H:i:s') . '] OBERFLAECHE '
+       . str_replace(array("\r", "\n"), ' ', (string) $text) . "\n";
+    @file_put_contents($p['log'], $z, FILE_APPEND);
 }
 
 /**
@@ -291,6 +557,70 @@ function sk_token()
         sk_config_speichern($cfg);
     }
     return (string) $cfg['aktionstoken'];
+}
+
+/* ==================================================================
+ * Der Wachposten gegen fremde Formulare
+ *
+ * WARUM ES IHN BRAUCHT. htmlauth/ schuetzt gegen den unangemeldeten Aufruf -
+ * NICHT dagegen, dass der Browser eines ANGEMELDETEN Bedieners ein Formular
+ * abschickt, das auf einer fremden Seite steht. Die HTTP-Basic-Anmeldung
+ * schickt er dabei automatisch mit; SameSite greift nicht.
+ *
+ * Bis 0.9.12 gab es hier nichts, und der Kopfkommentar der index.php
+ * behauptete trotzdem einen Wachposten. Gemessen am 27.08.2026 an 0.9.12:
+ *
+ *   POST {token_neu:1}   -> Aktionstoken neu gewuerfelt
+ *   POST {log_leeren:1}  -> Protokoll ueberschrieben
+ *
+ * Danach bekommen saemtliche virtuellen Eingaenge im Miniserver HTTP 403 -
+ * die Ueberwachung ist tot, ohne jede Rueckmeldung -, und die Spur ist gleich
+ * mit weg. Der Angreifer sieht die Antwort nicht; er braucht sie auch nicht.
+ * Derselbe Befund stand 2026 in Docker NG ueber vier Fassungen.
+ *
+ * DAS MERKMAL wird ABGELEITET, nicht gespeichert. Es gibt damit keinen
+ * zweiten Wert, der verlorengehen oder auseinanderlaufen kann, und es wechselt
+ * automatisch mit, wenn das Aktionstoken neu gewuerfelt wird.
+ * ================================================================== */
+
+function sk_formtoken()
+{
+    $cfg = sk_config();
+    $t = trim((string) $cfg['aktionstoken']);
+    // Fail closed: ohne Aktionstoken gibt es kein Merkmal. Ein aus dem
+    // Leerstring abgeleiteter Wert waere fuer jeden ausrechenbar und damit
+    // kein Schutz, sondern die Behauptung eines Schutzes.
+    if ($t === '') {
+        return '';
+    }
+    return hash_hmac('sha256', 'formular-v1', $t);
+}
+
+/** Das versteckte Feld fuer jedes Formular. */
+function sk_formfeld()
+{
+    return '<input data-role="none" type="hidden" name="fmt" value="'
+         . sk_e(sk_formtoken()) . '">';
+}
+
+/**
+ * Traegt dieser POST das richtige Merkmal?
+ *
+ * Der LEERE Fall wird eigens abgefangen: hash_equals('', '') ergibt in PHP
+ * TRUE. Wer das Feld nicht vor dem Vergleich auf leer prueft, hat einen
+ * Wachposten gebaut, den jeder passiert, der das Feld einfach leer laesst.
+ */
+function sk_formtoken_ok()
+{
+    $soll = sk_formtoken();
+    if ($soll === '') {
+        return false;
+    }
+    $ist = isset($_POST['fmt']) && is_string($_POST['fmt']) ? (string) $_POST['fmt'] : '';
+    if ($ist === '') {
+        return false;
+    }
+    return hash_equals($soll, $ist);
 }
 
 /* ---------------- Zwischenspeicher lesen ---------------- */
@@ -481,6 +811,51 @@ function sk_selbsttest()
     return implode("\n", $ausgabe);
 }
 
+/**
+ * Die schaltenden Aktionen - an EINER Stelle.
+ *
+ * Bis 0.9.12 standen sie an dreien, und die drei waren auseinander:
+ *
+ *   Endpunkt kannte                12
+ *   Reiter Loxone nannte als Adresse  7
+ *   Reiter Test bot als Knopf         9
+ *
+ * Undokumentiert waren damit zieltemperatur, scheibe_aus, lueftung_start,
+ * lueftung_stop und wecken - fuenf Funktionen, die das Plugin beherrscht und
+ * die niemand findet.
+ *
+ * Je Aktion: Knopfbeschriftung (Reiter Test), Erklaerung (Reiter Loxone und
+ * Ausgangsvorlage), der Name des Zusatzwertes ('' = keiner) und ob der Reiter
+ * Test einen Knopf dafuer zeigt.
+ *
+ * Die Knopfbeschriftungen sind die vorhandenen TEST.K_*: sie stehen seit
+ * jeher in beiden Sprachdateien und sind dort schon abgestimmt. Eigene
+ * Schluessel dafuer zu erfinden haette acht bestehende verwaisen lassen.
+ */
+function sk_befehle()
+{
+    return array(
+        'klima_start'    => array('TEST.K_KLIMA_EIN',   'SK_BEF.KLIMA_EIN',   'temp',    1),
+        'klima_stop'     => array('TEST.K_KLIMA_AUS',   'SK_BEF.KLIMA_AUS',   '',        1),
+        'zieltemperatur' => array('TEST.K_ZIELTEMP',    'SK_BEF.ZIELTEMP',    'temp',    1),
+        'laden_start'    => array('TEST.K_LADEN_EIN',   'SK_BEF.LADEN_EIN',   '',        1),
+        'laden_stop'     => array('TEST.K_LADEN_AUS',   'SK_BEF.LADEN_AUS',   '',        1),
+        'ladegrenze'     => array('TEST.K_LADEGRENZE',  'SK_BEF.LADEGRENZE',  'prozent', 1),
+        'scheibe_ein'    => array('TEST.K_SCHEIBE_EIN', 'SK_BEF.SCHEIBE_EIN', '',        1),
+        'scheibe_aus'    => array('TEST.K_SCHEIBE_AUS', 'SK_BEF.SCHEIBE_AUS', '',        1),
+        'lueftung_start' => array('TEST.K_LUEFT_EIN',   'SK_BEF.LUEFT_EIN',   '',        1),
+        'lueftung_stop'  => array('TEST.K_LUEFT_AUS',   'SK_BEF.LUEFT_AUS',   '',        1),
+        'wecken'         => array('TEST.K_WECKEN',      'SK_BEF.WECKEN',      '',        1),
+        'abruf'          => array('TEST.K_ABRUF',       'SK_BEF.ABRUF',       '',        1),
+    );
+}
+
+/** Die lesenden Aktionen des Endpunkts. */
+function sk_lesende()
+{
+    return array('status', 'laden', 'wartung', 'position', 'fahrzeuge', 'ladungen', 'roh');
+}
+
 /* ---------------- Befehlswarteschlange ----------------
  *
  * Sowohl der Miniserver-Endpunkt als auch der Reiter Test setzen Befehle ueber
@@ -500,11 +875,43 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
     }
     $wartezeit = max(0, min(30, (int) $wartezeit));
 
+    /* Die PID-Pruefung steht HIER und nicht beim Aufrufer.
+     *
+     * Bis 0.9.12 stand sie nur im Miniserver-Endpunkt; sk_test_aktion() im
+     * Reiter Test reihte ohne jede Pruefung ein - obwohl die Pruefzeile
+     * darueber im selben Bild zeigte, dass der Dienst nicht laeuft. Die
+     * Oberflaeche wartete dann acht Sekunden, meldete "Eingereiht, aber der
+     * Dienst hat nicht geantwortet", und die Datei blieb bis zum naechsten
+     * Start liegen. Ein klima_start vom Vortag heizte das Auto in der Nacht.
+     *
+     * Der Kommentar ueber dieser Funktion verspricht seit jeher, dass beide
+     * Wege dieselbe Logik benutzen, damit sie nicht auseinanderlaufen -
+     * eingeloest ist das erst jetzt. */
+    if (sk_dienst_pid() === 0) {
+        return array(0, sk_t('ALLG.DIENST_LAEUFT_NICHT'));
+    }
+
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
     }
-    $kennung = bin2hex(random_bytes(8));
+    /* Der Kennung geht die ZEIT voran.
+     *
+     * Der Dienst arbeitet die Warteschlange mit sorted() ueber die Dateinamen
+     * ab. Bis 0.9.12 hiess die Datei nur nach bin2hex(random_bytes(8)) -
+     * reiner Zufall. Zwei Befehle aus demselben Zyklus liefen mit halber
+     * Wahrscheinlichkeit verkehrt herum: Loxone sendet laden_start, zwei
+     * Sekunden spaeter laden_stop, ausgefuehrt wurde stop und dann start -
+     * das Auto lud. %014.3f haelt die Stellenzahl bis zum Jahr 2286 gleich,
+     * damit die Namensfolge die Zeitfolge bleibt. */
+    $kennung = sprintf('%014.3f', microtime(true)) . '-' . bin2hex(random_bytes(8));
+    /* Ein Befehl verfaellt. Bis 0.9.12 gab es weder Altersgrenze noch
+     * Aufraeumen; eine Befehlsdatei konnte Tage liegen und wurde beim
+     * naechsten Start des Dienstes ausgefuehrt. Die Frist ist die Wartezeit
+     * plus fuenf Minuten - lange genug fuer einen laufenden Abruf, kurz genug,
+     * dass niemand ueberrascht wird. */
+    $befehl['ts'] = time();
+    $befehl['gueltig_bis'] = time() + $wartezeit + 300;
     $datei = $ordner . '/' . $kennung . '.json';
     $tmp = $datei . '.tmp';
     if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
@@ -515,6 +922,10 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
             $a = sk_json_lesen($antwort);
+            /* Die Antwort ist verbraucht. Sie wegzuraeumen ist Sache dessen,
+             * der sie gelesen hat - der Dienst raeumt nur nach Alter auf, und
+             * das erst beim naechsten Befehl. */
+            @unlink($antwort);
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
                          (string) (isset($a['meldung']) ? $a['meldung'] : ''));
         }
@@ -525,23 +936,109 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
 
 /* ---------------- Verlauf ---------------- */
 
-/** Messpunkte eines Tages: Array von array(ts, fuellstand, reichweite). */
+/**
+ * Messpunkte eines Tages.
+ *
+ * Rueckgabe: array(punkte, art). 'punkte' ist ein Array von
+ * array(ts, fuellstand, reichweite), 'art' ist 'soc', 'tank' oder ''.
+ *
+ * WARUM DIE ART DAZUGEHOERT. Bis 0.9.12 schrieb der Dienst den Ladezustand
+ * und ERSATZWEISE den Tankfuellstand in dieselbe Spalte. Bei einem Hybrid,
+ * dessen Ladeabruf gelegentlich ausfaellt, standen damit zwei verschiedene
+ * Groessen in einer Spalte, und das Diagramm zeichnete sie als eine Linie.
+ * Seit 0.9.13 hat die Datei vier Spalten (ts;soc;reichweite;tank); hier wird
+ * EINE Reihe fuer den ganzen Tag gewaehlt und mitgesagt, welche.
+ *
+ * Aeltere Dateien mit drei Spalten bleiben lesbar: dort gilt Spalte 2 als
+ * Ladezustand, so wie sie bisher gedeutet wurde.
+ */
 function sk_verlauf_lesen($nummer, $tag = '')
 {
     if ($tag === '') {
         $tag = date('Ymd');
     }
     $f = sk_paths()['datadir'] . '/verlauf/fahrzeug' . (int) $nummer . '_' . $tag . '.csv';
-    $out = array();
+    $soc = array();
+    $tank = array();
     if (is_file($f)) {
         foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $zeile) {
             $c = explode(';', $zeile);
-            if (count($c) >= 2) {
-                $out[] = array((int) $c[0], (float) $c[1], isset($c[2]) && $c[2] !== '' ? (float) $c[2] : 0);
+            if (count($c) < 2) {
+                continue;
+            }
+            $ts = (int) $c[0];
+            $rw = isset($c[2]) && $c[2] !== '' ? (float) $c[2] : 0;
+            if ($c[1] !== '') {
+                $soc[] = array($ts, (float) $c[1], $rw);
+            }
+            if (isset($c[3]) && $c[3] !== '') {
+                $tank[] = array($ts, (float) $c[3], $rw);
             }
         }
     }
-    return $out;
+    if ($soc) {
+        return array($soc, 'soc');
+    }
+    if ($tank) {
+        return array($tank, 'tank');
+    }
+    return array(array(), '');
+}
+
+/**
+ * Das Ladeprotokoll, neueste Ladung zuerst.
+ *
+ * $nummer = 0 heisst: alle Fahrzeuge. Geschrieben wird die Datei vom Dienst
+ * (ladung_buchen in bin/skoda.py), je abgeschlossenem Ladevorgang eine Zeile.
+ */
+function sk_ladungen_lesen($nummer = 0, $hoechstens = 200)
+{
+    $f = sk_paths()['datadir'] . '/ladungen.csv';
+    if (!is_file($f)) {
+        return array();
+    }
+    $aus = array();
+    $erste = true;
+    foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $z) {
+        if ($erste) {           // Kopfzeile
+            $erste = false;
+            continue;
+        }
+        $c = explode(';', $z);
+        if (count($c) < 9) {
+            continue;
+        }
+        if ((int) $nummer > 0 && (int) $c[2] !== (int) $nummer) {
+            continue;
+        }
+        $aus[] = array(
+            'beginn' => (int) $c[0], 'ende' => (int) $c[1], 'fahrzeug' => (int) $c[2],
+            'vin' => $c[3], 'soc_von' => $c[4], 'soc_bis' => $c[5],
+            'dauer_min' => (int) $c[6], 'kw_max' => $c[7], 'ort' => $c[8],
+        );
+    }
+    $aus = array_reverse($aus);
+    return array_slice($aus, 0, max(1, (int) $hoechstens));
+}
+
+/**
+ * Welche Tage hat dieses Fahrzeug im Verlauf, neueste zuerst?
+ *
+ * Bis 0.9.12 las die Oberflaeche ausschliesslich date('Ymd') - die
+ * Tagesdateien der Vortage lagen da und wurden nie angesehen. Der Aufraeumlauf
+ * im Dienst behaelt sie so lange, wie 'verlauf_tage' sagt.
+ */
+function sk_verlauf_tage($nummer, $hoechstens = 14)
+{
+    $ordner = sk_paths()['datadir'] . '/verlauf';
+    $tage = array();
+    foreach (glob($ordner . '/fahrzeug' . (int) $nummer . '_*.csv') ?: array() as $f) {
+        if (preg_match('/_([0-9]{8})\.csv$/', $f, $m)) {
+            $tage[] = $m[1];
+        }
+    }
+    rsort($tage);
+    return array_slice($tage, 0, max(1, (int) $hoechstens));
 }
 
 /* ---------------- MQTT-Gateway ----------------
@@ -624,6 +1121,30 @@ function sk_abo_text()
 function sk_mqtt_themen()
 {
     return array(
+        /* Das Lebenszeichen. Es geht bei JEDEM Durchgang hinaus, auch bei
+         * einer Stoerung - und deshalb steht es oben.
+         *
+         * Ein virtueller Eingang behaelt seinen letzten Wert, mit Retain sogar
+         * ueber jeden Neustart des Miniservers hinweg. Bis 0.9.12 gab es ueber
+         * MQTT weder Zeitstempel noch Alter: ein reiner MQTT-Anwender konnte
+         * einen Ausfall grundsaetzlich nicht erkennen, waehrend der HTTP-Weg
+         * dafuer ALTER fuehrt. Ueber MQTT gibt es kein Alter, nur einen
+         * Zeitstempel - der Miniserver rechnet selbst:
+         *     Alter = (Loxone-Zeit + 1230768000) - ts
+         *
+         * status/dienst kommt nicht vom Dienst, sondern vom Minutencron
+         * (skoda.py --wachzeichen): ein Dienst, der seinen eigenen Tod melden
+         * soll, ist der falsche Zeuge. */
+        'status/ok'                   => 'SK_MQTT.S_OK',
+        'status/ts'                   => 'SK_MQTT.S_TS',
+        'status/zaehler'              => 'SK_MQTT.S_ZAEHLER',
+        'status/dienst'               => 'SK_MQTT.S_DIENST',
+        'status/fehler_folge'         => 'SK_MQTT.S_FOLGE',
+        'status/fehlertext'           => 'SK_MQTT.S_TEXT',
+        'empfehlung'                  => 'SK_MQTT.EMPFEHLUNG',
+        /* Die beiden alten Themen bleiben: in bestehenden Anlagen liegen
+         * virtuelle Eingaenge darauf. Sie wegzunehmen waere eine stille
+         * Aenderung an einer fremden Loxone-Konfiguration. */
         'ok'                          => 'SK_MQTT.OK',
         'fahrzeuge'                   => 'SK_MQTT.FAHRZEUGE',
         'fahrzeugN/soc'               => 'SK_MQTT.SOC',
@@ -656,6 +1177,20 @@ function sk_mqtt_themen()
         'fahrzeugN/erreichbar'        => 'SK_MQTT.ERREICHBAR',
         'fahrzeugN/in_bewegung'       => 'SK_MQTT.BEWEGUNG',
         'fahrzeugN/zuendung_an'       => 'SK_MQTT.ZUENDUNG',
+        /* Ergaenzt mit 0.9.13. Die ersten beiden gibt der Lade-Endpunkt als
+         * TEMPO und REICHWBAT aus; ueber MQTT waren sie nicht zu bekommen. */
+        'fahrzeugN/ladetempo_kmh'     => 'SK_MQTT.LADETEMPO',
+        'fahrzeugN/reichweite_batterie_km' => 'SK_MQTT.REICHWBAT',
+        'fahrzeugN/zuhause'           => 'SK_MQTT.ZUHAUSE',
+        'fahrzeugN/heim_entfernung_m' => 'SK_MQTT.HEIMENTF',
+        /* Texte. Sie werden nur gesendet, wenn sie etwas enthalten: eine
+         * leere Nutzlast loescht mit Retain ein behaltenes Thema. */
+        'fahrzeugN/modell'            => 'SK_MQTT.MODELL',
+        'fahrzeugN/kennzeichen'       => 'SK_MQTT.KENNZEICHEN',
+        'fahrzeugN/ladezustand'       => 'SK_MQTT.LADEZUSTAND',
+        'fahrzeugN/klima_zustand'     => 'SK_MQTT.KLIMAZUSTAND',
+        'fahrzeugN/adresse'           => 'SK_MQTT.ADRESSE',
+        'fahrzeugN/warnleuchten_text' => 'SK_MQTT.WARNTEXT',
     );
 }
 
@@ -730,8 +1265,31 @@ function sk_status_felder()
         'ERREICH'   => array('',    'SK_FELD.ERREICH'),
         'BEWEG'     => array('',    'SK_FELD.BEWEG'),
         'ZUEND'     => array('',    'SK_FELD.ZUEND'),
+        /* Angehaengt mit 0.9.13. Neue Felder duerfen ans ENDE: jeder Suchtext
+         * traegt seinen eigenen Feldnamen (\i;NAME=\i\v), die Reihenfolge
+         * spielt fuer bestehende virtuelle Eingaenge also keine Rolle. Wer
+         * mitten in der Liste einfuegt oder umbenennt, zwingt dagegen jeden
+         * zum Neuimport - siehe den Kilometerstand in 0.9.11. */
+        'ZUHAUSE'   => array('',    'SK_FELD.ZUHAUSE'),
+        'HEIMENTF'  => array('m',   'SK_FELD.HEIMENTF'),
+        'EMPFEHLUNG'=> array('',    'SK_FELD.EMPFEHLUNG'),
+        'AUSFAELLE' => array('',    'SK_FELD.AUSFAELLE'),
+        'ZAEHLER'   => array('',    'SK_FELD.ZAEHLER'),
         'ALTER'     => array('s',   'SK_FELD.ALTER'),
         'OK'        => array('',    'SK_FELD.OK'),
+    );
+}
+
+/** Die Werte des Positions-Endpunkts. */
+function sk_position_felder()
+{
+    return array(
+        'BREITE'    => array('&deg;', 'SK_PFELD.BREITE'),
+        'LAENGE'    => array('&deg;', 'SK_PFELD.LAENGE'),
+        'ZUHAUSE'   => array('',      'SK_PFELD.ZUHAUSE'),
+        'HEIMENTF'  => array('m',     'SK_PFELD.HEIMENTF'),
+        'ALTER'     => array('s',     'SK_PFELD.ALTER'),
+        'OK'        => array('',      'SK_PFELD.OK'),
     );
 }
 
@@ -747,6 +1305,7 @@ function sk_laden_felder()
         'LADEGR'    => array('%',   'SK_LFELD.LADEGR'),
         'KABEL'     => array('',    'SK_LFELD.KABEL'),
         'REICHWBAT' => array('km',  'SK_LFELD.REICHWBAT'),
+        'ALTER'     => array('s',   'SK_LFELD.ALTER'),
         'OK'        => array('',    'SK_LFELD.OK'),
     );
 }
@@ -761,6 +1320,7 @@ function sk_wartung_felder()
         'OELKM'     => array('km',  'SK_WFELD.OELKM'),
         'KM'        => array('km',  'SK_WFELD.KM'),
         'WARN'      => array('',    'SK_WFELD.WARN'),
+        'ALTER'     => array('s',   'SK_WFELD.ALTER'),
         'OK'        => array('',    'SK_WFELD.OK'),
     );
 }
@@ -784,36 +1344,162 @@ function sk_check($feld)
     return '\i;' . $feld . '=\i\v';
 }
 
-/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
-function sk_vorlage($nummer = 1)
+/**
+ * Der Rechnername fuer die Adressen - an einer Stelle.
+ */
+function sk_host()
 {
-    $p = sk_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+    return isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
+}
+
+/**
+ * Ein Virtueller AUSGANG samt Befehlen.
+ *
+ * Nachbau aus LoxBerry::LoxoneTemplateBuilder wie sk_xml_virtual_in_http();
+ * dasselbe CRLF, derselbe Tabulator, dieselbe Attributreihenfolge.
+ *
+ * Bis 0.9.12 gab es nur eine Eingangsvorlage. Die zwoelf Befehle musste jeder
+ * von Hand abtippen - und fuenf davon nannte die Oberflaeche gar nicht.
+ */
+function sk_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut ';
+    $o .= 'Title="' . sk_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . sk_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . sk_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CmdInit="" ';
+    $o .= 'CloseAfterSend="true" ';
+    $o .= 'CmdErrorValue=""';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . sk_x($c['title']) . '" ';
+        $o .= 'Comment="' . sk_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOn="' . sk_x($c['cmd']) . '" ';
+        $o .= 'CmdOnHTTP="" ';
+        $o .= 'Analog="' . (empty($c['analog']) ? 'false' : 'true') . '" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return $o;
+}
+
+/** Welche Feldliste gehoert zu welcher Vorlagenart? */
+function sk_felder_zu_art($art)
+{
+    switch ($art) {
+        case 'laden':    return sk_laden_felder();
+        case 'wartung':  return sk_wartung_felder();
+        case 'position': return sk_position_felder();
+        default:         return sk_status_felder();
+    }
+}
+
+/**
+ * Die anbietbaren Vorlagen. Bis 0.9.12 gab es genau eine - fuer 'status' -,
+ * obwohl es fuer laden, wartung und position ebenso Felder und Suchtexte
+ * gibt. Und der Knopf stand fest auf Fahrzeug 1: wer zwei Autos hat, sah die
+ * Adresse fuer das zweite in der Tabelle und bekam die Datei dafuer nicht.
+ */
+function sk_vorlagenarten()
+{
+    return array(
+        'status'   => 'LOX.ART_STATUS',
+        'laden'    => 'LOX.ART_LADEN',
+        'wartung'  => 'LOX.ART_WARTUNG',
+        'position' => 'LOX.ART_POSITION',
+        'aus'      => 'LOX.ART_AUS',
+    );
+}
+
+/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
+function sk_vorlage($nummer = 1, $art = 'status')
+{
+    $nummer = max(1, min(99, (int) $nummer));
+    if (!array_key_exists($art, sk_vorlagenarten())) {
+        $art = 'status';
+    }
+    if ($art === 'aus') {
+        return sk_vorlage_vo($nummer);
+    }
+    $p = sk_paths();
+    $host = sk_host();
     $token = sk_token();
     $cmds = array();
-    foreach (sk_status_felder() as $feld => $info) {
+    foreach (sk_felder_zu_art($art) as $feld => $info) {
         // Der Text laeuft gleich durch sk_x() und wuerde dort ein zweites Mal
         // maskiert. Deshalb erst Auszeichnung entfernen und Entitaeten
         // aufloesen - sonst stuende in Loxone Config wortwoertlich
         // 'l&auml;dt' statt 'laedt'.
         $bedeutung = trim(strip_tags(html_entity_decode(sk_t($info[1]), ENT_QUOTES, 'UTF-8')));
         $einheit = trim(strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
+        /* Der Titel ist der NAME des virtuellen Eingangs in Loxone. Fuer die
+         * Statusvorlage bleibt er woertlich, wie er seit 0.9.0 lautet -
+         * SKODA_1_SOC und nicht SKODA_1_STATUS_SOC. Ihn zu erweitern haette
+         * jede bestehende Anlage zum Neuimport und zum Umbenennen in jedem
+         * Baustein gezwungen, und zwar fuer nichts.
+         *
+         * Die drei NEUEN Arten tragen ihn dagegen mit, und sie muessen es:
+         * SOC steht sowohl im Status- als auch im Lade-Endpunkt, ALTER und OK
+         * in allen vieren. Ohne die Art im Namen kollidierten sie. */
         $cmds[] = array(
-            'title'   => 'SKODA_' . $nummer . '_' . $feld,
+            'title'   => 'SKODA_' . $nummer . ($art === 'status' ? '' : '_' . strtoupper($art))
+                         . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => sk_check($feld),
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
-             . '/index.php?token=' . $token . '&aktion=status&fahrzeug=' . (int) $nummer;
+             . '/index.php?token=' . $token . '&aktion=' . $art . '&fahrzeug=' . $nummer;
     return array(
-        'skoda_fahrzeug' . (int) $nummer . '.xml',
+        'skoda_fahrzeug' . $nummer . ($art === 'status' ? '' : '_' . $art) . '.xml',
         sk_xml_virtual_in_http(array(
-            'title'   => 'Skoda ' . (int) $nummer,
+            'title'   => 'Skoda ' . $nummer . ($art === 'status' ? '' : ' ' . $art),
             'address' => $adresse,
             'polling' => '300',
+            'comment' => 'Erzeugt vom LoxBerry-Plugin Skoda Connect (' . date('d.m.Y') . ')',
+        ), $cmds),
+    );
+}
+
+/** Der Virtuelle Ausgang mit allen schaltenden Befehlen. */
+function sk_vorlage_vo($nummer = 1)
+{
+    $nummer = max(1, min(99, (int) $nummer));
+    $p = sk_paths();
+    $token = sk_token();
+    $cmds = array();
+    foreach (sk_befehle() as $aktion => $b) {
+        $pfad = '/plugins/' . $p['plugin'] . '/index.php?token=' . $token
+              . '&aktion=' . $aktion;
+        if ($aktion !== 'abruf') {
+            $pfad .= '&fahrzeug=' . $nummer;
+        }
+        /* Der Zusatzwert wird als <v> eingesetzt - so traegt Loxone den Wert
+         * des Ausgangs ein. Er steht ZULETZT, damit die Adresse auch dann
+         * lesbar bleibt, wenn jemand sie von Hand nacharbeitet. */
+        if ($b[2] !== '') {
+            $pfad .= '&' . $b[2] . '=<v>';
+        }
+        $cmds[] = array(
+            'title'   => 'SKODA_' . $nummer . '_' . strtoupper($aktion),
+            'comment' => trim(strip_tags(html_entity_decode(sk_t($b[1]), ENT_QUOTES, 'UTF-8'))),
+            'cmd'     => $pfad,
+            'analog'  => $b[2] !== '' ? 1 : 0,
+        );
+    }
+    return array(
+        'skoda_fahrzeug' . $nummer . '_befehle.xml',
+        sk_xml_virtual_out(array(
+            'title'   => 'Skoda ' . $nummer . ' Befehle',
+            'address' => 'http://' . sk_host(),
             'comment' => 'Erzeugt vom LoxBerry-Plugin Skoda Connect (' . date('d.m.Y') . ')',
         ), $cmds),
     );
@@ -914,22 +1600,123 @@ function sk_sicherung_lesen($roh)
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(sk_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, array(sk_t('EINST.SICH_KEIN_JSON')), 0, null);
     }
     $neu = sk_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    $zugang = null;
+
     foreach ($daten as $k => $w) {
+        /* ---- 1. Der eigene Kopf ----
+         * Schluessel mit fuehrendem Unterstrich sind Beschriftung, keine
+         * Einstellung: _hinweis, _plugin, _fassung, _stand. Sie werden
+         * uebersprungen und NICHT als fremd beanstandet - sonst wiese das
+         * Plugin seine eigene Sicherungsdatei ab. */
+        if ((string) $k !== '' && $k[0] === '_') {
+            continue;
+        }
+
+        /* ---- 2. Die Zugangsdaten ----
+         * Sie stehen nur in der Datei, wenn beim Sichern der Haken gesetzt
+         * war. Sie gehoeren NICHT in die Konfiguration, sondern in ihre
+         * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und dem
+         * Aufrufer gesondert zurueckgegeben. */
+        if ((string) $k === 'zugang' && is_array($w)) {
+            $email = isset($w['email']) && !is_array($w['email']) ? trim((string) $w['email']) : '';
+            $pw = isset($w['passwort']) && !is_array($w['passwort']) ? (string) $w['passwort'] : '';
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.email');
+            } elseif (strlen($pw) > 256) {
+                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.passwort');
+            } else {
+                $zugang = array('email' => $email, 'passwort' => $pw);
+                $anzahl++;
+            }
+            continue;
+        }
+
+        /* ---- 3. Unbekannte Schluessel ----
+         * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
+         * anderen Fassung oder aus einem anderen Plugin. */
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
         }
-        $neu[$k] = $w;
+
+        /* ---- 4. Und jetzt der WERT ----
+         *
+         * DAS IST DIE HAELFTE, DIE BIS 0.9.12 GEFEHLT HAT. Geprueft wurde nur
+         * der Schluessel; der Wert wurde unbesehen uebernommen. Gemessen mit
+         * einer von Hand gebauten Datei gingen "abc" als Takt, -99 als
+         * Stammdatenzyklus, ein Feld im Verlaufsfeld, ein Objekt im
+         * Sitzungsfeld und ein Themenpraefix mit Leerzeichen glatt durch.
+         *
+         * ABGEWIESEN, NICHT GEKAPPT: beim Speichern ueber das Formular waere
+         * Kappen vertretbar, denn der Bediener sieht das Ergebnis sofort. Bei
+         * einer Datei saehe niemand, dass aus 99999 eine 3600 wurde. */
+        list($ok, $rein) = sk_wert_pruefen($k, $w);
+        if (!$ok) {
+            $mangel[] = sprintf(sk_t('EINST.SICH_WERT'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $rein;
         $anzahl++;
+    }
+
+    /* Die Grenzen, die kein einzelner Wert kennt. */
+    if (!$mangel && $neu['temp_min'] > $neu['temp_max']) {
+        $mangel[] = sk_t('EINST.FEHLER_TEMP_TAUSCH');
     }
     if ($anzahl === 0) {
         $mangel[] = sk_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
+}
+
+/**
+ * Die Sicherungsdatei bauen.
+ *
+ * Drei Dinge, die bis 0.9.12 fehlten:
+ *
+ * 1. EIN LESBARER KOPF MIT DATUM. Wer die Datei in einem Jahr findet, muss
+ *    erkennen koennen, was sie ist.
+ * 2. GESIEBT AUS DEN VORGABEN, nicht die gelesene Konfiguration ausgegeben.
+ *    Sonst kann ein Schluessel in die Datei geraten, den die Leseseite
+ *    danach ablehnt - das Plugin verweigerte seine eigene Sicherung. Heute
+ *    gibt es keinen solchen Rest; die Bauart liess ihn nur zu.
+ * 3. DIE ZUGANGSDATEN, wenn der Bediener es will. Der Warntext am Knopf sagte
+ *    bis 0.9.12 "Die Datei enthaelt Ihre Zugangsdaten" - und das stimmte
+ *    nicht: sk_config() kennt weder E-Mail noch Passwort, die wohnen in
+ *    zugang.json. Damit war der erklaerte Zweck, der Umzug auf einen zweiten
+ *    LoxBerry, nicht erfuellbar: dort stuenden alle Felder richtig, und das
+ *    Plugin kaeme trotzdem nicht an die Anlage. Jetzt entscheidet der
+ *    Bediener, und der Dateiname sagt es mit.
+ */
+function sk_sicherung_schreiben($mit_zugang = false)
+{
+    $cfg = sk_config();
+    $aus = array(
+        '_hinweis' => 'Einstellungen des LoxBerry-Plugins Skoda Connect. Enthaelt das '
+                    . 'Aktionstoken dieser Anlage'
+                    . ($mit_zugang ? ' UND die Zugangsdaten des MySkoda-Kontos' : '')
+                    . ' - wie ein Passwort behandeln.',
+        '_plugin'  => 'skodaconnect',
+        '_fassung' => sk_fassung(),
+        '_stand'   => date('Y-m-d H:i:s'),
+    );
+    foreach (array_keys(sk_vorgaben()) as $k) {
+        $aus[$k] = isset($cfg[$k]) ? $cfg[$k] : '';
+    }
+    if ($mit_zugang) {
+        $z = sk_json_lesen(sk_paths()['zugang']);
+        $aus['zugang'] = array(
+            'email'    => isset($z['email']) ? (string) $z['email'] : '',
+            'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
+        );
+    }
+    $js = json_encode($aus, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $js === false ? '' : $js;
 }

@@ -141,6 +141,29 @@ fi
 IST=$("$VENV/bin/python3" -c 'import importlib.metadata as m; print(m.version("myskoda"))' 2>/dev/null || echo "unbekannt")
 echo "<OK> myskoda geladen, Fassung $IST"
 
+# ---------------------------------------------------------------------------
+# paho-mqtt - FREIWILLIG, und ein Fehlschlag ist KEIN Fehlschlag
+#
+# Gebraucht nur fuer das Mithoeren fremder MQTT-Themen (Ladeempfehlung,
+# Abfahrtszeit), beides ab Werk aus. Alles uebrige - Abruf, Endpunkt,
+# Veroeffentlichen ueber das Gateway - arbeitet ohne die Bibliothek
+# unveraendert.
+#
+# Deshalb bricht ein Fehlschlag die Installation NICHT ab. Er wird gesagt,
+# und der Selbsttest im Reiter Test sagt es spaeter noch einmal. Ein
+# Bedienelement, dessen Wert nirgends ankommt, ist schlimmer als ein
+# fehlendes - aber ein Plugin, das wegen eines freiwilligen Zusatzes gar
+# nicht erst installiert wird, ist am schlimmsten.
+# ---------------------------------------------------------------------------
+echo "<INFO> Installiere paho-mqtt (freiwillig, nur fuer das Mithoeren fremder Themen) ..."
+if "$VENV/bin/python3" -m pip install --no-cache-dir "paho-mqtt" >/dev/null 2>&1; then
+    echo "<OK> paho-mqtt installiert - Ladeempfehlung und Abfahrtszeit sind verfuegbar."
+else
+    echo "<INFO> paho-mqtt liess sich nicht installieren. Das ist kein Fehler:"
+    echo "<INFO> Ladeempfehlung und Abfahrtszeit stehen dann nicht zur Verfuegung,"
+    echo "<INFO> alles uebrige arbeitet unveraendert."
+fi
+
 # ---------- Rechte ----------
 chmod 755 "$PBIN/skoda.py" 2>/dev/null
 chmod 755 "$PBIN/dienst.sh" 2>/dev/null

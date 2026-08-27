@@ -95,6 +95,17 @@ function sk_pruefungen()
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_LETZTER_FEHLER'), sk_e($zu['fehler']));
     }
 
+    /* ZUERST der eigene Haken. Bis 0.9.12 prueste diese Stelle ausschliesslich
+     * das LoxBerry-Gateway; $cfg['mqtt_ein'] - der Schalter, der bestimmt, ob
+     * DIESES Plugin ueberhaupt sendet - wurde nirgends abgefragt. Bei
+     * ausgeschaltetem Haken stand hier eine gruene MQTT-Zeile mit Broker und
+     * UDP-Port, obwohl kein einziges Thema veroeffentlicht wurde. */
+    $zeilen[] = sk_pruefzeile(!empty($cfg['mqtt_ein']) ? 1 : -1, sk_t('TEST.F_MQTT_EIN'),
+        !empty($cfg['mqtt_ein'])
+            ? sprintf(sk_t('TEST.A_MQTT_EIN'), sk_e($cfg['mqtt_topic']),
+                      sk_t(!empty($cfg['mqtt_retain']) ? 'TEST.A_RETAIN_EIN' : 'TEST.A_RETAIN_AUS'))
+            : sk_t('TEST.A_MQTT_PLUGIN_AUS'));
+
     $m = sk_mqtt_zustand();
     if (!$m['gefunden']) {
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_MQTT'), sk_t('TEST.A_MQTT_NICHT_GEFUNDEN'));
@@ -147,6 +158,41 @@ function sk_pruefungen()
     $zeilen[] = sk_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, sk_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? sk_t('TEST.A_STEUERUNG_EIN') : sk_t('TEST.A_STEUERUNG_AUS'));
 
+    /* Die Konfigurationslage.
+     *
+     * Ein fremder Schluessel WIRKT NICHT, und genau das ueberrascht: man hat
+     * etwas eingestellt, es steht in der Datei, und es tut nichts. Reste einer
+     * aelteren Fassung, ein Tippfehler von Hand, oder - der teuerste Fall -
+     * ein umbenannter Schluessel, dessen Uebernahme vergessen wurde. Ein
+     * ABGEWIESENER Wert ist dasselbe eine Stufe weiter: der Schluessel ist
+     * richtig, der Wert unbrauchbar, und es gilt die Vorgabe.
+     *
+     * Bis 0.9.12 nannte der Reiter Test nichts davon. */
+    $lage = sk_config_lage();
+    if (!$lage['fremd'] && !$lage['abgewiesen'] && !$lage['fehlend']) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_CFG_LAGE'), sk_t('TEST.A_CFG_SAUBER'));
+    } else {
+        $teile = array();
+        if ($lage['fremd']) {
+            $teile[] = sprintf(sk_t('TEST.A_CFG_FREMD'), sk_e(implode(', ', $lage['fremd'])));
+        }
+        if ($lage['abgewiesen']) {
+            $teile[] = sprintf(sk_t('TEST.A_CFG_ABGEWIESEN'),
+                               sk_e(implode(', ', $lage['abgewiesen'])));
+        }
+        if ($lage['fehlend']) {
+            $teile[] = sprintf(sk_t('TEST.A_CFG_FEHLEND'), count($lage['fehlend']));
+        }
+        $zeilen[] = sk_pruefzeile($lage['fremd'] || $lage['abgewiesen'] ? 0 : -1,
+                                  sk_t('TEST.F_CFG_LAGE'), implode(' ', $teile));
+    }
+
+    /* Der Wachposten. Er ist ohne Aktionstoken wirkungslos - fail closed -,
+     * und dann laesst sich in dieser Oberflaeche gar nichts mehr absenden.
+     * Das ist ein Zustand, den man sehen muss, nicht einen, den man erraet. */
+    $zeilen[] = sk_pruefzeile(sk_formtoken() !== '' ? 1 : 0, sk_t('TEST.F_WACHPOSTEN'),
+        sk_formtoken() !== '' ? sk_t('TEST.A_WACHPOSTEN_OK') : sk_t('TEST.A_WACHPOSTEN_LEER'));
+
     return $zeilen;
 }
 
@@ -191,7 +237,8 @@ function sk_reiter_lesen()
  */
 function sk_test_aktion($aktion)
 {
-    $nr = isset($_POST['test_fahrzeug']) ? (string) $_POST['test_fahrzeug'] : '1';
+    $nr = isset($_POST['test_fahrzeug']) && is_string($_POST['test_fahrzeug'])
+        ? (string) $_POST['test_fahrzeug'] : '1';
     if (!preg_match('/^[0-9]{1,2}$/', $nr)) {
         return array(0, sk_t('TEST.M_FAHRZEUG_UNGUELTIG'));
     }
@@ -201,7 +248,8 @@ function sk_test_aktion($aktion)
             return sk_befehl_absetzen(array('aktion' => 'abruf'), 10);
 
         case 'klima_start':
-            $temp = isset($_POST['test_temp']) ? str_replace(',', '.', (string) $_POST['test_temp']) : '';
+            $temp = isset($_POST['test_temp']) && is_string($_POST['test_temp'])
+                ? str_replace(',', '.', (string) $_POST['test_temp']) : '';
             if (!preg_match('/^[0-9]{1,2}(\.[05])?$/', $temp)) {
                 return array(0, sk_t('TEST.M_TEMP_UNGUELTIG'));
             }
@@ -210,6 +258,25 @@ function sk_test_aktion($aktion)
         case 'klima_stop':
             return sk_befehl_absetzen(array('aktion' => 'klima_stop', 'fahrzeug' => $nr));
 
+        /* Bis 0.9.12 fehlten diese drei. Der Endpunkt nahm sie an, der Dienst
+         * fuehrte sie aus, und der Reiter Test bot sie nicht an - die
+         * Standlueftung liess sich damit ueberhaupt nicht erproben, ohne
+         * vorher die ganze Loxone-Anbindung zu bauen. */
+        case 'zieltemperatur':
+            $temp = isset($_POST['test_temp']) && is_string($_POST['test_temp'])
+                ? str_replace(',', '.', (string) $_POST['test_temp']) : '';
+            if (!preg_match('/^[0-9]{1,2}(\.[05])?$/', $temp)) {
+                return array(0, sk_t('TEST.M_TEMP_UNGUELTIG'));
+            }
+            return sk_befehl_absetzen(array('aktion' => 'zieltemperatur',
+                                            'fahrzeug' => $nr, 'temp' => $temp));
+
+        case 'lueftung_start':
+            return sk_befehl_absetzen(array('aktion' => 'lueftung_start', 'fahrzeug' => $nr));
+
+        case 'lueftung_stop':
+            return sk_befehl_absetzen(array('aktion' => 'lueftung_stop', 'fahrzeug' => $nr));
+
         case 'laden_start':
             return sk_befehl_absetzen(array('aktion' => 'laden_start', 'fahrzeug' => $nr));
 
@@ -217,7 +284,8 @@ function sk_test_aktion($aktion)
             return sk_befehl_absetzen(array('aktion' => 'laden_stop', 'fahrzeug' => $nr));
 
         case 'ladegrenze':
-            $p = isset($_POST['test_prozent']) ? (string) $_POST['test_prozent'] : '';
+            $p = isset($_POST['test_prozent']) && is_string($_POST['test_prozent'])
+                ? (string) $_POST['test_prozent'] : '';
             if (!preg_match('/^[0-9]{1,3}$/', $p)) {
                 return array(0, sk_t('TEST.M_PROZENT_UNGUELTIG'));
             }
@@ -237,11 +305,20 @@ function sk_test_aktion($aktion)
     }
 }
 
-/** Mini-SVG: Fuellstand ueber den heutigen Tag (0 bis 24 h, 0 bis 100 %). */
-function sk_soc_svg($punkte)
+/**
+ * Mini-SVG: Fuellstand ueber EINEN Tag (0 bis 24 h, 0 bis 100 %).
+ *
+ * $tag ist 'YYYYMMDD'; leer heisst heute. Bis 0.9.12 war der Tag fest auf
+ * heute verdrahtet - die Tagesdateien der Vortage lagen da und wurden nie
+ * angesehen, obwohl der Dienst sie so lange behaelt, wie 'verlauf_tage' sagt.
+ */
+function sk_soc_svg($punkte, $tag = '')
 {
     $w = 720; $h = 120; $x0 = 34; $y0 = 8; $pw = $w - $x0 - 8; $ph = $h - $y0 - 20;
-    $tag0 = strtotime('today 00:00');
+    $tag0 = ($tag !== '' && preg_match('/^[0-9]{8}$/', $tag))
+        ? (int) strtotime(substr($tag, 0, 4) . '-' . substr($tag, 4, 2) . '-'
+                          . substr($tag, 6, 2) . ' 00:00')
+        : (int) strtotime('today 00:00');
     $svg = '<svg viewBox="0 0 ' . $w . ' ' . $h . '" style="width:100%;max-width:' . $w
          . 'px;height:auto;background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;"'
          . ' xmlns="http://www.w3.org/2000/svg">';
