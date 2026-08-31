@@ -1,6 +1,17 @@
 #!/bin/bash
 # Skoda Connect - uninstall
-# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+# command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# Zu den Argumenten, gemessen an sbin/plugininstall.pl:
+#   $1  PTEMPDIR   eine zehnstellige Zufallskennung aus generate(10) -
+#                  KEIN Pfad. Wer "$1/config" schreibt, baut ein
+#                  Verzeichnis, das es nicht gibt.
+#   $2  PSHNAME    Name des Plugins fuer Skripte
+#   $3  PDIR       Installationsordner des Plugins
+#   $4  PVERSION   Fassung
+#   $5  LBHOMEDIR  Wurzelverzeichnis des LoxBerry
+#   $6  PWORKDIR   Arbeitsordner des Installers, absolut - das ist der
+#                  Pfad, der in $1 faelschlich vermutet wird.
 #
 # Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
 # 1 = Warnung (die Deinstallation laeuft weiter).
@@ -14,7 +25,7 @@
 # webfrontend-Ordner. Die virtuelle Python-Umgebung liegt in
 # bin/plugins/<ordner>/venv und geht damit mit.
 #
-# Zwei Dinge liegen aber AUSSERHALB dieser Ordner und blieben sonst
+# Drei Dinge liegen aber AUSSERHALB dieser Ordner und blieben sonst
 # fuer immer liegen:
 #
 #   1. Die beiden Sicherungsdateien
@@ -34,9 +45,23 @@
 #      bis zum naechsten Neustart, und meldet sich dabei weiter bei
 #      Skoda an.
 #
-# Was NICHT aufgeraeumt werden muss: MQTT. Der Dienst sendet mit
-# "publish", nicht mit "retain" (bin/skoda.py, mqtt_senden). Im Broker
-# bleibt deshalb nichts stehen.
+#   3. Die BEHALTENEN MQTT-Themen im Broker.
+#
+#      Hier stand bis 0.9.13: "Was NICHT aufgeraeumt werden muss: MQTT.
+#      Der Dienst sendet mit publish, nicht mit retain. Im Broker bleibt
+#      deshalb nichts stehen." Das ist FALSCH, seit es den Haken
+#      mqtt_retain gibt (0.9.13, bin/skoda.py). Ist er gesetzt, sendet
+#      der Dienst mit "retain", und dann bleiben bis zu 49 Themen je
+#      Anlage stehen - 9 Zustandsthemen und 40 je Fahrzeug. Darunter
+#      sind breite, laenge, adresse und kennzeichen: Standort und
+#      Kennzeichen des Wagens, die im Broker liegen bleiben, bis ihn
+#      jemand von Hand leert.
+#
+#      Abschnitt 1b loescht sie: je Thema eine LEERE Nutzlast mit
+#      "retain" ueber den UDP-Eingang des Gateways - genau der Weg, den
+#      bin/skoda.py in mqtt_senden() beschreibt. Geht davon etwas nicht,
+#      ist das KEIN Abbruch der Deinstallation, sondern eine
+#      <INFO>-Zeile.
 
 PDIR=$3                      # Installationsordner des Plugins
 [ -n "$PDIR" ] || PDIR="skodaconnect"
@@ -61,14 +86,24 @@ PCONFIG="$BASE/config/plugins"
 # wird deshalb die Befehlszeile - und zwar ARGUMENTWEISE. /proc/<pid>/
 # cmdline trennt die Argumente mit Nullbytes; ein "grep skoda.py"
 # darueber wuerde auch einen Editor treffen, in dem die Datei gerade
-# offen ist. Geprueft wird deshalb das ZWEITE Argument gegen den vollen
-# Pfad - der Dienst wird immer als "<python> <pfad>/skoda.py" gestartet.
+# offen ist.
+#
+# ZWEI Bedingungen, nicht eine. Bis 0.9.13 wurde nur das zweite Argument
+# gegen den vollen Pfad geprueft - und genau diesen Pfad traegt auch
+# "nano <pfad>/skoda.py" als zweites Argument. Ein offener Editor wurde
+# damit als unser Dienst angesehen und mit SIGTERM, notfalls SIGKILL
+# erschlagen. Deshalb muss zusaetzlich das ERSTE Argument ein Python
+# sein. So haelt es bin/skoda.py in dienst_laeuft() bereits.
+#
 # Der volle Pfad statt nur des Dateinamens, damit die Deinstallation des
 # einen Exemplars nicht den Dienst eines zweiten abschiesst (LoxBerry
 # haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an).
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$PBIN/skoda.py" ]
+    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    return 0
 }
 
 beenden() {
@@ -109,12 +144,167 @@ done
 rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 
 # ---------------------------------------------------------------
+# 1b. Behaltene MQTT-Themen loeschen
+# ---------------------------------------------------------------
+# Erst hier, NACH dem Anhalten des Dienstes: ein noch laufender Dienst
+# schriebe die eben geloeschten Themen im naechsten Takt wieder hin.
+#
+# Gelesen wird alles aus dem Bestand - der UDP-Port aus
+# config/system/general.json, Praefix und Haken aus der Plugin-
+# Konfiguration, die Themennamen aus bin/plugins/<ordner>/skoda.py. Eine
+# zweite, hier abgetippte Themenliste liefe mit dem Dienst auseinander,
+# und was in ihr fehlte, bliebe im Broker stehen.
+mqtt_behaltene_themen_loeschen() {
+    PYBIN=""
+    if [ -x "$PBIN/venv/bin/python3" ]; then
+        PYBIN="$PBIN/venv/bin/python3"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYBIN="python3"
+    else
+        echo "<INFO> Kein python3 gefunden - behaltene MQTT-Themen wurden nicht"
+        echo "<INFO> geloescht. Die Deinstallation laeuft weiter."
+        return 0
+    fi
+    "$PYBIN" - "$BASE" "$PDIR" <<'PYENDE'
+import json, os, re, socket, sys
+
+
+def lies(*teile):
+    try:
+        with open(os.path.join(*teile), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def lauf():
+    base, pdir = sys.argv[1], sys.argv[2]
+    cfg = lies(base, "config", "plugins", pdir, "skoda.json")
+    if not cfg.get("mqtt_retain"):
+        print("<INFO> Der Haken 'Werte behalten' war nicht gesetzt - der Dienst hat")
+        print("<INFO> mit 'publish' gesendet. Im Broker steht nichts von uns.")
+        return
+
+    m = lies(base, "config", "system", "general.json")
+    m = m.get("Mqtt") or m.get("mqtt") or {}
+    try:
+        port = int(m.get("Udpinport", m.get("udpinport")))
+    except (TypeError, ValueError):
+        port = 0
+    if port < 1 or port > 65535:
+        print("<INFO> Kein UDP-Eingangsport des MQTT-Gateways in general.json")
+        print("<INFO> gefunden. Die behaltenen Themen bleiben stehen und sind im")
+        print("<INFO> Broker von Hand zu loeschen.")
+        return
+
+    # Der Praefix wird genau so gesaeubert wie im Dienst (thema_saeubern).
+    t = str(cfg.get("mqtt_topic") or "").strip().strip("/")
+    praefix = t if re.match(r"^[A-Za-z0-9_/-]{1,64}$", t) else "skoda"
+
+    try:
+        with open(os.path.join(base, "bin", "plugins", pdir, "skoda.py"),
+                  "r", encoding="utf-8") as f:
+            quelle = f.read()
+    except OSError:
+        quelle = ""
+
+    def abschnitt(muster):
+        tr = re.search(muster, quelle, re.S | re.M)
+        roh = tr.group(1) if tr else ""
+        # Kommentarzeilen weg, sonst zaehlten Beispiele als Themennamen.
+        return "\n".join(z.split("#")[0] for z in roh.splitlines())
+
+    felder = []
+    for name in ("MQTT_FELDER", "MQTT_TEXTFELDER"):
+        felder += re.findall(r'"([A-Za-z0-9_]+)"',
+                             abschnitt(name + r"\s*=\s*\((.*?)^\)"))
+    zustand = re.findall(r'"([A-Za-z0-9_/]+)"\s*:',
+                         abschnitt(r"lebenszeichen\s*=\s*\{(.*?)^    \}"))
+    zustand += re.findall(r'lebenszeichen\["([A-Za-z0-9_/]+)"\]', quelle)
+    zustand += re.findall(r'mqtt_senden\(\{"([A-Za-z0-9_/]+)"', quelle)
+    if not felder or not zustand:
+        print("<INFO> Die Themenliste liess sich nicht aus skoda.py ableiten -")
+        print("<INFO> es wird nur geloescht, was gefunden wurde.")
+
+    # Fahrzeugnummern aus dem letzten Abbild. Ein Loeschbefehl fuer ein Thema,
+    # das es nie gab, ist folgenlos - deshalb im Zweifel 1 bis 4.
+    nummern = []
+    lox = lies(base, "data", "plugins", pdir, "loxone.json")
+    for q in (lox.get("fahrzeuge"),
+              lies(base, "data", "plugins", pdir, "cache.json").get("fahrzeuge")):
+        if isinstance(q, dict):
+            for k in q:
+                if str(k) not in nummern:
+                    nummern.append(str(k))
+    if not nummern:
+        try:
+            anzahl = int(lox.get("anzahl_fahrzeuge") or 0)
+        except (TypeError, ValueError):
+            anzahl = 0
+        nummern = [str(i) for i in range(1, max(anzahl, 4) + 1)]
+
+    themen = list(dict.fromkeys(zustand))
+    for nr in nummern:
+        for feld in felder:
+            themen.append("fahrzeug%s/%s" % (nr, feld))
+
+    if not themen:
+        print("<INFO> Keine Themennamen ermittelt - es wurde nichts an das")
+        print("<INFO> Gateway geschickt.")
+        return
+
+    # Eine LEERE Nutzlast loescht mit 'retain' ein behaltenes Thema. Der Weg
+    # ist derselbe, den der Dienst geht: eine Zeile "retain <thema> <wert>"
+    # an den UDP-Eingang des Gateways.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    geschickt = 0
+    try:
+        for th in themen:
+            try:
+                s.sendto(("retain %s/%s " % (praefix, th)).encode("utf-8"),
+                         ("127.0.0.1", port))
+                geschickt += 1
+            except OSError:
+                pass
+    finally:
+        s.close()
+    print("<OK> %d Loeschbefehle fuer behaltene MQTT-Themen unter '%s/' an den"
+          % (geschickt, praefix))
+    print("<OK> UDP-Eingang %d des Gateways geschickt (leere Nutzlast, 'retain')."
+          % port)
+    print("<INFO> UDP bestaetigt nichts. Lief das Gateway nicht mehr, bleiben die")
+    print("<INFO> Themen stehen und sind im Broker von Hand zu loeschen.")
+
+
+try:
+    lauf()
+except Exception as err:                                  # noqa: BLE001
+    print("<INFO> Das Aufraeumen der behaltenen MQTT-Themen ist gescheitert")
+    print("<INFO> (%s). Das ist kein Abbruch - die Deinstallation laeuft weiter."
+          % err)
+PYENDE
+    return 0
+}
+mqtt_behaltene_themen_loeschen
+
+# ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
 # ---------------------------------------------------------------
 for f in skoda.json zugang.json; do
     BK="$PCONFIG/$PDIR.backup.$f"
     if [ -f "$BK" ]; then
-        rm -f "$BK" && echo "<OK> Sicherung entfernt: $PDIR.backup.$f"
+        # Ueberschreiben, dann entfernen: ein blosses rm traegt die Datei
+        # nur aus dem Verzeichnis aus, der Inhalt bleibt auf der Karte
+        # stehen, bis der Platz neu vergeben wird. In der Zweitschrift von
+        # zugang.json stehen Benutzername und Passwort des MySkoda-Kontos.
+        # Auf einem Journaling-Dateisystem und auf Flash ist auch das kein
+        # sicheres Loeschen - es ist der Unterschied zwischen "steht noch
+        # da" und "muss man suchen". postinstall.sh haelt es beim Abraeumen
+        # der S-PIN seit 0.9.11 genauso.
+        LAENGE=$(stat -c %s "$BK" 2>/dev/null || echo 0)
+        [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$BK" bs=1 count="$LAENGE" \
+            conv=notrunc >/dev/null 2>&1
+        rm -f "$BK" && echo "<OK> Sicherung ueberschrieben und entfernt: $PDIR.backup.$f"
     fi
 done
 echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfernt."

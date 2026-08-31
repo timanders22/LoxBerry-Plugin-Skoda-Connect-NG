@@ -1,0 +1,16 @@
+# These packages will be installed by apt-get -y install PACKAGENAME
+# One line per package, use exact packagename as you would do for apt-get.
+#
+# python3-venv liefert das Modul venv. Ohne dieses Paket scheitert in
+# postinstall.sh der Aufruf "python3 -m venv": es entsteht keine virtuelle
+# Umgebung, myskoda wird nicht installiert, und der Abrufdienst kann nicht
+# starten. Das Plugin waere dann installiert, aber ohne einen einzigen Wert.
+#
+# Ein systemweites "pip3 install" ist kein Ersatz: Debian 12/13 kennzeichnen
+# die System-Python-Umgebung als extern verwaltet (PEP 668) und weisen es mit
+# "error: externally-managed-environment" ab - auch als root.
+#
+# Bis 0.9.13 gab es diese Datei nicht. postinstall.sh brach ab und trug dem
+# Anwender auf, "apt install python3-venv" von Hand zu tippen - obwohl
+# LoxBerry das Paket selbst ziehen kann.
+python3-venv

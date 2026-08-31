@@ -61,10 +61,67 @@ $sk_reiter = array(
 );
 $sk_muster = '/^tab-(' . implode('|', array_keys($sk_reiter)) . ')$/';
 $sk_tab = 'tab-settings';
-if (isset($_POST['activetab']) && preg_match($sk_muster, (string) $_POST['activetab'])) {
-    $sk_tab = (string) $_POST['activetab'];
+if (preg_match($sk_muster, sk_post('activetab'))) {
+    $sk_tab = sk_post('activetab');
 } elseif (isset($_GET['form']) && preg_match($sk_muster, 'tab-' . (string) $_GET['form'])) {
     $sk_tab = 'tab-' . (string) $_GET['form'];
+}
+
+/* Die Selbstheilung der Konfiguration - HIER, nicht in der Lesefunktion.
+ *
+ * Sie stand bis 0.9.13 in sk_config_lage() und lief damit auch fuer den
+ * unangemeldeten Endpunkt: ein Aufruf mit falschem Token legte den
+ * Konfigordner an und spielte die Zweitschrift samt altem Aktionstoken
+ * zurueck. Der Bediener ist hier angemeldet, und er sieht das Ergebnis
+ * sofort auf der Seite - das ist der richtige Ort dafuer. */
+sk_config_heilen();
+
+/**
+ * Ein Feld eines Fahrzeugs, maskiert - und ohne Warnung, wenn es fehlt.
+ *
+ * ANGELEGT 31.08.2026. Sechs Stellen dieser Datei griffen ohne isset auf
+ * modell, kennzeichen, motorart und software zu. Der Dienst fuellt diese vier
+ * aber nur, wenn der Endpunkt 'info' geantwortet hat (bin/skoda.py: "if info
+ * is not None: stamm.update(...)"). Genau dieser Endpunkt ist der, gegen den
+ * das Plugin drei eigene Bremsen gegen HTTP 429 fuehrt - ein Fahrzeugeintrag
+ * mit vin und soc, aber ohne Stammdaten, ist also der Regelfall nach einer
+ * Abweisung, nicht ein Randfall.
+ *
+ * Gemessen mit einem solchen Teilabbild: sechs "Undefined array key" je
+ * Seitenaufbau, in jedem der fuenf Reiter. Unter PHP 7.4 sind das E_NOTICE
+ * und damit vom error_reporting dieser Datei stillgelegt, unter PHP 8.4
+ * E_WARNING - der Warntext stand dort mitten in einer Tabellenzelle, samt
+ * vollem Serverpfad. LoxBerry 4 faehrt PHP 8.
+ *
+ * Die Nachbarzeilen machten es mit !empty() und !isset() laengst richtig;
+ * jetzt tun es alle, und an einer Stelle.
+ */
+function sk_fz($fz, $name, $ersatz = '')
+{
+    if (!isset($fz[$name]) || !is_scalar($fz[$name]) || $fz[$name] === '') {
+        return $ersatz;
+    }
+    return sk_e((string) $fz[$name]);
+}
+
+/**
+ * Ein POST-Wert als Zeichenkette - oder die Vorgabe.
+ *
+ * ANGELEGT 31.08.2026. Sieben Stellen dieser Datei riefen (string) auf einen
+ * Wert, der auch ein Feld sein kann. Unter PHP 8 ist das eine WARNUNG
+ * ("Array to string conversion"), und der Wert wird zur Zeichenkette "Array" -
+ * gemessen mit passwort[]=x, das genau so in zugang.json landete.
+ *
+ * Der Endpunkt in webfrontend/html/index.php macht es seit 0.9.13 richtig und
+ * begruendet es dort ausfuehrlich; hier fehlte es. Ein Feld ist keine Eingabe,
+ * die man zurechtbiegt - es gibt die Vorgabe zurueck.
+ */
+function sk_post($name, $vorgabe = '')
+{
+    if (!isset($_POST[$name]) || !is_scalar($_POST[$name])) {
+        return $vorgabe;
+    }
+    return (string) $_POST[$name];
 }
 
 $sk_meldungen = array();   // Erfolgsmeldungen
@@ -97,7 +154,7 @@ $sk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * ================================================================== */
 if ($sk_post && !sk_formtoken_ok()) {
     $sk_behalten = isset($_POST['activetab']) && is_string($_POST['activetab'])
-        ? (string) $_POST['activetab'] : null;
+        ? sk_post('activetab') : null;
     $_POST = array();
     if ($sk_behalten !== null) {
         $_POST['activetab'] = $sk_behalten;
@@ -127,7 +184,7 @@ if ($sk_post && !sk_formtoken_ok()) {
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($sk_post && isset($_POST['vorlage'])) {
     $sk_nr = (isset($_POST['vorlage']) && is_string($_POST['vorlage'])
-              && preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage']))
+              && preg_match('/^[0-9]{1,2}$/', sk_post('vorlage')))
         ? (int) $_POST['vorlage'] : 1;
     /* Die ART kommt seit 0.9.13 dazu. Bis dahin gab es genau eine Vorlage -
      * fuer 'status', fest auf Fahrzeug 1 -, obwohl es fuer laden, wartung und
@@ -135,8 +192,8 @@ if ($sk_post && isset($_POST['vorlage'])) {
      * Adressen aller erkannten Fahrzeuge zeigt. Wer zwei Autos hatte, musste
      * das XML von Hand nacharbeiten. */
     $sk_art = (isset($_POST['vorlage_art']) && is_string($_POST['vorlage_art'])
-               && array_key_exists((string) $_POST['vorlage_art'], sk_vorlagenarten()))
-        ? (string) $_POST['vorlage_art'] : 'status';
+               && array_key_exists(sk_post('vorlage_art'), sk_vorlagenarten()))
+        ? sk_post('vorlage_art') : 'status';
     list($sk_name, $sk_inhalt) = sk_vorlage($sk_nr, $sk_art);
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $sk_name . '"');
@@ -162,7 +219,7 @@ if ($sk_post && isset($_POST['speichern'])) {
         'entprellung'    => array(0, 600),
         'heim_radius'    => array(10, 5000),
     ) as $sk_feld => $sk_grenzen) {
-        $sk_wert = isset($_POST[$sk_feld]) ? trim((string) $_POST[$sk_feld]) : '';
+        $sk_wert = trim(sk_post($sk_feld));
         /* Ein LEERES Feld ist keine falsche Eingabe, sondern gar keine.
          * Bis 0.9.1 lief es in dieselbe harte Fehlermeldung wie "abc": wer
          * beim Bearbeiten den Inhalt herausloescht und speichert, bekam
@@ -206,7 +263,7 @@ if ($sk_post && isset($_POST['speichern'])) {
      * ein Heimatort am Nordpol. */
     foreach (array('heim_breite', 'heim_laenge') as $sk_feld) {
         $sk_wert = isset($_POST[$sk_feld]) && is_string($_POST[$sk_feld])
-            ? trim((string) $_POST[$sk_feld]) : '';
+            ? trim(sk_post($sk_feld)) : '';
         if ($sk_wert === '') {
             $sk_cfg[$sk_feld] = '';
             continue;
@@ -225,8 +282,8 @@ if ($sk_post && isset($_POST['speichern'])) {
      * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
      * Passwort in der Datei, ohne dass es jemand merkt. */
     $sk_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        isset($_POST['email']) ? (string) $_POST['email'] : ''));
-    $sk_pw = isset($_POST['passwort']) ? (string) $_POST['passwort'] : '';
+        sk_post('email')));
+    $sk_pw = sk_post('passwort');
     if (isset($_POST['zugang_loeschen'])) {
         // Ausdruecklich gewollt: alles weg. Was im selben Absenden im
         // Formular stand, wird bewusst verworfen - sonst waere unklar, ob
@@ -249,13 +306,28 @@ if ($sk_post && isset($_POST['speichern'])) {
         $sk_fehler[] = sk_t('EINST.WARN_PW_OHNE_KONTO');
     }
 
-    if (!$sk_fehler) {
-        if (sk_config_speichern($sk_cfg)) {
+    /* GESPEICHERT WIRD IMMER - beanstandet wird trotzdem.
+     *
+     * Bis 0.9.13 stand hier "if (!$sk_fehler)". Ein einziger Tippfehler
+     * verwarf damit ALLE uebrigen Aenderungen desselben Formulars; gemessen
+     * am 31.08.2026 gingen bei einem falschen 'intervall' drei von vier
+     * weiteren Feldern verloren, und der Reiter hat fuenfzehn davon.
+     *
+     * Noetig ist die Blockade nicht: die Schleife oben ueberspringt ein
+     * beanstandetes Feld mit 'continue', der ALTE Wert steht also weiter im
+     * Feld. Was gespeichert wird, ist damit in jedem Fall ein gueltiger Stand.
+     * Die Hausregel sagt es genauso: "Was sich zurechtruecken laesst, wird
+     * zurechtgerueckt, die betroffene Zeile uebergangen, und alles Uebrige
+     * gespeichert. Blockieren darf nur, was das Speichern technisch unmoeglich
+     * macht."
+     */
+    if (sk_config_speichern($sk_cfg)) {
+        if (!$sk_fehler) {
             $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
-            sk_log_zeile('Einstellungen gespeichert.');
-        } else {
-            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
         }
+        sk_log_zeile('Einstellungen gespeichert.');
+    } else {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
     }
     $sk_tab = 'tab-settings';
 
@@ -293,7 +365,7 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
     foreach (array('empf_thema', 'empf_grenze', 'abfahrt_thema',
                    'abfahrt_vorlauf', 'abfahrt_temp') as $sk_feld) {
         $sk_wert = isset($_POST[$sk_feld]) && is_string($_POST[$sk_feld])
-            ? trim((string) $_POST[$sk_feld]) : '';
+            ? trim(sk_post($sk_feld)) : '';
         if ($sk_wert === '' && in_array($sk_feld, array('empf_thema', 'empf_grenze',
                                                         'abfahrt_thema'), true)) {
             $sk_mcfg[$sk_feld] = '';
@@ -316,18 +388,25 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
         $sk_fehler[] = sk_t('EINST.FEHLER_EMPF_OHNE_GRENZE');
     }
 
-    if (!$sk_fehler) {
-        if (sk_config_speichern($sk_mcfg)) {
+    /* Dieselbe Form wie im Einstellungsformular - und der fehlende
+     * else-Zweig war hier ein eigener Befund: gemessen am 31.08.2026 mit
+     * schreibgeschuetzter Konfigurationsdatei kam eine Seite ohne JEDE
+     * Meldung heraus, mit leerem Haken. Der Bediener versucht es dann
+     * dreimal. Der Sprachschluessel dafuer war die ganze Zeit vorhanden. */
+    if (sk_config_speichern($sk_mcfg)) {
+        if (!$sk_fehler) {
             $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
-            sk_log_zeile('MQTT-Einstellungen gespeichert.');
         }
+        sk_log_zeile('MQTT-Einstellungen gespeichert.');
+    } else {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
     }
     $sk_tab = 'tab-mqtt';
 }
 
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
 if ($sk_post && isset($_POST['dienst'])) {
-    $sk_befehl = (string) $_POST['dienst'];
+    $sk_befehl = sk_post('dienst');
     sk_log_zeile('Dienst: ' . preg_replace('/[^a-z]/', '', $sk_befehl) . '.');
     list($sk_ok, $sk_ausgabe) = sk_dienst($sk_befehl);
     if ($sk_ok) {
@@ -367,7 +446,12 @@ if ($sk_post && isset($_POST['token_neu'])) {
 
 /* ---------------- Log leeren ---------------- */
 if ($sk_post && isset($_POST['log_leeren'])) {
-    @mkdir(dirname($sk_p['log']), 0775, true);
+    /* Ohne is_dir davor meldet PHP bei jedem Handgriff
+     * "mkdir(): File exists" ins Fehlerprotokoll - unterdrueckt
+     * durch das @, aber bei log_errors=On steht es trotzdem dort. */
+    if (!is_dir(dirname($sk_p['log']))) {
+        @mkdir(dirname($sk_p['log']), 0775, true);
+    }
     @file_put_contents($sk_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . sk_t('LOG.GELEERT') . "\n");
     $sk_meldungen[] = sk_t('LOG.GELEERT');
     $sk_tab = 'tab-log';
@@ -376,8 +460,8 @@ if ($sk_post && isset($_POST['log_leeren'])) {
 /* ---------------- Aktionen des Reiters Test ---------------- */
 if ($sk_post && isset($_POST['test'])) {
     sk_log_zeile('Reiter Test: Befehl "'
-                 . preg_replace('/[^a-z_]/', '', (string) $_POST['test']) . '" abgesetzt.');
-    list($sk_stand, $sk_text) = sk_test_aktion((string) $_POST['test']);
+                 . preg_replace('/[^a-z_]/', '', sk_post('test')) . '" abgesetzt.');
+    list($sk_stand, $sk_text) = sk_test_aktion(sk_post('test'));
     if ($sk_stand === 1) {
         $sk_meldungen[] = sk_e($sk_text);
     } else {
@@ -580,7 +664,14 @@ if ($sk_rahmen) {
 <div class="sm-hinweis"><?= $sk_m ?></div>
 <?php } ?>
 <?php if ($sk_fehler) { ?>
-<div class="sm-fehler"><b><?= sk_e(sk_t('ALLG.BEANSTANDUNG')) ?></b>
+<!-- Zwei Kopftexte, nicht einer. "Es wurde nichts gespeichert" war
+     unwahr, sobald im selben Absenden die Zugangsdaten geschrieben oder
+     geloescht wurden - beides laeuft unabhaengig von den Beanstandungen, und
+     das Loeschen ist nicht umkehrbar. Seit 0.9.14 wird ausserdem der
+     Konfigurationsstand immer geschrieben. Steht daneben eine Erfolgsmeldung,
+     lautet der Kopf deshalb "nicht alles". -->
+<div class="sm-fehler"><b><?= sk_e(sk_t($sk_meldungen ? 'ALLG.BEANSTANDUNG_TEIL'
+                                                      : 'ALLG.BEANSTANDUNG')) ?></b>
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($sk_fehler as $sk_f) { ?><li><?= $sk_f ?></li><?php } ?>
 </ul></div>
@@ -594,7 +685,13 @@ if ($sk_rahmen) {
   </div>
   <div class="sm-kachel"><?= sk_e(sk_t('ALLG.LETZTER_ABRUF')) ?>
     <b><?= $sk_alter < 0 ? '&ndash;' : (int) $sk_alter . ' s' ?></b>
-    <span class="sm-hilfe"><?= $sk_alter < 0 ? sk_e(sk_t('ALLG.NIE')) : sk_e(date('d.m.Y H:i:s', time() - $sk_alter)) ?></span>
+    <!-- Drei Faelle, nicht zwei: -1 heisst "noch nie abgerufen", -2 heisst
+         "der Zeitstempel liegt in der Zukunft". Beide zeigen einen Strich,
+         aber sie bedeuten Verschiedenes, und der zweite ist der, bei dem man
+         die Uhr des LoxBerry nachsieht. -->
+    <span class="sm-hilfe"><?= $sk_alter === -2 ? sk_e(sk_t('ALLG.UHR_VOR'))
+        : ($sk_alter < 0 ? sk_e(sk_t('ALLG.NIE'))
+                         : sk_e(date('d.m.Y H:i:s', time() - $sk_alter))) ?></span>
   </div>
   <div class="sm-kachel"><?= sk_e(sk_t('ALLG.FAHRZEUGE')) ?>
     <b><?= count($sk_fahrzeuge) ?></b>
@@ -612,8 +709,8 @@ if ($sk_rahmen) {
 
 <?php foreach ($sk_fahrzeuge as $sk_nr => $sk_fz) { ?>
 <div class="sm-hinweis">
-<b><?= sk_e($sk_fz['modell'] ? $sk_fz['modell'] : sk_t('ALLG.OHNE_NAMEN')) ?></b>
-(<?= sk_e(sk_t('ALLG.FAHRZEUG')) ?> <?= sk_e($sk_nr) ?><?= !empty($sk_fz['kennzeichen']) ? ', ' . sk_e($sk_fz['kennzeichen']) : '' ?>)
+<b><?= sk_fz($sk_fz, 'modell', sk_e(sk_t('ALLG.OHNE_NAMEN'))) ?></b>
+(<?= sk_e(sk_t('ALLG.FAHRZEUG')) ?> <?= sk_e($sk_nr) ?><?= sk_fz($sk_fz, 'kennzeichen') !== '' ? ', ' . sk_fz($sk_fz, 'kennzeichen') : '' ?>)
 &middot; <?= sk_e(sk_t('ALLG.SOC')) ?> <b><?= !isset($sk_fz['soc']) || $sk_fz['soc'] === null ? '&ndash;' : sk_e($sk_fz['soc']) . ' %' ?></b>
 &middot; <?= sk_e(sk_t('ALLG.REICHWEITE')) ?> <?= !isset($sk_fz['reichweite_km']) || $sk_fz['reichweite_km'] === null ? '&ndash;' : sk_e($sk_fz['reichweite_km']) . ' km' ?>
 &middot; <?= sk_e(sk_t('ALLG.KM')) ?> <?= !isset($sk_fz['kilometerstand']) || $sk_fz['kilometerstand'] === null ? '&ndash;' : sk_e($sk_fz['kilometerstand']) . ' km' ?>
@@ -820,12 +917,12 @@ if ($sk_rahmen) {
     <th><?= sk_e(sk_t('EINST.T_ANTRIEB')) ?></th><th><?= sk_e(sk_t('EINST.T_BATTERIE')) ?></th>
     <th><?= sk_e(sk_t('EINST.T_SOFTWARE')) ?></th></tr>
 <?php foreach ($sk_fahrzeuge as $sk_nr => $sk_fz) { ?>
-<tr><td><?= sk_e($sk_nr) ?></td><td><?= sk_e($sk_fz['modell']) ?></td>
-    <td><?= sk_e($sk_fz['kennzeichen']) ?></td>
-    <td><span class="sm-mono"><?= sk_e($sk_fz['vin']) ?></span></td>
-    <td><?= sk_e($sk_fz['motorart']) ?></td>
+<tr><td><?= sk_e($sk_nr) ?></td><td><?= sk_fz($sk_fz, 'modell', '&mdash;') ?></td>
+    <td><?= sk_fz($sk_fz, 'kennzeichen', '&mdash;') ?></td>
+    <td><span class="sm-mono"><?= sk_fz($sk_fz, 'vin', '&mdash;') ?></span></td>
+    <td><?= sk_fz($sk_fz, 'motorart', '&mdash;') ?></td>
     <td><?= empty($sk_fz['batterie_kwh']) ? '&mdash;' : sk_e($sk_fz['batterie_kwh']) . ' kWh' ?></td>
-    <td><?= sk_e($sk_fz['software']) ?></td></tr>
+    <td><?= sk_fz($sk_fz, 'software', '&mdash;') ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= sk_t('EINST.VIN_HINWEIS') ?></p>
@@ -856,7 +953,7 @@ if (!$sk_ladungen) { ?>
 <p class="sm-hilfe"><?= sk_t('EINST.LADUNGEN_HINWEIS') ?></p>
 <?php } ?>
 
-<h2><?= sk_t('EINST.H_SICHERUNG') ?></h2>
+<h2><?= sk_e(sk_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= sk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= sk_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-hilfe"><?= sk_t('EINST.SICH_MIT_ZUGANG_HILFE') ?></div>
@@ -872,13 +969,13 @@ if (!$sk_ladungen) { ?>
       <input data-role="none" type="checkbox" name="mit_zugang" value="1">
       <?= sk_e(sk_t('EINST.L_MIT_ZUGANG')) ?>
     </label>
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sk_sichern" value="1"><?= sk_t('EINST.K_SICHERN') ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sk_sichern" value="1"><?= sk_e(sk_t('EINST.K_SICHERN')) ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <?= sk_formfeld() ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="sk_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="sk_zurueck" value="1"><?= sk_t('EINST.K_ZURUECK') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="sk_zurueck" value="1"><?= sk_e(sk_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>
 </div>
@@ -1007,7 +1104,7 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <?php } ?>
 
 <h2><?= sk_e(sk_t('MQTT.H_ABO')) ?></h2>
-<div class="sm-warnung"><?= sk_abo_text() ?></div>
+<?= sk_abo_kasten() ?>
 <div class="sm-step">
 <?= sk_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic']) ?>/#</span></p>
@@ -1030,6 +1127,19 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <h2><?= sk_e(sk_t('LOX.H_TITEL')) ?></h2>
 <p><?= sk_t('LOX.EINLEITUNG') ?></p>
 
+<!-- EINE gesammelte Legende fuer den ganzen Reiter, oben. Bis 0.9.13 standen
+     hier zwei Einzellegenden, und beide UNTER ihrer Knopfreihe. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= sk_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
+
+<!-- Der Pflichtsatz zum Import. Er fehlte bis 0.9.13 vollstaendig - im Reiter
+     und in der Hilfe. Das Plugin bietet FUENF Vorlagen an; wer nach einem
+     Fehlversuch ein zweites Mal importiert, hat danach SKODA_1_SOC doppelt im
+     Projekt und sucht den Fehler bei sich. -->
+<div class="sm-hinweis"><?= sk_t('LOX.H_IMPORT') ?></div>
+
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S1_TITEL')) ?></b><br>
 <?= sk_t('LOX.S1_TEXT') ?>
 </div>
@@ -1037,7 +1147,7 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S2_TITEL')) ?></b><br>
 <?= sk_t('LOX.S2_TEXT') ?>
 <p><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= sk_abo_text() ?></div>
+<?= sk_abo_kasten() ?>
 </div>
 
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S3_TITEL')) ?></b><br>
@@ -1064,7 +1174,7 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <table class="sm-tbl">
 <tr><th><?= sk_e(sk_t('ALLG.FAHRZEUG')) ?></th><th><?= sk_e(sk_t('EINST.T_MODELL')) ?></th><th><?= sk_e(sk_t('LOX.T_ADRESSE')) ?></th></tr>
 <?php foreach ($sk_fahrzeuge as $sk_nr => $sk_fz) { ?>
-<tr><td><?= sk_e($sk_nr) ?></td><td><?= sk_e($sk_fz['modell']) ?></td>
+<tr><td><?= sk_e($sk_nr) ?></td><td><?= sk_fz($sk_fz, 'modell', '&mdash;') ?></td>
     <td><span class="sm-mono"><?= sk_e($sk_basis) ?>?token=<?= sk_e($sk_token) ?>&amp;aktion=status&amp;fahrzeug=<?= sk_e($sk_nr) ?></span></td></tr>
 <?php } ?>
 </table>
@@ -1097,12 +1207,9 @@ foreach ($sk_liste as $sk_n) { ?>
   <div class="sm-hilfe"><?= sk_t('LOX.H_VORLAGE_ART') ?></div>
 </div>
 <div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= sk_e(sk_t('LOX.K_VORLAGE')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= sk_e(sk_t('LOX.K_VORLAGE')) ?></button>
 </div>
 </form>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= sk_t('LEGENDE.LESEN') ?></span>
-</div>
 </div>
 
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S4_TITEL')) ?></b><br>
@@ -1173,9 +1280,6 @@ foreach ($sk_liste as $sk_n) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= sk_e(sk_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION_TOKEN') ?></span>
 </div>
 </div>
 

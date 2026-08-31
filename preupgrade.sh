@@ -1,6 +1,17 @@
 #!/bin/bash
 # Skoda Connect - preupgrade
-# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+# command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# Zu den Argumenten, gemessen an sbin/plugininstall.pl:
+#   $1  PTEMPDIR   eine zehnstellige Zufallskennung aus generate(10) -
+#                  KEIN Pfad. Wer "$1/config" schreibt, baut ein
+#                  Verzeichnis, das es nicht gibt.
+#   $2  PSHNAME    Name des Plugins fuer Skripte
+#   $3  PDIR       Installationsordner des Plugins
+#   $4  PVERSION   Fassung
+#   $5  LBHOMEDIR  Wurzelverzeichnis des LoxBerry
+#   $6  PWORKDIR   Arbeitsordner des Installers, absolut - das ist der
+#                  Pfad, der in $1 faelschlich vermutet wird.
 #
 # Vor dem Upgrade: laufenden Dienst anhalten und die Konfiguration ausserhalb
 # des Plugin-Ordners sichern. Die Zugangsdaten liegen in einer eigenen Datei
@@ -9,6 +20,30 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    # Dritter Rueckfall wie in postinstall.sh: Ableitung aus dem eigenen
+    # Ablageort. LoxBerry::System taugt hier nicht - es leitet den
+    # Pluginordner aus dem Aufrufort ab und liefert aus einem
+    # Installationsskript heraus ueberall Leerstring.
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+fi
+# Und danach wird nachgesehen, ob dabei wirklich ein LoxBerry heraus-
+# gekommen ist. Bis 0.9.13 gab es diesen Rueckfall gar nicht, und geprueft
+# wurde nichts: standen weder das fuenfte Argument noch $LBHOMEDIR, so
+# arbeitete dieses Skript gegen "/config/plugins/..." und "/data/..." -
+# es hielt keinen Dienst an, sicherte nichts, und meldete am Ende
+# trotzdem "<OK> preupgrade abgeschlossen". Das Upgrade lief dann ohne
+# Sicherung, und niemand sah es. Ein Rueckgabewert ungleich 0 und eine
+# <WARNING>-Zeile sind hier das Mindeste.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
+    echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
+    echo "<WARNING> config/plugins und data/plugins."
+    echo "<WARNING> Es wurde NICHTS gesichert und kein Dienst angehalten."
+    exit 1
+fi
 
 # Der Merker sagt dem postinstall, dass der Dienst LIEF.
 #

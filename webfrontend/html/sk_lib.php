@@ -337,12 +337,6 @@ function sk_config_lage()
         return $GLOBALS['sk_cfg_speicher'];
     }
     $p = sk_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
-    }
     $datei = sk_json_lesen($p['config']);
     $vorgaben = sk_vorgaben();
     $cfg = $vorgaben;
@@ -387,11 +381,55 @@ function sk_config_zwischenspeicher_leeren()
     unset($GLOBALS['sk_cfg_speicher']);
 }
 
+/**
+ * Fehlende oder leere Konfiguration aus der Zweitschrift zurueckholen.
+ *
+ * AUSGELAGERT 31.08.2026 aus sk_config_lage(). Der Grund ist die AUFRUFSTELLE,
+ * nicht die Sache: webfrontend/html/index.php ruft sk_config() als erstes,
+ * noch vor der Tokenpruefung - anders geht es nicht, das Sollzeichen steht ja
+ * in der Konfiguration. Damit loeste jeder Aufruf aus dem Netz ein mkdir und
+ * ein copy im Konfigordner aus, auch ein abgewiesener.
+ *
+ * Gemessen: skoda.json auf 0 Byte gekuerzt, Zweitschrift mit altem Inhalt
+ * daneben, Aufruf mit FALSCHEM Token -> HTTP 403, und danach stand die alte
+ * Datei wieder da, samt dem alten Aktionstoken. Wer sein Token neu wuerfelt
+ * und alle Adressen im Miniserver nachtraegt, haette das alte damit ohne sein
+ * Zutun wieder gueltig gemacht.
+ *
+ * Gerufen wird die Heilung jetzt nur noch dort, wo jemand angemeldet ist oder
+ * das System selbst arbeitet: aus der Oberflaeche und aus postinstall.sh.
+ *
+ * Rueckgabe: true, wenn tatsaechlich zurueckgeholt wurde.
+ */
+function sk_config_heilen()
+{
+    $p = sk_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if (($roh !== '' && $roh !== '{}') || !is_file($p['sicherung'])) {
+        return false;
+    }
+    if (!is_dir($p['configdir'])) {
+        if (!is_dir($p['configdir'])) {
+            @mkdir($p['configdir'], 0775, true);
+        }
+    }
+    if (!@copy($p['sicherung'], $p['config'])) {
+        return false;
+    }
+    sk_config_zwischenspeicher_leeren();
+    return true;
+}
+
 function sk_config_speichern($cfg)
 {
     $p = sk_paths();
     if (!is_dir($p['configdir'])) {
-        @mkdir($p['configdir'], 0775, true);
+        if (!is_dir($p['configdir'])) {
+        if (!is_dir($p['configdir'])) {
+            @mkdir($p['configdir'], 0775, true);
+        }
+    }
     }
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
@@ -442,7 +480,9 @@ function sk_fassung()
 function sk_log_zeile($text)
 {
     $p = sk_paths();
-    @mkdir($p['logdir'], 0775, true);
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
     $z = '[' . date('Y-m-d H:i:s') . '] OBERFLAECHE '
        . str_replace(array("\r", "\n"), ' ', (string) $text) . "\n";
     @file_put_contents($p['log'], $z, FILE_APPEND);
@@ -482,7 +522,11 @@ function sk_zugang_speichern($email, $passwort)
 {
     $p = sk_paths();
     if (!is_dir($p['configdir'])) {
-        @mkdir($p['configdir'], 0775, true);
+        if (!is_dir($p['configdir'])) {
+        if (!is_dir($p['configdir'])) {
+            @mkdir($p['configdir'], 0775, true);
+        }
+    }
     }
     $alt = sk_json_lesen($p['zugang']);
     $neu = array(
@@ -528,6 +572,13 @@ function sk_zugang_loeschen()
         if (!is_file($f)) {
             continue;
         }
+        // Der Zwischenspeicher von stat() haelt die erste Antwort fest.
+        // Wurde die Datei im selben Seitenaufbau geschrieben - Zugangsdaten
+        // speichern und im selben Zug loeschen ist ueber das Formular
+        // erreichbar -, ueberschriebe die Schleife sonst die ALTE Laenge und
+        // liesse den Rest des Klartexts auf der Karte stehen. Der zweite
+        // Parameter beschraenkt das Leeren auf diese Datei.
+        clearstatcache(true, $f);
         $laenge = (int) @filesize($f);
         if ($laenge > 0) {
             @file_put_contents($f, str_repeat('0', $laenge));
@@ -642,11 +693,40 @@ function sk_fahrzeuge()
     return isset($l['fahrzeuge']) && is_array($l['fahrzeuge']) ? $l['fahrzeuge'] : array();
 }
 
-/** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
+/**
+ * Alter des Abbilds in Sekunden. Negativ heisst: es gibt keins Brauchbares.
+ *
+ *   -1  es hat noch nie einen Abruf gegeben
+ *   -2  der Zeitstempel liegt in der ZUKUNFT
+ *
+ * DER ZWEITE FALL IST SEIT 0.9.14 EIGENS BEHANDELT. Bis dahin stand hier
+ * max(0, time() - ts), und ein Zeitstempel aus der Zukunft wurde damit zu
+ * ALTER=0 - also zum frischestmoeglichen Wert. Zusammen mit OK=1 sah eine
+ * Anlage, an der seit Stunden nichts mehr abgerufen wird, in Loxone aus wie
+ * eine, die gerade geantwortet hat. Die Ausfallerkennung, auf die dieses
+ * Plugin ausdruecklich baut, greift dann nie.
+ *
+ * Das ist kein erfundener Fall: bin/skoda.py beschreibt ihn selbst - "ein
+ * Raspberry ohne Echtzeituhr springt beim ersten Zeitabgleich". Und
+ * webfrontend/html/index.php hatte dieselbe Falle fuer den Wert -1 bereits
+ * geschlossen ("minus eins ist kleiner als jede Schwelle, ein nie gelaufener
+ * Dienst sah also aus wie ein besonders frischer Wert") - eine Ebene tiefer
+ * war sie offen geblieben.
+ *
+ * Die 60 Sekunden Spielraum sind Absicht: eine Sekunde Unterschied zwischen
+ * dem schreibenden und dem lesenden Prozess ist normal und kein Uhrensprung.
+ */
 function sk_alter()
 {
     $l = sk_loxone();
-    return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
+    if (!isset($l['ts'])) {
+        return -1;
+    }
+    $alter = time() - (int) $l['ts'];
+    if ($alter < -60) {
+        return -2;
+    }
+    return max(0, $alter);
 }
 
 /**
@@ -754,11 +834,11 @@ function sk_dienst_soll()
 function sk_dienst($befehl)
 {
     if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
-        return array(0, 'Unbekannter Befehl.');
+        return array(0, sk_t('MELD.BEFEHL_UNBEKANNT'));
     }
     $skript = sk_paths()['bindir'] . '/dienst.sh';
     if (!is_file($skript)) {
-        return array(0, 'dienst.sh nicht gefunden: ' . $skript);
+        return array(0, sprintf(sk_t('MELD.DIENSTSH_FEHLT'), $skript));
     }
     $ausgabe = array();
     $code = 0;
@@ -801,10 +881,7 @@ function sk_selbsttest()
     $py = $p['bindir'] . '/venv/bin/python3';
     $skript = $p['bindir'] . '/skoda.py';
     if (!is_file($py) || !is_file($skript)) {
-        return "[FEHL] Die virtuelle Python-Umgebung oder skoda.py fehlt.\n"
-             . "       Erwartet: " . $py . "\n"
-             . "                 " . $skript . "\n"
-             . "       Abhilfe: Plugin neu installieren; die Installation legt beides an.";
+        return sprintf(sk_t('MELD.VENV_FEHLT'), $py, $skript);
     }
     $ausgabe = array();
     @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
@@ -893,7 +970,7 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
-        return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
+        return array(0, sprintf(sk_t('MELD.WARTESCHLANGE'), $ordner));
     }
     /* Der Kennung geht die ZEIT voran.
      *
@@ -916,7 +993,7 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
     $tmp = $datei . '.tmp';
     if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
         @unlink($tmp);
-        return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
+        return array(0, sprintf(sk_t('MELD.BEFEHL_ABLEGEN'), $datei));
     }
     $antwort = $p['datadir'] . '/antworten/' . $kennung . '.json';
     for ($i = 0; $i < $wartezeit * 10; $i++) {
@@ -931,7 +1008,7 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
         }
         usleep(100000);
     }
-    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
+    return array(2, sprintf(sk_t('MELD.KEINE_ANTWORT'), (int) $wartezeit));
 }
 
 /* ---------------- Verlauf ---------------- */
@@ -1116,6 +1193,23 @@ function sk_abo_text()
     return sk_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
 }
 
+/**
+ * Der Abo-Hinweis SAMT Kasten - die Farbe gehoert zur Aussage.
+ *
+ * Bis 0.9.13 stand an beiden Ausgabestellen ein festes
+ * <div class="sm-warnung">, auch um den V2-Satz. Eine Warnung, die sagt "hier
+ * ist nichts einzutragen", widerspricht sich selbst; die Vorlage
+ * (VORLAGE_hausstandard.css.html) sieht dafuer sm-hinweis vor und laesst
+ * sm-warnung nur fuer V1 und den unbekannten Fall.
+ */
+function sk_abo_kasten()
+{
+    $m = sk_mqtt_zustand();
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    $klasse = $f >= 2 ? 'sm-hinweis' : 'sm-warnung';
+    return '<div class="' . $klasse . '">' . sk_abo_text() . '</div>';
+}
+
 
 /** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung. */
 function sk_mqtt_themen()
@@ -1199,9 +1293,27 @@ function sk_mqtt_themen()
  *
  * Nachbau der Bausteine aus LoxBerry::LoxoneTemplateBuilder; das Modul gibt es
  * nur in Perl. Attributreihenfolge, CRLF als Zeilenende und der Tabulator vor
- * den Kindelementen entsprechen dem Original. Wortgleich uebernommen aus
- * LoxBerry-Plugin-APC-UPS-1.0.0 (ap_xml_virtual_in_http) - nicht neu
- * geschrieben, weil die Fassung dort geprueft ist.
+ * den Kindelementen entsprechen dem Original.
+ *
+ * BERICHTIGT 31.08.2026. Hier stand, der Bau sei "wortgleich uebernommen aus
+ * LoxBerry-Plugin-APC-UPS-1.0.0 - nicht neu geschrieben, weil die Fassung
+ * dort geprueft ist". Das war er nicht mehr: gegenueber APC-UPS 1.2.4 fehlten
+ * am Wurzelelement HintText, als erstes Kindelement <Info templateType>, je
+ * Befehlserkennung Unit und HintText, und die Grenzen standen pauschal auf
+ * +-2147483647. Der Ausgang trug zusaetzlich ein CmdErrorValue, das in
+ * KEINER Ausfuhr und in keinem anderen Plugin des Bestands vorkommt, und ihm
+ * fehlte das CmdSep, das 35 Linien fuehren.
+ *
+ * Die beiden Formen sind jetzt gegen ZWEI unabhaengige Quellen geeicht:
+ *   Eingang  ap_xml_virtual_in_http() aus LoxBerry-Plugin-APC-UPS-1.2.4
+ *            und die Ausfuhr "VI_Rasenmaeher (LoxBerry-Plugin)_Test.xml"
+ *   Ausgang  mower_lib.php aus LoxBerry-Plugin-Robonect-1.1.2 und die
+ *            Ausfuhr "VO_Rasenmaeher steuern (LoxBerry-Plugin)_Test.xml"
+ * Beide Ausfuhren kommen unveraendert aus Loxone Config und liegen im
+ * Arbeitsordner. Attribut fuer Attribut verglichen, vier von vier deckungs-
+ * gleich. skoda_pruefen.py haelt das seit demselben Tag nach - es trug bis
+ * dahin die ALTE Reihenfolge als Sollwert und meldete sie als "wie im
+ * Original".
  * ================================================================== */
 
 function sk_x($s)
@@ -1214,12 +1326,18 @@ function sk_xml_virtual_in_http($kopf, $cmds)
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="' . sk_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . sk_x($kopf['title']) . '" ';
     $o .= 'Comment="' . sk_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . sk_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . sk_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        $min = isset($c['min']) && $c['min'] !== null ? (int) $c['min'] : 0;
+        $max = isset($c['max']) && $c['max'] !== null ? (int) $c['max'] : 100;
+        $einheit = isset($c['einheit']) ? trim((string) $c['einheit']) : '';
+        $unit = $einheit === '' ? '<v.1>' : '<v.1> ' . $einheit;
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . sk_x($c['title']) . '" ';
         $o .= 'Comment="' . sk_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
@@ -1231,8 +1349,10 @@ function sk_xml_virtual_in_http($kopf, $cmds)
         $o .= 'SourceValHigh="100" ';
         $o .= 'DestValHigh="100" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MinVal="' . sk_x($min) . '" ';
+        $o .= 'MaxVal="' . sk_x($max) . '" ';
+        $o .= 'Unit="' . sk_x($unit) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1244,39 +1364,53 @@ function sk_xml_virtual_in_http($kopf, $cmds)
  *
  * Reihenfolge und Namen sind zugleich die Reihenfolge der Befehlserkennungen
  * in der Loxone-Vorlage. Wer hier etwas einfuegt, aendert die Vorlage mit.
+ *
+ * Je Feld: array(Einheit, Sprachschluessel, Kleinstwert, Groesstwert).
+ *
+ * DIE BEIDEN GRENZEN SIND SEIT 0.9.14 PFLICHT. Bis dahin schrieb die Vorlage
+ * fuer jeden Eingang MinVal="-2147483647" MaxVal="2147483647". Die Hausregel
+ * verbietet genau das: "Loxone zieht daraus die Reglergrenzen und die
+ * Plausibilitaetspruefung; wer alles offen laesst, verschenkt beides." Ein
+ * Ladezustand von 4000 % faellt mit 0..100 auf, mit dem Pauschalwert nicht.
+ *
+ * Die Zahlen sind physikalisch begruendet, nicht geraten: Prozent 0..100,
+ * Schaltwerte 0..1, HEIMENTF bis zum halben Erdumfang, ALTER bis 999999 -
+ * das ist der Sentinelwert, den der Endpunkt fuer "noch nie abgerufen"
+ * schickt (webfrontend/html/index.php, sk_alter). Eine Grenze, die den
+ * eigenen Sentinelwert abschneidet, waere schlimmer als keine.
  */
 function sk_status_felder()
 {
     return array(
-        'SOC'       => array('%',   'SK_FELD.SOC'),
-        'TANK'      => array('%',   'SK_FELD.TANK'),
-        'REICHW'    => array('km',  'SK_FELD.REICHW'),
-        'KM'        => array('km',  'SK_FELD.KM'),
-        'VERR'      => array('',    'SK_FELD.VERR'),
-        'TUEREN'    => array('',    'SK_FELD.TUEREN'),
-        'FENSTER'   => array('',    'SK_FELD.FENSTER'),
-        'KOFFER'    => array('',    'SK_FELD.KOFFER'),
-        'HAUBE'     => array('',    'SK_FELD.HAUBE'),
-        'LICHT'     => array('',    'SK_FELD.LICHT'),
-        'KLIMA'     => array('',    'SK_FELD.KLIMA'),
-        'ZIELTEMP'  => array('&deg;C', 'SK_FELD.ZIELTEMP'),
-        'AUSSEN'    => array('&deg;C', 'SK_FELD.AUSSEN'),
-        'WARN'      => array('',    'SK_FELD.WARN'),
-        'ERREICH'   => array('',    'SK_FELD.ERREICH'),
-        'BEWEG'     => array('',    'SK_FELD.BEWEG'),
-        'ZUEND'     => array('',    'SK_FELD.ZUEND'),
+        'SOC'       => array('%',   'SK_FELD.SOC',        0, 100),
+        'TANK'      => array('%',   'SK_FELD.TANK',       0, 100),
+        'REICHW'    => array('km',  'SK_FELD.REICHW',     0, 2000),
+        'KM'        => array('km',  'SK_FELD.KM',         0, 2000000),
+        'VERR'      => array('',    'SK_FELD.VERR',       0, 1),
+        'TUEREN'    => array('',    'SK_FELD.TUEREN',     0, 10),
+        'FENSTER'   => array('',    'SK_FELD.FENSTER',    0, 10),
+        'KOFFER'    => array('',    'SK_FELD.KOFFER',     0, 1),
+        'HAUBE'     => array('',    'SK_FELD.HAUBE',      0, 1),
+        'LICHT'     => array('',    'SK_FELD.LICHT',      0, 1),
+        'KLIMA'     => array('',    'SK_FELD.KLIMA',      0, 1),
+        'ZIELTEMP'  => array('&deg;C', 'SK_FELD.ZIELTEMP', 10, 30),
+        'AUSSEN'    => array('&deg;C', 'SK_FELD.AUSSEN',  -50, 60),
+        'WARN'      => array('',    'SK_FELD.WARN',       0, 50),
+        'ERREICH'   => array('',    'SK_FELD.ERREICH',    0, 1),
+        'BEWEG'     => array('',    'SK_FELD.BEWEG',      0, 1),
+        'ZUEND'     => array('',    'SK_FELD.ZUEND',      0, 1),
         /* Angehaengt mit 0.9.13. Neue Felder duerfen ans ENDE: jeder Suchtext
          * traegt seinen eigenen Feldnamen (\i;NAME=\i\v), die Reihenfolge
          * spielt fuer bestehende virtuelle Eingaenge also keine Rolle. Wer
          * mitten in der Liste einfuegt oder umbenennt, zwingt dagegen jeden
          * zum Neuimport - siehe den Kilometerstand in 0.9.11. */
-        'ZUHAUSE'   => array('',    'SK_FELD.ZUHAUSE'),
-        'HEIMENTF'  => array('m',   'SK_FELD.HEIMENTF'),
-        'EMPFEHLUNG'=> array('',    'SK_FELD.EMPFEHLUNG'),
-        'AUSFAELLE' => array('',    'SK_FELD.AUSFAELLE'),
-        'ZAEHLER'   => array('',    'SK_FELD.ZAEHLER'),
-        'ALTER'     => array('s',   'SK_FELD.ALTER'),
-        'OK'        => array('',    'SK_FELD.OK'),
+        'ZUHAUSE'   => array('',    'SK_FELD.ZUHAUSE',    0, 1),
+        'HEIMENTF'  => array('m',   'SK_FELD.HEIMENTF',   0, 20000000),
+        'EMPFEHLUNG'=> array('',    'SK_FELD.EMPFEHLUNG', 0, 1),
+        'AUSFAELLE' => array('',    'SK_FELD.AUSFAELLE',  0, 50),
+        'ZAEHLER'   => array('',    'SK_FELD.ZAEHLER',    0, 10000000),
+        'ALTER'     => array('s',   'SK_FELD.ALTER',      0, 999999),
+        'OK'        => array('',    'SK_FELD.OK',         0, 1),
     );
 }
 
@@ -1284,12 +1418,12 @@ function sk_status_felder()
 function sk_position_felder()
 {
     return array(
-        'BREITE'    => array('&deg;', 'SK_PFELD.BREITE'),
-        'LAENGE'    => array('&deg;', 'SK_PFELD.LAENGE'),
-        'ZUHAUSE'   => array('',      'SK_PFELD.ZUHAUSE'),
-        'HEIMENTF'  => array('m',     'SK_PFELD.HEIMENTF'),
-        'ALTER'     => array('s',     'SK_PFELD.ALTER'),
-        'OK'        => array('',      'SK_PFELD.OK'),
+        'BREITE'    => array('&deg;', 'SK_PFELD.BREITE',   -90, 90),
+        'LAENGE'    => array('&deg;', 'SK_PFELD.LAENGE',   -180, 180),
+        'ZUHAUSE'   => array('',      'SK_PFELD.ZUHAUSE',  0, 1),
+        'HEIMENTF'  => array('m',     'SK_PFELD.HEIMENTF', 0, 20000000),
+        'ALTER'     => array('s',     'SK_PFELD.ALTER',    0, 999999),
+        'OK'        => array('',      'SK_PFELD.OK',       0, 1),
     );
 }
 
@@ -1297,31 +1431,35 @@ function sk_position_felder()
 function sk_laden_felder()
 {
     return array(
-        'SOC'       => array('%',   'SK_LFELD.SOC'),
-        'LAEDT'     => array('',    'SK_LFELD.LAEDT'),
-        'LADEKW'    => array('kW',  'SK_LFELD.LADEKW'),
-        'TEMPO'     => array('km/h','SK_LFELD.TEMPO'),
-        'RESTMIN'   => array('min', 'SK_LFELD.RESTMIN'),
-        'LADEGR'    => array('%',   'SK_LFELD.LADEGR'),
-        'KABEL'     => array('',    'SK_LFELD.KABEL'),
-        'REICHWBAT' => array('km',  'SK_LFELD.REICHWBAT'),
-        'ALTER'     => array('s',   'SK_LFELD.ALTER'),
-        'OK'        => array('',    'SK_LFELD.OK'),
+        'SOC'       => array('%',   'SK_LFELD.SOC',        0, 100),
+        'LAEDT'     => array('',    'SK_LFELD.LAEDT',      0, 1),
+        'LADEKW'    => array('kW',  'SK_LFELD.LADEKW',     0, 400),
+        'TEMPO'     => array('km/h','SK_LFELD.TEMPO',      0, 1000),
+        'RESTMIN'   => array('min', 'SK_LFELD.RESTMIN',    0, 10000),
+        'LADEGR'    => array('%',   'SK_LFELD.LADEGR',     0, 100),
+        'KABEL'     => array('',    'SK_LFELD.KABEL',      0, 1),
+        'REICHWBAT' => array('km',  'SK_LFELD.REICHWBAT',  0, 2000),
+        'ALTER'     => array('s',   'SK_LFELD.ALTER',      0, 999999),
+        'OK'        => array('',    'SK_LFELD.OK',         0, 1),
     );
 }
 
 /** Die Werte des Wartungs-Endpunkts. */
 function sk_wartung_felder()
 {
+    /* Vier Werte duerfen NEGATIV sein, und das ist der Sinn der Sache: eine
+     * ueberfaellige Inspektion meldet Minustage und Minuskilometer. Eine
+     * Untergrenze von 0 haette daraus in Loxone eine 0 gemacht - also
+     * ausgerechnet die Meldung verschluckt, wegen der man hinsieht. */
     return array(
-        'INSPTAGE'  => array('d',   'SK_WFELD.INSPTAGE'),
-        'INSPKM'    => array('km',  'SK_WFELD.INSPKM'),
-        'OELTAGE'   => array('d',   'SK_WFELD.OELTAGE'),
-        'OELKM'     => array('km',  'SK_WFELD.OELKM'),
-        'KM'        => array('km',  'SK_WFELD.KM'),
-        'WARN'      => array('',    'SK_WFELD.WARN'),
-        'ALTER'     => array('s',   'SK_WFELD.ALTER'),
-        'OK'        => array('',    'SK_WFELD.OK'),
+        'INSPTAGE'  => array('d',   'SK_WFELD.INSPTAGE', -3650, 3650),
+        'INSPKM'    => array('km',  'SK_WFELD.INSPKM',   -100000, 1000000),
+        'OELTAGE'   => array('d',   'SK_WFELD.OELTAGE',  -3650, 3650),
+        'OELKM'     => array('km',  'SK_WFELD.OELKM',    -100000, 1000000),
+        'KM'        => array('km',  'SK_WFELD.KM',        0, 2000000),
+        'WARN'      => array('',    'SK_WFELD.WARN',      0, 50),
+        'ALTER'     => array('s',   'SK_WFELD.ALTER',     0, 999999),
+        'OK'        => array('',    'SK_WFELD.OK',        0, 1),
     );
 }
 
@@ -1368,23 +1506,32 @@ function sk_xml_virtual_out($kopf, $cmds)
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . sk_x($kopf['title']) . '" ';
     $o .= 'Comment="' . sk_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . sk_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'CmdInit="" ';
     $o .= 'CloseAfterSend="true" ';
-    $o .= 'CmdErrorValue=""';
+    $o .= 'CmdSep=""';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . sk_x($c['title']) . '" ';
         $o .= 'Comment="' . sk_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . sk_x($c['cmd']) . '" ';
         $o .= 'CmdOnHTTP="" ';
+        $o .= 'CmdOnPost="" ';
+        $o .= 'CmdOff="" ';
+        $o .= 'CmdOffHTTP="" ';
+        $o .= 'CmdOffPost="" ';
+        $o .= 'CmdAnswer="" ';
         $o .= 'Analog="' . (empty($c['analog']) ? 'false' : 'true') . '" ';
         $o .= 'Repeat="0" ';
-        $o .= 'RepeatRate="0"';
+        $o .= 'RepeatRate="0" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -1449,11 +1596,20 @@ function sk_vorlage($nummer = 1, $art = 'status')
          * Die drei NEUEN Arten tragen ihn dagegen mit, und sie muessen es:
          * SOC steht sowohl im Status- als auch im Lade-Endpunkt, ALTER und OK
          * in allen vieren. Ohne die Art im Namen kollidierten sie. */
+        /* Einheit und Grenzen wandern seit 0.9.14 MIT in die Vorlage. Die
+         * Einheit stand bis dahin nur im Kommentar; in Loxone zeigte der
+         * virtuelle Eingang deshalb eine nackte Zahl, und die Einheit fand
+         * nur, wer den Kommentar aufklappte. Sie kommt aus derselben Zeile
+         * der Feldliste wie der Klammerzusatz im Kommentar - zwei
+         * Darstellungen, eine Quelle. */
         $cmds[] = array(
             'title'   => 'SKODA_' . $nummer . ($art === 'status' ? '' : '_' . strtoupper($art))
                          . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => sk_check($feld),
+            'einheit' => $einheit,
+            'min'     => isset($info[2]) ? $info[2] : null,
+            'max'     => isset($info[3]) ? $info[3] : null,
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']

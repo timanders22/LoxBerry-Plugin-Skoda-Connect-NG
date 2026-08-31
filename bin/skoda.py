@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -227,13 +228,57 @@ def log_einrichten() -> None:
         logging.getLogger(fremd).setLevel(logging.WARNING)
 
 
+DATEI_BREMSE = PDATA / "meldebremse.json"
+
+
 def melde_gebremst(schluessel: str, text: str, sekunden: int = 3600) -> None:
     """Dieselbe Meldung hoechstens einmal je Zeitfenster - sonst wird die
-    Logdatei durch eine Dauerstoerung unlesbar."""
+    Logdatei durch eine Dauerstoerung unlesbar.
+
+    DIE BREMSE LIEGT SEIT 31.08.2026 AUF DER PLATTE, nicht nur im Prozess.
+
+    _LETZTE_MELDUNG ist ein Prozessfeld. Der Dauerlaeufer ueberlebt damit
+    Stunden - cron.01min aber startet jede Minute einen NEUEN Python-Prozess
+    ("dienst.sh wachzeichen"), und dessen Feld ist leer. Steht mqtt_ein auf 1,
+    waehrend das Gateway nicht auf Autostart steht - genau der Zustand, den
+    das Plugin melden will -, schrieb mqtt_senden() deshalb bei JEDEM
+    Cron-Lauf eine WARNING: rund 1440 gleiche Zeilen am Tag.
+
+    Was das kostet: der RotatingFileHandler fasst 512000 Byte mit einer
+    Sicherung, also knapp 1 MB. Bei ~160 Byte je Zeile ist nach gut vier Tagen
+    jede echte Meldung des Dienstes von dieser einen Warnung verdraengt. Eine
+    Bremse, die den Prozess nicht ueberlebt, ist bei einem Minutencron keine.
+
+    Die Datei ist bewusst schlicht und ihr Fehlschlagen bewusst folgenlos:
+    laesst sie sich nicht lesen oder schreiben, wird gemeldet statt
+    geschwiegen. Eine Bremse darf keine Meldung verhindern, die sonst
+    herausginge.
+    """
     jetzt = time.time()
-    if jetzt - _LETZTE_MELDUNG.get(schluessel, 0) >= sekunden:
-        _LETZTE_MELDUNG[schluessel] = jetzt
-        _LOG.warning(text)
+    marken = _LETZTE_MELDUNG
+    try:
+        if DATEI_BREMSE.is_file():
+            gelesen = json.loads(DATEI_BREMSE.read_text(encoding="utf-8"))
+            if isinstance(gelesen, dict):
+                # Der spaetere von beiden gilt: der Dauerlaeufer weiss von
+                # seinen eigenen Meldungen mehr als die Datei, und umgekehrt.
+                for k, v in gelesen.items():
+                    if isinstance(v, (int, float)) and v > marken.get(k, 0):
+                        marken[k] = float(v)
+    except (OSError, ValueError):
+        pass
+    if jetzt - marken.get(schluessel, 0) < sekunden:
+        return
+    marken[schluessel] = jetzt
+    _LOG.warning(text)
+    try:
+        PDATA.mkdir(parents=True, exist_ok=True)
+        # Nur Marken behalten, die noch bremsen koennen - sonst waechst die
+        # Datei mit jedem neuen Schluessel und wird nie kuerzer.
+        frisch = {k: v for k, v in marken.items() if jetzt - v < 86400}
+        json_schreiben(DATEI_BREMSE, frisch)
+    except (OSError, ValueError):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -278,26 +323,59 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
         return False
 
 
+def in_grenzen(wert, unten: int, oben: int, vorgabe: int) -> int:
+    """Eine ganze Zahl in Grenzen - oder die VORGABE. Nichts wird gekappt.
+
+    EINGEFUEHRT 31.08.2026, und das ist eine Verhaltensaenderung mit Grund.
+    Bis 0.9.13 stand hier ueberall max(unten, min(oben, ganz(...))), also
+    Kappen. Die Oberflaeche liest DIESELBE Datei und macht seit 0.9.13 etwas
+    anderes: sk_wert_pruefen() in webfrontend/html/sk_lib.php weist einen
+    unzulaessigen Wert AB und nimmt die Vorgabe, mit ausgeschriebener
+    Begruendung:
+
+        "Es wird nichts gekappt und nichts zurechtgebogen. Beim Speichern
+         ueber das Formular waere Kappen vertretbar, denn der Bediener sieht
+         das Ergebnis sofort - bei einer Datei saehe niemand, dass aus 99999
+         eine 3600 wurde."
+
+    Gemessen an einer von Hand geschriebenen skoda.json mit "intervall": 5
+    zeigte die Oberflaeche deshalb 300 und der Dienst fuhr 60. Zwei Wahrheiten
+    ueber dieselbe Datei, und kein Prueflauf verglich die beiden Seiten -
+    skoda_funktionstest.py forderte das Kappen sogar als Soll ein. Beides ist
+    am 31.08.2026 berichtigt worden; massgeblich ist die Fassung mit der
+    Begruendung.
+    """
+    try:
+        n = int(str(wert).strip())
+    except (TypeError, ValueError):
+        return vorgabe
+    return n if unten <= n <= oben else vorgabe
+
+
 def config() -> dict:
     c = dict(VORGABEN)
     c.update(json_lesen(DATEI_CONFIG))
-    c["intervall"] = max(60, min(3600, ganz(c.get("intervall"), 300)))
-    c["takt_stamm"] = max(1, min(240, ganz(c.get("takt_stamm"), 12)))
-    c["takt_wartung"] = max(1, min(240, ganz(c.get("takt_wartung"), 24)))
-    c["temp_min"] = max(10, min(30, ganz(c.get("temp_min"), 16)))
-    c["temp_max"] = max(10, min(30, ganz(c.get("temp_max"), 29)))
+    c["intervall"] = in_grenzen(c.get("intervall"), 60, 3600, 300)
+    c["takt_stamm"] = in_grenzen(c.get("takt_stamm"), 1, 240, 12)
+    c["takt_wartung"] = in_grenzen(c.get("takt_wartung"), 1, 240, 24)
+    c["temp_min"] = in_grenzen(c.get("temp_min"), 10, 30, 16)
+    c["temp_max"] = in_grenzen(c.get("temp_max"), 10, 30, 29)
     if c["temp_min"] > c["temp_max"]:
-        c["temp_min"], c["temp_max"] = c["temp_max"], c["temp_min"]
-    c["verlauf_tage"] = max(1, min(90, ganz(c.get("verlauf_tage"), 8)))
-    c["abstand_abruf"] = max(0, min(3600, ganz(c.get("abstand_abruf"), 60)))
-    c["befehle_stunde"] = max(1, min(240, ganz(c.get("befehle_stunde"), 30)))
-    c["entprellung"] = max(0, min(600, ganz(c.get("entprellung"), 20)))
-    c["heim_radius"] = max(10, min(5000, ganz(c.get("heim_radius"), 150)))
+        # Getauscht wurde hier bis 0.9.13 stillschweigend. Auch das ist
+        # Zurechtbiegen: eine Datei mit temp_min 28 / temp_max 17 ist nicht
+        # "verdreht gemeint", sie ist unzulaessig. Beide fallen auf ihre
+        # Vorgabe zurueck, und der Reiter Test nennt sie unter 'abgewiesen'.
+        c["temp_min"], c["temp_max"] = VORGABEN["temp_min"], VORGABEN["temp_max"]
+    c["verlauf_tage"] = in_grenzen(c.get("verlauf_tage"), 1, 90, 8)
+    c["abstand_abruf"] = in_grenzen(c.get("abstand_abruf"), 0, 3600, 60)
+    c["befehle_stunde"] = in_grenzen(c.get("befehle_stunde"), 1, 240, 30)
+    c["entprellung"] = in_grenzen(c.get("entprellung"), 0, 600, 20)
+    c["heim_radius"] = in_grenzen(c.get("heim_radius"), 10, 5000, 150)
     c["heim_breite"] = kommazahl(c.get("heim_breite"), -90, 90)
     c["heim_laenge"] = kommazahl(c.get("heim_laenge"), -180, 180)
     c["empf_grenze"] = kommazahl(c.get("empf_grenze"), -1000000, 1000000)
-    c["abfahrt_vorlauf"] = max(5, min(180, ganz(c.get("abfahrt_vorlauf"), 20)))
-    c["abfahrt_temp"] = max(10, min(30, ganz(c.get("abfahrt_temp"), 21)))
+    c["abfahrt_vorlauf"] = in_grenzen(c.get("abfahrt_vorlauf"), 5, 180, 20)
+    c["abfahrt_temp"] = in_grenzen(c.get("abfahrt_temp"), 10, 30, 21)
     for feld in ("empf_thema", "abfahrt_thema"):
         # Dieselbe Baendigung wie beim eigenen Praefix: ein Thema mit
         # Leerzeichen oder Zeilenumbruch hat in keiner MQTT-Zeile etwas
@@ -305,7 +383,12 @@ def config() -> dict:
         s = str(c.get(feld) or "").strip().strip("/")
         c[feld] = s if re.match(r"^[A-Za-z0-9_/+#-]{0,128}$", s) else ""
     for s in SCHALTER:
-        c[s] = 1 if str(c.get(s)).strip() in ("1", "true", "True") else 0
+        # Genau "0" oder "1", sonst die Vorgabe - dieselbe Regel wie im Zweig
+        # 'schalt' von sk_wert_pruefen(). Bis 0.9.13 wurde hier auf 0 gezwungen,
+        # was fuer sitzung_merken (Vorgabe 1) eine dritte Bedeutung ergab: die
+        # Oberflaeche zeigte 1, der Dienst fuhr 0.
+        roh = c.get(s)
+        c[s] = int(roh) if str(roh).strip() in ("0", "1") else VORGABEN[s]
     # Der Themenpraefix wird hier gebaendigt, nicht erst beim Senden.
     # mqtt_wert_saeubern() nahm bis 0.9.12 nur den WERT vor - der Praefix lief
     # ungeprueft in dieselbe Zeile. Bei mqtt_topic = "meine autos" entstand
@@ -456,6 +539,25 @@ def zahl(wert, nachkomma: int = 0):
     try:
         f = float(str(wert).replace(",", "."))
     except (TypeError, ValueError):
+        return None
+    # BEHOBEN 31.08.2026. int(round(f)) stand AUSSERHALB des try, und float()
+    # nimmt drei Zeichenketten an, die int() nicht annimmt:
+    #
+    #     zahl("nan")   -> ValueError: cannot convert float NaN to integer
+    #     zahl("inf")   -> OverflowError: cannot convert float infinity
+    #     zahl("1e400") -> OverflowError
+    #
+    # Erreicht wurde das mit der ROHEN Nutzlast eines fremden MQTT-Themas
+    # ueber Horcher.abfahrt_faellig(). Die Ausnahme verliess die Hauptschleife,
+    # main() beendete den Dienst mit 1, soll_laufen blieb liegen, und
+    # cron.01min holte ihn binnen 60 Sekunden in denselben Absturz zurueck -
+    # mit einer neuen Anmeldung an der Skoda-Cloud je Runde. ESPHome
+    # veroeffentlicht "nan" fuer einen Sensor ohne Wert; das ist kein Randfall.
+    #
+    # nan faellt auch mit nachkomma durch: round(nan, 3) ist nan, und
+    # "nan > grenze" ist False - die Ladeempfehlung haette daraus ein
+    # stilles "nicht empfohlen" gemacht statt "unbekannt".
+    if not math.isfinite(f):
         return None
     return round(f, nachkomma) if nachkomma else int(round(f))
 
@@ -870,6 +972,15 @@ class Horcher:
         self.grund = ""
         self.verbunden = False
         self.abfahrt_erledigt = 0.0
+        # Wann kam der Wert? ERGAENZT 31.08.2026.
+        #
+        # self.werte kannte bis dahin kein Alter. Ein einmal empfangener Wert
+        # blieb fuer immer stehen und ging in jedem Takt als frische
+        # EMPFEHLUNG nach Loxone - genau die Falle, gegen die
+        # abbild_schreiben() beim Abruf ausdruecklich verteidigt ("Wuerde man
+        # den Zeitstempel auffrischen, bliebe ALTER klein"). Und ohne Alter
+        # laesst sich eine Flanke nicht von einem Pegel unterscheiden.
+        self.empfangen: dict[str, float] = {}
 
     def moeglich(self) -> tuple[bool, str]:
         try:
@@ -910,7 +1021,10 @@ class Horcher:
             self.schliessen()
             self.grund = ""
             return
-        if self.klient is not None and soll == self.themen:
+        # Nicht nur "sind es dieselben Themen?", sondern auch "steht die
+        # Verbindung noch?". Ohne die zweite Frage blieb ein Klient, der die
+        # Verbindung verloren hatte, bis zum Dienstneustart liegen.
+        if self.klient is not None and soll == self.themen and self.verbunden:
             return
         self.schliessen()
         ok, grund = self.moeglich()
@@ -927,13 +1041,29 @@ class Horcher:
             port = 1883
         try:
             k = mq.Client()
-            k.on_message = lambda _c, _u, m: self.werte.__setitem__(
-                m.topic, m.payload.decode("utf-8", "replace").strip())
-            k.on_connect = lambda *_a, **_k: setattr(self, "verbunden", True)
+
+            def merken(_c, _u, m):
+                self.werte[m.topic] = m.payload.decode("utf-8", "replace").strip()
+                self.empfangen[m.topic] = time.time()
+
+            def verbunden(_c, _u, _f, _rc, *_a):
+                # ABONNIERT WIRD HIER, NICHT NACH connect(). Behoben
+                # 31.08.2026: paho baut die Verbindung ueber loop_start()
+                # selbst wieder auf, fuehrt aber KEINEN Abonnementspeicher
+                # (nachgelesen in paho-mqtt 2.1.0, Client.reconnect leert
+                # _out_packet und sendet nur CONNECT). Nach einem
+                # Broker-Neustart war der Klient deshalb verbunden und auf
+                # nichts abonniert - schweigend, denn pflegen() prueft nur die
+                # Themenliste, nie den Zustand. Ladeempfehlung und
+                # Vorklimatisierung waren bis zum naechsten Dienstneustart tot.
+                self.verbunden = True
+                for th in self.themen or soll:
+                    k.subscribe(th)
+
+            k.on_message = merken
+            k.on_connect = verbunden
             k.on_disconnect = lambda *_a, **_k: setattr(self, "verbunden", False)
             k.connect(broker, port, 30)
-            for th in soll:
-                k.subscribe(th)
             k.loop_start()
         except Exception as err:  # noqa: BLE001
             self.grund = (f"Der Broker {broker}:{port} liess sich nicht erreichen "
@@ -964,7 +1094,8 @@ class Horcher:
         """Ist es Zeit fuer die Vorklimatisierung? Hoechstens EINMAL je Abfahrt."""
         if not cfg.get("abfahrt_ein") or not cfg.get("abfahrt_thema"):
             return False
-        roh = self.werte.get(str(cfg["abfahrt_thema"]))
+        thema = str(cfg["abfahrt_thema"])
+        roh = self.werte.get(thema)
         if roh is None:
             return False
         rest = zahl(roh)
@@ -972,13 +1103,26 @@ class Horcher:
             return False
         vorlauf = ganz(cfg.get("abfahrt_vorlauf"), 20)
         if rest < 0 or rest > vorlauf:
-            # Ausserhalb des Fensters. Damit ist die naechste Abfahrt wieder
-            # eine neue - der Merker faellt zurueck.
-            if rest > vorlauf:
-                self.abfahrt_erledigt = 0.0
             return False
-        # Im Fenster. Ein zweites Anfordern in derselben Stunde waere eine
-        # Wiederholung, kein neuer Auftrag.
+        # EINE FLANKE, KEIN PEGEL. Behoben 31.08.2026.
+        #
+        # Bis hierher fiel abfahrt_erledigt nur zurueck, wenn der Wert das
+        # Fenster wieder VERLIESS. Bleibt er darin stehen - bei 'retain' der
+        # Normalfall, sobald der Abfahrtsassistent zuletzt eine 0 gesendet
+        # hat -, griff nur noch die Stundensperre: gemessen fuenf Ausloesungen
+        # in fuenf Stunden, also eine Klimatisierungsanforderung pro Stunde,
+        # Tag und Nacht, ohne dass jemand abfaehrt.
+        #
+        # Massgeblich ist deshalb, ob seit der letzten Ausloesung ein NEUER
+        # Wert eingetroffen ist. Ein behaltener Wert kommt beim Abonnieren
+        # genau einmal an; danach schweigt das Thema, und es passiert nichts
+        # mehr. Das ist dieselbe Lehre wie bei der DisSp-Falle in der
+        # Beschattung: ein Pegel, der wie eine Flanke behandelt wird,
+        # wiederholt sich fuer immer.
+        if self.empfangen.get(thema, 0.0) <= self.abfahrt_erledigt:
+            return False
+        # Die Stundensperre bleibt als zweite Bremse stehen: sendet die
+        # Gegenstelle im Minutentakt, waere jede Nachricht sonst eine Flanke.
         if time.time() - self.abfahrt_erledigt < 3600:
             return False
         self.abfahrt_erledigt = time.time()
@@ -1428,7 +1572,15 @@ async def fahrzeug_abrufen(ms, vin: str, stamm: dict, cfg: dict, zyklus: int) ->
             laden = abbild_laden(ch)
             meter = hole(ch, "status", "battery", "remaining_cruising_range_in_meters")
             laden["reichweite_batterie_km"] = None if meter is None else zahl(int(meter) / 1000)
-            d.update(laden)
+            # NUR gefuellte Felder uebernehmen. Behoben 31.08.2026:
+            # abbild_laden() liefert den Schluessel "soc" IMMER, notfalls mit
+            # None. Fehlt der Batteriezweig einer sonst gelungenen Ladeantwort,
+            # loeschte d.update(laden) damit einen gueltigen Ladezustand aus
+            # abbild_reichweite() - gemessen: soc fiel von 62 auf None. In
+            # Loxone wurde daraus ein Strich, im Verlauf eine Luecke.
+            # Dieselbe Form benutzen die beiden Zeilen fuer inspektion/
+            # oelservice weiter unten schon.
+            d.update({k: v for k, v in laden.items() if v is not None})
 
     if kann(stamm, "AIR_CONDITIONING"):
         ac = await endpunkt(ausfaelle, "klima", ms.get_air_conditioning(vin))
@@ -1827,6 +1979,14 @@ async def dienst(einmal: bool = False) -> int:
         stand: dict = {"ts": 0, "fahrzeuge": {}}
         zyklus = 0
         fehler_folge = 0
+        # VOR der Schleife gesetzt, nicht nur darin. Trifft SIGTERM den
+        # Dienst, waehrend die Anmeldung noch laeuft, wird der Rumpf der
+        # Schleife nie betreten - und das abschliessende
+        # 'return 0 if ok else 1' des --einmal-Laufs griff dann auf einen
+        # ungebundenen Namen zu. Heraus kam ein UnboundLocalError, den
+        # main() als 'Dienst abgebrochen' meldete: eine Fehlermeldung
+        # ueber die falsche Ursache.
+        ok = 0
 
         global _NEU_ANMELDEN
         while _LAUF:

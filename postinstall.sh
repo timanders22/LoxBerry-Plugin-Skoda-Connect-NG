@@ -1,6 +1,17 @@
 #!/bin/bash
 # Skoda Connect - postinstall
-# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+# command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# Zu den Argumenten, gemessen an sbin/plugininstall.pl:
+#   $1  PTEMPDIR   eine zehnstellige Zufallskennung aus generate(10) -
+#                  KEIN Pfad. Wer "$1/config" schreibt, baut ein
+#                  Verzeichnis, das es nicht gibt.
+#   $2  PSHNAME    Name des Plugins fuer Skripte
+#   $3  PDIR       Installationsordner des Plugins
+#   $4  PVERSION   Fassung
+#   $5  LBHOMEDIR  Wurzelverzeichnis des LoxBerry
+#   $6  PWORKDIR   Arbeitsordner des Installers, absolut - das ist der
+#                  Pfad, der in $1 faelschlich vermutet wird.
 #
 # Legt an: Konfigurations-, Daten- und Logordner, die Zugangsdatei mit Rechten
 # 0600 und die virtuelle Python-Umgebung samt der Bibliothek myskoda.
@@ -36,6 +47,24 @@ PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 VENV="$PBIN/venv"
 
+# Der Merker aus preupgrade.sh - und die Zusage, ihn IN JEDEM FALL zu
+# entfernen.
+#
+# Bis 0.9.13 stand das "rm -f" ganz unten, hinter sechs "exit 1". Der
+# Kommentar behauptete "IN JEDEM FALL", das Skript hielt es nicht: brach
+# die Installation vorher ab (kein Netz beim pip, zu altes Python), blieb
+# der Merker liegen und startete den Dienst bei der naechsten Installation
+# ungefragt - auch dann, wenn er absichtlich abgeschaltet worden war.
+#
+# Deshalb ein trap auf EXIT: er raeumt den Merker weg, gleich an welcher
+# Stelle und mit welchem Rueckgabewert dieses Skript endet. Ob der Dienst
+# gestartet werden soll, steht danach in LIEF_VORHER - einer Variablen,
+# die kein Abbruch liegen lassen kann.
+MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
+LIEF_VORHER=0
+[ -f "$MERKER" ] && LIEF_VORHER=1
+trap 'rm -f "$MERKER"' EXIT
+
 # Fassung der Bibliothek. Auf eine Fassung festgenagelt, damit eine
 # Installation von heute morgen und eine von heute abend dasselbe ergeben.
 # 2.16.1 ist die Fassung, gegen die dieses Plugin gebaut wurde; die
@@ -67,6 +96,76 @@ for f in skoda.json zugang.json; do
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
+
+# ---------- Die S-PIN abraeumen, die es nicht mehr gibt (0.9.11) ----------
+#
+# WARUM DIESER BLOCK HIER OBEN STEHT UND NICHT MEHR UNTEN
+#
+# Bis 0.9.13 stand er hinter dem Python-, venv- und pip-Abschnitt, also
+# hinter sechs "exit 1". Scheiterte "pip install myskoda" - und dafuer
+# genuegt eine fehlende Internetverbindung -, wurde er nie erreicht: die
+# S-PIN blieb in zugang.json UND in der Zweitschrift stehen, waehrend
+# README und Hilfe zusagen, sie werde entfernt. Ein Geheimnis, das laut
+# Beschreibung fort ist und tatsaechlich noch dasteht, ist schlimmer als
+# eines, von dem man weiss.
+#
+# Der Block braucht die venv nicht: er faellt weiter unten auf das
+# System-python3 zurueck und benutzt nur die Standardbibliothek. Es gibt
+# also keinen Grund, ihn hinter der Netzarbeit zu fuehren.
+#
+# Bis 0.9.10 nahm das Formular eine S-PIN an und legte sie in zugang.json ab.
+# Benutzt wurde sie NIE: das Plugin bietet weder Ver- noch Entriegeln an, und
+# nur dafuer verlangt MySkoda sie. Mit 0.9.11 ist das Feld fort - und damit
+# muss auch der gespeicherte Wert fort. Ein Feld zu entfernen und den Wert
+# liegen zu lassen waere die schlechteste der drei Moeglichkeiten: ein
+# Geheimnis, das niemand mehr sieht und niemand mehr verwaltet.
+#
+# Ueberschrieben wird vor dem Neuschreiben. Auf einem Journaling-Dateisystem
+# und auf Flash-Speicher ist das kein sicheres Loeschen - es ist der
+# Unterschied zwischen "steht noch da" und "muss man suchen".
+SPIN_WEG=0
+for Z in "$PCONFIG/zugang.json" "$BASE/config/plugins/$PFOLDER.backup.zugang.json"; do
+    [ -f "$Z" ] || continue
+    if ! grep -q '"spin"' "$Z" 2>/dev/null; then
+        continue
+    fi
+    PYBIN="python3"
+    [ -x "$PBIN/venv/bin/python3" ] && PYBIN="$PBIN/venv/bin/python3"
+    if "$PYBIN" - "$Z" <<'PYENDE'
+import json, os, sys
+p = sys.argv[1]
+with open(p, 'r', encoding='utf-8') as f:
+    d = json.load(f)
+if not isinstance(d, dict) or 'spin' not in d:
+    sys.exit(2)
+d.pop('spin', None)
+neu = json.dumps(d, ensure_ascii=False, indent=1)
+# Erst den alten Platz ueberschreiben, dann den neuen Inhalt schreiben.
+groesse = os.path.getsize(p)
+with open(p, 'r+b') as f:
+    f.write(b'0' * groesse)
+    f.flush()
+    os.fsync(f.fileno())
+    f.seek(0)
+    f.truncate(0)
+    f.write(neu.encode('utf-8'))
+    f.flush()
+    os.fsync(f.fileno())
+os.chmod(p, 0o600)
+PYENDE
+    then
+        SPIN_WEG=$((SPIN_WEG + 1))
+        echo "<OK> Die nicht mehr benutzte S-PIN wurde aus $(basename "$Z") entfernt."
+    else
+        echo "<FAIL> Die S-PIN liess sich aus $Z NICHT entfernen."
+        echo "<FAIL> Bitte die Datei von Hand pruefen - sie enthaelt noch ein Geheimnis,"
+        echo "<FAIL> das dieses Plugin nicht mehr benutzt."
+    fi
+done
+if [ "$SPIN_WEG" -gt 0 ]; then
+    echo "<INFO> Das Feld S-PIN gibt es in der Oberflaeche nicht mehr. Es kehrt zurueck,"
+    echo "<INFO> wenn das Plugin Ver- und Entriegeln anbietet - dann wird es gebraucht."
+fi
 
 # ---------- Python suchen ----------
 PY=""
@@ -102,7 +201,10 @@ if [ "$BRAUCHBAR" -eq 0 ]; then
     rm -rf "$VENV"
     if ! "$PY" -m venv "$VENV"; then
         echo "<FAIL> Virtuelle Umgebung konnte nicht angelegt werden ($VENV)."
-        echo "<FAIL> Fehlt das Paket python3-venv? (apt install python3-venv)"
+        echo "<FAIL> Haeufigste Ursache: das Paket python3-venv fehlt. Es steht"
+        echo "<FAIL> seit 0.9.14 in dpkg/apt und wird vom LoxBerry-Installer"
+        echo "<FAIL> selbst nachgezogen; kam es dort nicht an, von Hand:"
+        echo "<FAIL>   sudo apt-get update && sudo apt-get install -y python3-venv"
         exit 1
     fi
     echo "<OK> Virtuelle Umgebung angelegt: $VENV"
@@ -170,62 +272,6 @@ chmod 755 "$PBIN/dienst.sh" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/zugang.json"
 
-# ---------- Die S-PIN abraeumen, die es nicht mehr gibt (0.9.11) ----------
-#
-# Bis 0.9.10 nahm das Formular eine S-PIN an und legte sie in zugang.json ab.
-# Benutzt wurde sie NIE: das Plugin bietet weder Ver- noch Entriegeln an, und
-# nur dafuer verlangt MySkoda sie. Mit 0.9.11 ist das Feld fort - und damit
-# muss auch der gespeicherte Wert fort. Ein Feld zu entfernen und den Wert
-# liegen zu lassen waere die schlechteste der drei Moeglichkeiten: ein
-# Geheimnis, das niemand mehr sieht und niemand mehr verwaltet.
-#
-# Ueberschrieben wird vor dem Neuschreiben. Auf einem Journaling-Dateisystem
-# und auf Flash-Speicher ist das kein sicheres Loeschen - es ist der
-# Unterschied zwischen "steht noch da" und "muss man suchen".
-SPIN_WEG=0
-for Z in "$PCONFIG/zugang.json" "$BASE/config/plugins/$PFOLDER.backup.zugang.json"; do
-    [ -f "$Z" ] || continue
-    if ! grep -q '"spin"' "$Z" 2>/dev/null; then
-        continue
-    fi
-    PYBIN="python3"
-    [ -x "$PBIN/venv/bin/python3" ] && PYBIN="$PBIN/venv/bin/python3"
-    if "$PYBIN" - "$Z" <<'PYENDE'
-import json, os, sys
-p = sys.argv[1]
-with open(p, 'r', encoding='utf-8') as f:
-    d = json.load(f)
-if not isinstance(d, dict) or 'spin' not in d:
-    sys.exit(2)
-d.pop('spin', None)
-neu = json.dumps(d, ensure_ascii=False, indent=1)
-# Erst den alten Platz ueberschreiben, dann den neuen Inhalt schreiben.
-groesse = os.path.getsize(p)
-with open(p, 'r+b') as f:
-    f.write(b'0' * groesse)
-    f.flush()
-    os.fsync(f.fileno())
-    f.seek(0)
-    f.truncate(0)
-    f.write(neu.encode('utf-8'))
-    f.flush()
-    os.fsync(f.fileno())
-os.chmod(p, 0o600)
-PYENDE
-    then
-        SPIN_WEG=$((SPIN_WEG + 1))
-        echo "<OK> Die nicht mehr benutzte S-PIN wurde aus $(basename "$Z") entfernt."
-    else
-        echo "<FAIL> Die S-PIN liess sich aus $Z NICHT entfernen."
-        echo "<FAIL> Bitte die Datei von Hand pruefen - sie enthaelt noch ein Geheimnis,"
-        echo "<FAIL> das dieses Plugin nicht mehr benutzt."
-    fi
-done
-if [ "$SPIN_WEG" -gt 0 ]; then
-    echo "<INFO> Das Feld S-PIN gibt es in der Oberflaeche nicht mehr. Es kehrt zurueck,"
-    echo "<INFO> wenn das Plugin Ver- und Entriegeln anbietet - dann wird es gebraucht."
-fi
-
 # ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
 #
 # Der Merker entsteht nur in preupgrade.sh und nur dann, wenn dort ein
@@ -238,13 +284,10 @@ fi
 # unabhaengig vom Waechter - das ist der ganze Gewinn, und mehr wird nicht
 # behauptet.
 #
-# Er wird IN JEDEM FALL entfernt, auch wenn der Start scheitert. Ein
-# liegengebliebener Merker startete den Dienst bei einer spaeteren
-# Installation ungefragt - auch dann, wenn er absichtlich abgeschaltet
-# worden war.
-MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
-if [ -f "$MERKER" ]; then
-    rm -f "$MERKER"
+# Er wird IN JEDEM FALL entfernt - das erledigt der trap ganz oben, auch
+# bei einem Abbruch weiter oben. Hier wird nur noch gefragt, ob er beim
+# Start dieses Skriptes dalag.
+if [ "$LIEF_VORHER" -eq 1 ]; then
     if [ ! -x "$PBIN/dienst.sh" ]; then
         echo "<INFO> $PBIN/dienst.sh fehlt - der Dienst wurde nicht gestartet."
     else

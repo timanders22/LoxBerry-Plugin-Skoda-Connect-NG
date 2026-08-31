@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.13 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.14 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -15,11 +15,98 @@ Ladegrenze und Scheibenheizung schalten.
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
 
+## Was 0.9.14 ändert
+
+Eine zweite, tiefere Durchsicht — und sie hat zuerst die **Prüfwerkzeuge**
+berichtigt, nicht das Plugin. Vier davon meldeten grün, wo sie nichts oder das
+Falsche maßen; einer davon hatte den Fehler, den er finden sollte, als
+Sollwert eingetragen. Alle Zahlen unten sind an einem LoxBerry-Nachbau mit
+echtem PHP 7.4 **und** 8.4 gemessen.
+
+### Die Loxone-Vorlagen waren eine Bauform zu alt
+
+Verglichen mit den echten Ausfuhren aus Loxone Config fehlten am
+Wurzelelement `HintText`, als erstes Kindelement `<Info templateType=…>`, je
+Befehlserkennung `Unit` und `HintText`. Ohne `Unit` steht am virtuellen
+Eingang eine **nackte Zahl**. `MinVal`/`MaxVal` standen pauschal auf
+±2147483647 — damit verschenkt Loxone Reglergrenzen und Plausibilitätsprüfung;
+sie kommen jetzt je Feld aus der Feldliste (Prozent 0…100, Schaltwerte 0…1,
+überfällige Inspektion darf negativ werden). Der Virtuelle Ausgang trug ein
+`CmdErrorValue`, das in **keiner** Ausfuhr und in keinem anderen Plugin des
+Hauses vorkommt, und ihm fehlte das `CmdSep`, das 35 Linien führen.
+
+### Ein Absturz, den der Minutencron zur Endlosschleife machte
+
+`zahl()` hatte `int(round(f))` außerhalb des `try`. `float("nan")` gelingt,
+`int(nan)` nicht — und erreicht wurde das mit der **rohen Nutzlast eines
+fremden MQTT-Themas**. Die Ausnahme verließ die Hauptschleife, der Dienst
+endete, `cron.01min` holte ihn binnen 60 Sekunden in denselben Absturz
+zurück, mit einer neuen Anmeldung an der Skoda-Cloud je Runde. ESPHome
+veröffentlicht `nan` für einen Sensor ohne Wert.
+
+### Die Vorklimatisierung war ein Pegel, keine Flanke
+
+Blieb der Wert des Abfahrtsthemas im Fenster stehen — bei `retain` der
+Normalfall —, löste die Klimatisierung **stündlich** aus, Tag und Nacht.
+Gemessen: fünf Auslösungen in fünf Stunden. Jetzt zählt, ob seit der letzten
+Auslösung ein neuer Wert eingetroffen ist.
+
+### Der Endpunkt: acht Befunde
+
+* Ein Aufruf mit **falschem Token** legte die Konfigurationsdatei an und
+  spielte die Zweitschrift zurück — samt eines Aktionstokens, das gerade neu
+  gewürfelt worden war. Die Selbstheilung läuft jetzt in der Oberfläche.
+* `ladungen` mit einer VIN lieferte die Ladungen **aller** Fahrzeuge, samt
+  Ort: `(int)` auf eine VIN ist 0, und 0 hieß „alle".
+* Schaltende Aktionen prüften das Fahrzeug **nicht** und reihten Befehle für
+  `fahrzeug=99` ein — mit `OK=2`, von einem echten Befehl nicht zu
+  unterscheiden.
+* `abruf` umging die Sperre *Schreibende Befehle zulassen*, obwohl der
+  Dateikopf ihn ausdrücklich darunter führte.
+* Ein Zeitstempel in der Zukunft ergab `ALTER=0;OK=1` — die Ausfallerkennung
+  griff dann nie.
+* Die Fahrzeugliste ging **unbereinigt** hinaus: ein Semikolon im Modellnamen
+  machte aus fünf Feldern sechs, ein Zeilenumbruch aus `N=1` zwei Zeilen.
+* `sk_w()` lieferte für denselben Wert unter 7.4 einen Strich und unter 8.4
+  eine Zahl.
+* Eine PHP-Warnung stand samt vollem Dateisystempfad mitten in einer
+  Klartextantwort des **unangemeldeten** Endpunkts.
+
+### Oberfläche
+
+Sechs ungeschützte Feldzugriffe (sichtbar, sobald ein Fahrzeug ohne Stammdaten
+im Abbild steht — der Regelfall nach HTTP 429). Ein einziger Tippfehler
+verwarf bisher **alle** übrigen Änderungen desselben Formulars. Das
+MQTT-Formular scheiterte lautlos. „Es wurde nichts gespeichert" war unwahr,
+sobald im selben Absenden Zugangsdaten geschrieben oder gelöscht wurden.
+Sieben POST-Werte wurden ohne `is_string` in Zeichenketten gezwungen —
+`passwort[]=x` landete als `Array` in `zugang.json`. Dazu: der Pflichtsatz
+zum Import („zweimal eingelesen heißt doppelte Bausteine") fehlte ganz, die
+Legende stand unter statt über den Knopfreihen, und unter MQTT-Gateway V2
+stand rundherum weiter viermal, man solle etwas eintragen.
+
+### Installation
+
+Die S-PIN-Abräumung stand hinter sechs `exit 1` — ohne Netz blieb die
+Ziffernfolge liegen, während README und Hilfe das Gegenteil versprachen.
+`postupgrade.sh` rief `postinstall.sh`, das der Installer ohnehin ausführt:
+der ganze `pip`-Baum wurde bei jedem Upgrade zweimal geholt. Die
+Prozesserkennung der Deinstallation traf jeden Editor, in dem `skoda.py`
+geöffnet war. Die Zugangs-Zweitschriften wurden gelöscht, ohne überschrieben
+zu werden. Und mit gesetztem `retain` blieben bis zu 49 Themen im Broker
+stehen — darunter Standort und Kennzeichen; sie werden jetzt beim
+Deinstallieren geleert.
+
+### Was am Gerät weiterhin ungeprüft ist
+
+Unverändert: es gibt kein Skoda-Konto und kein Fahrzeug. Zusätzlich ungeprüft
+bleiben `retain` am laufenden Gateway und das Mithören fremder Themen.
+
 ## Was 0.9.13 ändert
 
 Eine zeilenweise Durchsicht der ganzen Linie. Sieben Befunde sind an einem
 LoxBerry-Nachbau mit echtem PHP 7.4 und 8.4 **gemessen** worden, nicht
-gelesen; dazu kommen elf Funktionen, die es vorher nicht gab. Alle Messungen
+gelesen; dazu kommen zehn Funktionen, die es vorher nicht gab. Alle Messungen
 sind gegen die Fassung 0.9.12 gefahren und danach gegen diese wiederholt.
 
 ### Der Rückspielknopf zeigte danach den alten Stand — und ein Druck auf Speichern machte ihn wieder gültig
@@ -510,8 +597,11 @@ lautet — beide finden gar nichts) und keine Teilstringsuche (die träfe einen
 Editor, in dem `skoda.py` offen ist, oder ein zweites Exemplar des Plugins).
 `bin/dienst.sh` prüft seit 0.9.1 auf demselben Weg.
 
-Im MQTT-Broker bleibt nichts stehen: der Dienst sendet mit `publish`, nicht
-mit `retain`.
+Im MQTT-Broker bleibt nur dann nichts stehen, wenn der Haken *Werte behalten
+(retain)* aus ist — das ist die Werkseinstellung. Ist er gesetzt, räumt
+`uninstall` die behaltenen Themen ab, indem es je Thema eine leere Nutzlast
+mit `retain` schickt. Ohne das blieben bis zu 49 Themen dauerhaft im Gateway
+stehen, darunter Standort und Kennzeichen des Fahrzeugs.
 
 ## Was in 0.9.2 nachgemessen und geändert wurde
 

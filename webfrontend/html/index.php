@@ -42,6 +42,16 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+/* Dieser Endpunkt antwortet einer MASCHINE. Eine PHP-Meldung im Rumpf ist
+ * fuer Loxone Muell, und sie traegt den vollen Dateisystempfad - in einem
+ * Bereich, den jeder ohne Anmeldung erreicht. Gemessen am 31.08.2026 unter
+ * PHP 8.4: eine 'Array to string conversion' stand mitten in der
+ * POSITION-Zeile, samt Pfad. Unter 7.4 ist dieselbe Sache ein E_NOTICE und
+ * wird oben weggefiltert - der Unterschied haengt an der PHP-Fassung, die
+ * Abhilfe darf nicht daran haengen.
+ *
+ * Protokolliert wird weiterhin: log_errors bleibt unberuehrt. */
+ini_set('display_errors', '0');
 require_once __DIR__ . '/sk_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
@@ -52,6 +62,29 @@ $sk_p = sk_paths();
 $sk_soll = (string) $sk_cfg['aktionstoken'];
 $sk_ist = isset($_GET['token']) && is_string($_GET['token']) ? (string) $_GET['token'] : '';
 if ($sk_soll === '') {
+    /* ZWEI GRUENDE, NICHT EINER. Bis 0.9.13 meldeten beide Faelle
+     * KEIN_TOKEN_GESETZT: "die Oberflaeche wurde noch nie geoeffnet".
+     *
+     * Der zweite Fall ist aber ein anderer - in der Datei STEHT ein Token, es
+     * passt nur nicht ins Muster von sk_regeln() (ein '+', ein '@', mehr als
+     * 64 Zeichen; erreichbar ueber eine von Hand gesetzte Datei, eine
+     * zurueckgespielte Sicherung oder eine aeltere Fassung). sk_wert_pruefen()
+     * weist es ab, die leere Vorgabe tritt ein, und der Bediener las
+     * "noch nie geoeffnet". Er oeffnet daraufhin die Oberflaeche - und die
+     * wuerfelt ueber sk_token() ein NEUES Token, womit jede im Miniserver
+     * eingetragene Adresse endgueltig ungueltig ist.
+     *
+     * sk_config_lage() weiss den Unterschied; sie fuehrt den Schluessel unter
+     * 'abgewiesen'. Gefragt hat ihn bis 0.9.13 niemand. */
+    $sk_lage = sk_config_lage();
+    if (in_array('aktionstoken', $sk_lage['abgewiesen'], true)) {
+        http_response_code(403);
+        echo "FEHLER;OK=0;GRUND=TOKEN_UNZULAESSIG\n";
+        echo "In skoda.json steht ein Aktionstoken, das nicht ins erlaubte Muster passt.\n";
+        echo "Zugelassen sind Buchstaben, Ziffern, Punkt, Strich und Unterstrich, hoechstens 64 Zeichen.\n";
+        echo "ACHTUNG: Die Oberflaeche wuerfelt beim naechsten Oeffnen ein NEUES Token.\n";
+        exit;
+    }
     http_response_code(403);
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
@@ -74,9 +107,21 @@ $sk_schaltend = array_keys($sk_alle_befehle);
 /* is_string davor: ?aktion[]=x macht aus $_GET['aktion'] ein Feld, und
  * (string) darauf erzeugt eine Warnung, die VOR http_response_code()
  * hinausgeht - der Statuscode fehlt dann, und die Abweisung kaeme als HTTP 200
- * beim Aufrufer an. */
-$sk_aktion = isset($_GET['aktion']) && is_string($_GET['aktion'])
-    ? (string) $_GET['aktion'] : 'status';
+ * beim Aufrufer an.
+ *
+ * ABGEWIESEN, NICHT ZURECHTGEBOGEN (seit 0.9.14). Bis dahin fiel ein Feld
+ * still auf 'status' zurueck, waehrend ?fahrzeug[]=1 drei Zeilen weiter unten
+ * mit 400 abgewiesen wurde - zwei Wahrheiten in derselben Datei, und die
+ * stillere widersprach dem Satz, der direkt darunter steht: "Was nicht ins
+ * Muster passt, wird abgewiesen und gemeldet. Nie Zeichen entfernen, nie
+ * zurechtbiegen." */
+if (isset($_GET['aktion']) && !is_string($_GET['aktion'])) {
+    http_response_code(400);
+    echo "FEHLER;OK=0;GRUND=PARAMETER\n";
+    echo "Der Wert von aktion ist kein einfacher Wert.\n";
+    exit;
+}
+$sk_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($sk_aktion, array_merge($sk_lesend, $sk_schaltend), true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
@@ -118,10 +163,27 @@ $sk_prozent  = sk_param('prozent', '/^[0-9]{1,3}$/', '');
 /* ---------------- Hilfsausgabe ---------------- */
 function sk_w($v)
 {
-    if ($v === null || $v === '' || !is_numeric($v)) {
+    /* NICHT is_numeric() allein. Gemessen am 31.08.2026 mit dem Wert "55 "
+     * (Ziffern mit angehaengtem Leerzeichen) im Abbild:
+     *
+     *     PHP 7.4.33  ->  SOC=-      (is_numeric nimmt Leerraum HINTEN nicht)
+     *     PHP 8.4.24  ->  SOC=55     (seit 8.0 nimmt es ihn)
+     *
+     * Dieselbe Datei ergaebe damit auf LoxBerry 3 und LoxBerry 4
+     * verschiedene Aussagen - und der Strich bedeutet hier "dieser Wert liegt
+     * nicht vor", Loxone behaelt also den letzten Wert. Ein eigenes Muster
+     * haengt an keiner PHP-Fassung.
+     *
+     * Felder und Objekte fallen ueber is_scalar heraus, bevor eine
+     * Umwandlung sie zu "Array" macht. */
+    if ($v === null || is_bool($v) || !is_scalar($v)) {
         return '-';
     }
-    return (string) (0 + $v);
+    $s = trim((string) $v);
+    if (!preg_match('/^-?[0-9]+([.][0-9]+)?$/', $s)) {
+        return '-';
+    }
+    return (string) (0 + $s);
 }
 
 $sk_lox = sk_loxone();
@@ -136,6 +198,45 @@ if ($sk_alter < 0) {
 }
 $sk_zaehler = isset($sk_lox['zaehler']) ? (int) $sk_lox['zaehler'] : 0;
 $sk_alle = sk_fahrzeuge();
+
+/**
+ * Der Marker, mit dem die erste Zeile einer Antwort beginnt.
+ *
+ * ANGELEGT 31.08.2026, weil es dafuer bis dahin zwei Wahrheiten gab. Die
+ * gelungene Statusantwort beginnt seit 0.9.0 mit "SKODA;" - die Abweisung
+ * derselben Aktion begann mit strtoupper('status'), also "STATUS;". Eine
+ * Ueberwachung in Loxone, die auf den Marker hoert, sah die Abweisung
+ * deshalb nie. Und jede schaltende Aktion wies mit ihrem eigenen Namen ab
+ * ("KLIMA_START;"), obwohl ihre Erfolgsmeldung "SET;" lautet.
+ *
+ * Zwoelf mal derselbe Marker fuer die schaltenden Aktionen ist Absicht: die
+ * Antwort auf einen Befehl hat immer dieselbe Gestalt, und wer sie auswertet,
+ * soll nicht zwoelf Befehlserkennungen anlegen muessen.
+ */
+function sk_marke($aktion)
+{
+    if (array_key_exists($aktion, sk_befehle())) {
+        return 'SET';
+    }
+    return $aktion === 'status' ? 'SKODA' : strtoupper($aktion);
+}
+
+/**
+ * Ein Textfeld des Abbilds, so dass es die Zeilenform nicht zerlegen kann.
+ *
+ * Semikolon, Wagenruecklauf und Zeilenvorschub sind die drei Zeichen, die die
+ * Antwort gliedern. Sie standen bis 0.9.13 an drei Stellen woertlich in
+ * str_replace-Aufrufen und an einer vierten gar nicht - deshalb jetzt an
+ * EINER Stelle. Ein Feld, das kein Text ist, wird zu einer leeren Zeichenkette
+ * statt zu "Array".
+ */
+function sk_feld($f, $name)
+{
+    if (!isset($f[$name]) || !is_scalar($f[$name])) {
+        return '';
+    }
+    return str_replace(array("\r", "\n", ';'), ' ', (string) $f[$name]);
+}
 
 /** Findet das Fahrzeug zur laufenden Nummer oder zur VIN. */
 function sk_waehlen($alle, $schluessel)
@@ -163,6 +264,40 @@ function sk_waehlen($alle, $schluessel)
     return null;
 }
 
+/* ================= Das Fahrzeug - EINMAL, fuer ALLE Aktionen =============
+ *
+ * Bis 0.9.13 stand diese Pruefung erst nach den drei Listenaktionen und galt
+ * nur fuer status/laden/wartung/position. Gemessen am 31.08.2026:
+ *
+ *   ?aktion=status&fahrzeug=99       -> 404 FAHRZEUG_UNBEKANNT   richtig
+ *   ?aktion=klima_start&fahrzeug=99  -> 200 SET;OK=2             eingereiht!
+ *   ?aktion=ladungen&fahrzeug=99     -> 200 LADUNGEN;OK=1;N=0    gar kein Grund
+ *
+ * Der Endpunkt WUSSTE also, dass es das Fahrzeug nicht gibt, und reihte den
+ * Schaltbefehl trotzdem ein. OK=2 heisst "eingereiht, Ergebnis unbekannt" und
+ * ist von einem echten Befehl nicht zu unterscheiden; der Dienst weist ihn
+ * spaeter zu Recht ab, aber in eine Antwortdatei, die nach der Wartezeit
+ * niemand mehr abholt. Ein Tippfehler im virtuellen Ausgang - fahrzeug=3 bei
+ * zwei Wagen - sah damit dauerhaft nach Erfolg aus.
+ *
+ * Drei Aktionen tragen KEIN Fahrzeug, und nur diese drei:
+ *   roh        das ganze Abbild
+ *   fahrzeuge  die Liste selbst
+ *   abruf      gilt fuer das Konto, nicht fuer ein Auto
+ */
+$SK_OHNE_FAHRZEUG = array('roh', 'fahrzeuge', 'abruf');
+
+$sk_f = sk_waehlen($sk_alle, $sk_fahrzeug);
+if (!in_array($sk_aktion, $SK_OHNE_FAHRZEUG, true) && $sk_f === null) {
+    // 404, nicht 200. Bis 0.9.12 kam diese Abweisung ohne Statuscode heraus,
+    // waehrend UNBEKANNTE_AKTION eine 400 bekam - zwei gleichartige Faelle mit
+    // verschiedener Auskunft an jedes Ueberwachungswerkzeug.
+    http_response_code(404);
+    printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",
+        sk_marke($sk_aktion), count($sk_alle), $sk_alter);
+    exit;
+}
+
 /* ================= Lesende Aktionen ================= */
 
 if ($sk_aktion === 'roh') {
@@ -175,7 +310,15 @@ if ($sk_aktion === 'ladungen') {
     /* Das Ladeprotokoll als Klartext, neueste zuerst. Eine Kopfzeile, dann je
      * Ladung eine Zeile - fuer den Blick von aussen und fuer eine Tabelle in
      * der Visualisierung. */
-    $sk_l = sk_ladungen_lesen((int) $sk_fahrzeug, 200);
+    /* Die Nummer kommt aus dem GEFUNDENEN Fahrzeug, nicht aus (int) auf der
+     * Adresse. Gemessen am 31.08.2026: (int) "TMBJJ7NE0K0000002" ist 0, und 0
+     * heisst in sk_ladungen_lesen() ausdruecklich "alle Fahrzeuge". Eine
+     * gueltige VIN lieferte deshalb die Ladungen BEIDER Wagen - samt Ort, also
+     * die Standorthistorie des anderen. Dieselbe Adressform bedeutete damit
+     * bei 'ladungen' etwas anderes als bei den vier uebrigen Aktionen; genau
+     * diese Falle hatte 0.9.13 fuer die fuehrende Null geschlossen. */
+    $sk_nr_lad = array_search($sk_f, $sk_alle, true);
+    $sk_l = sk_ladungen_lesen((int) $sk_nr_lad, 200);
     echo 'LADUNGEN;OK=' . ((!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0)
        . ';N=' . count($sk_l) . ';ALTER=' . $sk_alter . "\n";
     foreach ($sk_l as $sk_z) {
@@ -184,7 +327,7 @@ if ($sk_aktion === 'ladungen') {
             $sk_z['soc_von'] === '' ? '-' : $sk_z['soc_von'],
             $sk_z['soc_bis'] === '' ? '-' : $sk_z['soc_bis'],
             $sk_z['kw_max'] === '' ? '-' : $sk_z['kw_max'],
-            str_replace(array("\r", "\n", ';'), ' ', $sk_z['ort']));
+            sk_feld($sk_z, 'ort'));
     }
     exit;
 }
@@ -194,9 +337,15 @@ if ($sk_aktion === 'fahrzeuge') {
     echo 'FAHRZEUGE;OK=' . $sk_gesamt . ';N=' . count($sk_alle)
        . ';ALTER=' . $sk_alter . ';ZAEHLER=' . $sk_zaehler . "\n";
     foreach ($sk_alle as $sk_nr => $sk_f) {
-        echo $sk_nr . ';' . (isset($sk_f['modell']) ? $sk_f['modell'] : '') . ';'
-           . (isset($sk_f['kennzeichen']) ? $sk_f['kennzeichen'] : '') . ';'
-           . (isset($sk_f['vin']) ? $sk_f['vin'] : '') . ';'
+        /* BEREINIGT wie 'position' und 'ladungen' es laengst tun. Bis 0.9.13
+         * gingen modell, kennzeichen und vin ROH hinaus - Werte, die aus der
+         * Skoda-Cloud kommen. Gemessen: ein Semikolon im Modellnamen machte
+         * aus fuenf Feldern sechs, ein Zeilenumbruch aus "N=1" zwei Zeilen.
+         * Ein Werkzeug, das die Kopfzahl gegen die Zeilenzahl haelt, sieht
+         * dann einen Fehler, wo keiner ist - oder uebersieht einen. */
+        echo $sk_nr . ';' . sk_feld($sk_f, 'modell') . ';'
+           . sk_feld($sk_f, 'kennzeichen') . ';'
+           . sk_feld($sk_f, 'vin') . ';'
            /* ausfaelle_n zuerst: der Dienst schreibt seit 0.9.13 die ZAHL
             * mit. Die Statuszeile rechnet genauso - zwei Zaehlweisen fuer
             * dieselbe Zahl waeren eine Gelegenheit, sie auseinanderlaufen zu
@@ -208,17 +357,6 @@ if ($sk_aktion === 'fahrzeuge') {
     exit;
 }
 
-$sk_f = sk_waehlen($sk_alle, $sk_fahrzeug);
-
-if (in_array($sk_aktion, array('status', 'laden', 'wartung', 'position'), true) && $sk_f === null) {
-    // 404, nicht 200. Bis 0.9.12 kam diese Abweisung ohne Statuscode heraus,
-    // waehrend UNBEKANNTE_AKTION eine 400 bekam - zwei gleichartige Faelle mit
-    // verschiedener Auskunft an jedes Ueberwachungswerkzeug.
-    http_response_code(404);
-    printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",
-        strtoupper($sk_aktion), count($sk_alle), $sk_alter);
-    exit;
-}
 
 /* OK gilt JE FAHRZEUG, nicht global.
  *
@@ -297,14 +435,25 @@ if ($sk_aktion === 'position') {
         sk_w(sk_v($sk_f, 'zuhause')), sk_w(sk_v($sk_f, 'heim_entfernung_m')), $sk_alter);
     // Die Anschrift steht in einer zweiten Zeile, damit die erste Zeile fuer
     // Loxone rein aus Zahlen besteht.
-    echo 'ADRESSE;' . str_replace(array("\r", "\n", ';'), ' ',
-        (string) sk_v($sk_f, 'adresse')) . "\n";
+    /* (string) auf ein Feld erzeugte hier eine Warnung
+     * "Array to string conversion" - unter PHP 7.4 ein E_NOTICE und damit
+     * weggefiltert, unter 8.4 eine WARNUNG, die samt vollem Dateipfad
+     * mitten in der Klartextantwort stand. sk_feld() faengt alles ab, was
+     * kein Text ist, und bereinigt in einem Zug die Gliederungszeichen. */
+    echo 'ADRESSE;' . sk_feld($sk_f, 'adresse') . "\n";
     exit;
 }
 
 /* ================= Schaltende Aktionen ================= */
 
-if ($sk_aktion !== 'abruf' && empty($sk_cfg['steuerung_ein'])) {
+/* AUCH 'abruf'. Bis 0.9.13 stand hier "$sk_aktion !== 'abruf' &&", der
+ * sofortige Abruf war also von der Sperre ausgenommen - waehrend der
+ * Kopfkommentar dieser Datei ihn ausdruecklich unter "Schaltende Aktionen
+ * (nur wenn im Reiter Einstellungen zugelassen)" fuehrte. Wer den Haken
+ * ausschaltete, konnte weiterhin vollstaendige Cloud-Durchgaenge ausloesen -
+ * genau der Weg, ueber den laut bin/skoda.py in 0.9.12 3600 Durchgaenge je
+ * Stunde entstanden sind. */
+if (empty($sk_cfg['steuerung_ein'])) {
     http_response_code(403);
     echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
