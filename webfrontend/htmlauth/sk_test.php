@@ -106,14 +106,62 @@ function sk_pruefungen()
                       sk_t(!empty($cfg['mqtt_retain']) ? 'TEST.A_RETAIN_EIN' : 'TEST.A_RETAIN_AUS'))
             : sk_t('TEST.A_MQTT_PLUGIN_AUS'));
 
+    /* EIN KREUZ NUR, WENN ES EINEN BETRIFFT. Berichtigt 31.08.2026.
+     *
+     * Bis 0.9.14 urteilte diese Zeile hart mit 0, sobald das Gateway fehlte
+     * oder nicht auf Autostart stand - unabhaengig davon, ob dieses Plugin
+     * ueberhaupt ueber MQTT sendet. Eine Anlage, die es bewusst nur ueber
+     * HTTP anbindet, hatte damit ein dauerhaftes rotes Kreuz im Reiter Test.
+     * Wer sich daran gewoehnt, uebersieht das naechste. Die Zeile darueber
+     * macht es fuer denselben Sachverhalt seit 0.9.13 richtig und nimmt -1. */
     $m = sk_mqtt_zustand();
+    $mqtt_noetig = !empty($cfg['mqtt_ein']);
     if (!$m['gefunden']) {
-        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_MQTT'), sk_t('TEST.A_MQTT_NICHT_GEFUNDEN'));
+        $zeilen[] = sk_pruefzeile($mqtt_noetig ? 0 : -1, sk_t('TEST.F_MQTT'),
+            sk_t('TEST.A_MQTT_NICHT_GEFUNDEN'));
     } elseif ($m['autostart']) {
         $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_MQTT'),
             sk_e($m['broker']) . ':' . sk_e($m['brokerport']) . ' (UDP ' . (int) $m['udpport'] . ')');
     } else {
-        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_MQTT'), sk_t('TEST.A_MQTT_AUS'));
+        $zeilen[] = sk_pruefzeile($mqtt_noetig ? 0 : -1, sk_t('TEST.F_MQTT'),
+            sk_t('TEST.A_MQTT_AUS'));
+    }
+
+    /* ---- Der eigene Cron-Eintrag ----
+     *
+     * ERGAENZT 31.08.2026. Das Plugin sah bis dahin nie nach, ob sein
+     * Cron-Eintrag ueberhaupt da ist - und an ihm haengt alles: der Waechter,
+     * der den Dienst zurueckholt, und das vierte Lebenszeichen. Ein Plugin
+     * kann vollstaendig installiert dastehen, alle Pruefungen gruen, und tut
+     * nichts, weil sein Eintrag an der falschen Stelle liegt.
+     *
+     * is_dir() ist der Befund, nicht der Erfolg: LoxBerry fuehrt in diesen
+     * Ordnern nur DATEIEN aus. Und die anderen Takte werden mitgesucht, weil
+     * eine frueherer Fassung ihren Rest dort gelassen haben kann. */
+    $cron_takt = 'cron.01min';
+    $cron_datei = $p['home'] . '/system/cron/' . $cron_takt . '/' . $p['plugin'];
+    $cron_reste = array();
+    foreach (array('cron.reboot', 'cron.03min', 'cron.05min', 'cron.10min',
+                   'cron.15min', 'cron.30min', 'cron.hourly', 'cron.daily') as $takt) {
+        if (file_exists($p['home'] . '/system/cron/' . $takt . '/' . $p['plugin'])) {
+            $cron_reste[] = $takt;
+        }
+    }
+    if (is_file($cron_datei)) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_CRON'),
+            sk_e($cron_takt . '/' . $p['plugin'])
+            . ($cron_reste ? ' &mdash; ' . sprintf(sk_t('TEST.A_CRON_RESTE'),
+                                                   sk_e(implode(', ', $cron_reste))) : ''));
+    } elseif (is_dir($cron_datei)) {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_CRON'), sk_t('TEST.A_CRON_VERZEICHNIS'));
+    } elseif (!is_dir($p['home'] . '/system/cron')) {
+        // Kein Cron-Baum: hier ist nichts zu messen, und das ist kein Haken.
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_CRON'), sk_t('TEST.A_CRON_UNKLAR'));
+    } else {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_CRON'),
+            sprintf(sk_t('TEST.A_CRON_FEHLT'), sk_e($cron_takt))
+            . ($cron_reste ? ' ' . sprintf(sk_t('TEST.A_CRON_RESTE'),
+                                           sk_e(implode(', ', $cron_reste))) : ''));
     }
 
     /* ---- Reiter: Liste, Beschriftungen und Bereiche ----
@@ -190,8 +238,93 @@ function sk_pruefungen()
     /* Der Wachposten. Er ist ohne Aktionstoken wirkungslos - fail closed -,
      * und dann laesst sich in dieser Oberflaeche gar nichts mehr absenden.
      * Das ist ein Zustand, den man sehen muss, nicht einen, den man erraet. */
-    $zeilen[] = sk_pruefzeile(sk_formtoken() !== '' ? 1 : 0, sk_t('TEST.F_WACHPOSTEN'),
-        sk_formtoken() !== '' ? sk_t('TEST.A_WACHPOSTEN_OK') : sk_t('TEST.A_WACHPOSTEN_LEER'));
+    /* ---- Antwortet der eigene Endpunkt? ---- */
+    $ep = sk_endpunkt_probe();
+    if ($ep['stand'] === 1) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_ENDPUNKT'), sk_t('TEST.A_ENDPUNKT_OK'));
+    } elseif ($ep['stand'] === 0) {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_ENDPUNKT'),
+            sprintf(sk_t('TEST.A_ENDPUNKT_FALSCH'), sk_e($ep['text'])));
+    } else {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_ENDPUNKT'),
+            sprintf(sk_t('TEST.A_ENDPUNKT_UNKLAR'), sk_e($ep['text'])));
+    }
+
+    /* GEZAEHLT, NICHT BEHAUPTET. Berichtigt 31.08.2026.
+     *
+     * Diese Zeile setzte den Haken allein daran, dass ein Merkmal gebildet
+     * werden KANN - und ihr Antworttext lautet "jedes Formular dieser Seite
+     * fuehrt ein Merkmal". Ueber die Formulare wurde nichts gezaehlt. Sie
+     * stuende also auch dann gruen da, wenn morgen ein Formular ohne Merkmal
+     * dazukaeme. Ein Formular vergisst man; das ist der ganze Grund, warum
+     * der Hausstandard hier eine ZAEHLUNG verlangt.
+     *
+     * Gelesen wird der Quelltext der Oberflaeche, wie in sk_reiter_lesen().
+     * Und die Zahl der angesehenen Stellen steht in der Antwort: eine Null
+     * ist dann kein "in Ordnung", sondern der Hinweis, dass nichts gemessen
+     * wurde. */
+    $f = sk_formulare_lesen();
+    if ($f === null || $f['formulare'] === 0) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_WACHPOSTEN'),
+            sk_t('TEST.A_WACHPOSTEN_UNKLAR'));
+    } elseif (sk_formtoken() === '') {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_WACHPOSTEN'), sk_t('TEST.A_WACHPOSTEN_LEER'));
+    } elseif ($f['merkmal'] === $f['formulare'] && $f['activetab'] >= $f['formulare']) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_WACHPOSTEN'),
+            sprintf(sk_t('TEST.A_WACHPOSTEN_OK'), $f['formulare']));
+    } else {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_WACHPOSTEN'),
+            sprintf(sk_t('TEST.A_WACHPOSTEN_LUECKE'),
+                    $f['merkmal'], $f['formulare'], $f['activetab']));
+    }
+
+    /* ---- Die Themenliste gegen den Sendecode ----
+     *
+     * ERGAENZT 31.08.2026. Die Tabelle im Reiter MQTT ist die ANLEITUNG: wer
+     * einen virtuellen Eingang anlegt, benennt ihn danach. Laeuft sie gegen
+     * den Sendecode aus, legt der Anwender Eingaenge an, die dauerhaft auf 0
+     * stehen - ohne Fehlermeldung. Gelesen wird der Quelltext des Dienstes
+     * statisch, und verglichen wird deshalb auch statisch: gegen die
+     * VEREINIGUNG aller Zweige, nicht gegen den, der gerade laeuft. */
+    $t = sk_themen_vergleich();
+    if ($t === null) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_THEMEN'), sk_t('TEST.A_THEMEN_UNKLAR'));
+    } elseif (!$t['fehlend'] && !$t['ueberzaehlig']) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_THEMEN'),
+            sprintf(sk_t('TEST.A_THEMEN_OK'), $t['gezaehlt']));
+    } else {
+        $teile = array();
+        if ($t['fehlend']) {
+            $teile[] = sprintf(sk_t('TEST.A_THEMEN_FEHLEND'),
+                               sk_e(implode(', ', $t['fehlend'])));
+        }
+        if ($t['ueberzaehlig']) {
+            $teile[] = sprintf(sk_t('TEST.A_THEMEN_UEBERZAEHLIG'),
+                               sk_e(implode(', ', $t['ueberzaehlig'])));
+        }
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_THEMEN'), implode(' ', $teile));
+    }
+
+    /* ---- Sind die Vorlagen wohlgeformt? ----
+     *
+     * ERGAENZT 31.08.2026. Eine kaputte Importdatei merkt der Anwender sonst
+     * erst in Loxone Config - und dort sucht er den Fehler bei sich. Geprueft
+     * wird JEDE der fuenf erzeugbaren Arten, mit dem Parser, nicht mit einem
+     * Suchmuster. */
+    $arten = array_keys(sk_vorlagenarten());
+    $kaputt = array();
+    $libxml_vorher = libxml_use_internal_errors(true);
+    foreach ($arten as $art) {
+        $v = sk_vorlage(1, $art);
+        if (!is_array($v) || count($v) < 2 || simplexml_load_string($v[1]) === false) {
+            $kaputt[] = $art;
+        }
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($libxml_vorher);
+    $zeilen[] = sk_pruefzeile($kaputt ? 0 : 1, sk_t('TEST.F_VORLAGEN'),
+        $kaputt ? sprintf(sk_t('TEST.A_VORLAGEN_KAPUTT'), sk_e(implode(', ', $kaputt)))
+                : sprintf(sk_t('TEST.A_VORLAGEN_OK'), count($arten)));
 
     return $zeilen;
 }
@@ -229,6 +362,202 @@ function sk_reiter_lesen()
     preg_match_all('/data-ziel="tab-([a-z0-9]+)"/', $t, $y);
     $aus['leiste_fest'] = $y[1];
     return $aus;
+}
+
+/**
+ * Ruft den EIGENEN Endpunkt wirklich auf - ueber 127.0.0.1, als HTTP.
+ *
+ * ERGAENZT 31.08.2026. Das ist die Fehlerklasse, die keine Leseprüfung sieht:
+ * auf dem installierten LoxBerry liegen webfrontend/html und
+ * webfrontend/htmlauth in GETRENNTEN Baeumen. Ein 'require' oder ein Pfad,
+ * der im ausgepackten Archiv aufgeht, geht dort nicht auf - und der Endpunkt
+ * antwortet mit HTTP 500 und leerem Rumpf. Gemerkt hat das in anderen Linien
+ * niemand, weil ihn nur der Miniserver aufruft und der kein Protokoll liest.
+ *
+ * Gefragt wird mit ?selftest=1: das beantwortet genau die Frage, ob der
+ * Endpunkt erreichbar ist und das Token stimmt, und loest keine Wirkung aus.
+ *
+ * DREI AUSGAENGE, nicht zwei. "Ich kann es nicht messen" darf nicht wie "in
+ * Ordnung" aussehen: fehlt allow_url_fopen oder antwortet niemand auf 127.0.0.1
+ * (eigener Port, Reverse Proxy), ist das ein Strich und kein Haken.
+ *
+ * ZWISCHENGESPEICHERT, 300 s. Ohne das ruft sich der Webserver bei jedem
+ * Klick selbst auf - und weil die Oberflaeche alle Reiter mitrendert, waere
+ * das JEDER Seitenaufbau.
+ */
+function sk_endpunkt_probe()
+{
+    $p = sk_paths();
+    $marke = $p['datadir'] . '/endpunktprobe.json';
+    $alt = sk_json_lesen($marke);
+    if (isset($alt['ts']) && (time() - (int) $alt['ts']) < 300 && isset($alt['stand'])) {
+        return $alt;
+    }
+    $token = sk_token();
+    $erg = array('ts' => time(), 'stand' => -1, 'text' => '');
+    if ($token === '') {
+        $erg['text'] = 'kein Token';
+        return $erg;
+    }
+    if (!function_exists('curl_init')
+            && (!function_exists('file_get_contents') || !ini_get('allow_url_fopen'))) {
+        $erg['text'] = 'weder curl noch allow_url_fopen';
+        return $erg;
+    }
+    /* Der Port ist der, unter dem diese Seite gerade ausgeliefert wird -
+     * geraten wird er nicht. Auf 127.0.0.1, nicht auf HTTP_HOST: die Adresse,
+     * die ein Programm benutzt, und die, die ein Mensch anklickt, sind zwei
+     * verschiedene Dinge. */
+    $port = isset($_SERVER['SERVER_PORT']) ? (int) $_SERVER['SERVER_PORT'] : 80;
+    $schema = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $url = $schema . '://127.0.0.1' . ($port && $port !== 80 && $port !== 443 ? ':' . $port : '')
+         . '/plugins/' . $p['plugin'] . '/index.php?selftest=1&token=' . rawurlencode($token);
+    if (function_exists('curl_init')) {
+        /* curl meldet ueber seinen Rueckgabewert und schreibt nichts in den
+         * Fehlerkanal - deshalb steht es vorn. */
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        $antwort = curl_exec($ch);
+        $curlfehler = curl_error($ch);
+        curl_close($ch);
+        if ($antwort === false) {
+            $erg['text'] = $curlfehler !== '' ? $curlfehler : 'keine Antwort';
+            sk_json_schreiben($marke, $erg);
+            return $erg;
+        }
+    } else {
+        $ctx = stream_context_create(array(
+            'http' => array('timeout' => 5, 'ignore_errors' => true,
+                            'header' => "Connection: close\r\n"),
+            'ssl'  => array('verify_peer' => false, 'verify_peer_name' => false),
+        ));
+        /* Ein eigener Aufnehmer um genau diesen Aufruf. Das '@' allein
+         * genuegt nicht: es unterdrueckt die Anzeige, ruft aber weiterhin
+         * einen mit set_error_handler() eingehaengten Aufnehmer - und dann
+         * steht eine WARNUNG im Protokoll, wo in Wahrheit nur die erwartete
+         * Antwort ausblieb. */
+        set_error_handler(function () { return true; });
+        $antwort = file_get_contents($url, false, $ctx);
+        restore_error_handler();
+        if ($antwort === false) {
+            $erg['text'] = 'keine Antwort';
+            sk_json_schreiben($marke, $erg);
+            return $erg;
+        }
+    }
+    $erste = trim(strtok((string) $antwort, "\n"));
+    if (strpos($erste, 'SELFTEST;OK=1') === 0) {
+        $erg['stand'] = 1;
+    } else {
+        $erg['stand'] = 0;
+    }
+    $erg['text'] = substr($erste, 0, 120);
+    sk_json_schreiben($marke, $erg);
+    return $erg;
+}
+
+/**
+ * Zaehlt die Formulare der Oberflaeche und ihre Merkmale.
+ *
+ * Gelesen wird der QUELLTEXT, nicht der Zustand zur Laufzeit - wie in
+ * sk_reiter_lesen() und aus demselben Grund: ein Formular, das nur unter
+ * einer Bedingung gerendert wird, faellt sonst durch.
+ *
+ * Gezaehlt werden drei Dinge, und alle drei stehen in der Antwort: die
+ * oeffnenden Formularmarken mit POST-Methode, die Aufrufe des
+ * Merkmalbausteins und die versteckten Reiterfelder. Die Suchmuster
+ * stehen unten im Code und ABSICHTLICH nicht hier im Wortlaut: ein
+ * Kommentar, der die gesuchte Form selbst traegt, wird vom Pruefwerkzeug
+ * mitgezaehlt - das ist in diesem Haus schon dreimal passiert, und beim
+ * Einbau dieser Funktion zum vierten Mal.
+ *
+ * activetab wird mit >= verglichen: der Reiterwaehler im JavaScript traegt
+ * denselben Namen und zaehlt mit, ohne ein Formular zu sein.
+ *
+ * Rueckgabe: array oder null, wenn die Datei nicht lesbar ist.
+ */
+function sk_formulare_lesen()
+{
+    $f = __DIR__ . '/index.php';
+    if (!is_file($f)) {
+        return null;
+    }
+    $q = @file_get_contents($f);
+    if ($q === false) {
+        return null;
+    }
+    return array(
+        'formulare' => preg_match_all('/<' . 'form\b[^>]*method\s*=\s*"post"/i', $q),
+        'merkmal'   => preg_match_all('/sk_formfeld\s*\(/', $q),
+        'activetab' => preg_match_all('/name\s*=\s*"activetab"/', $q),
+    );
+}
+
+/**
+ * Deckt sich die Themenliste des Reiters MQTT mit dem Sendecode?
+ *
+ * Die Liste ist die Anleitung. Laeuft sie gegen den Dienst aus, legt der
+ * Anwender virtuelle Eingaenge an, die nie etwas empfangen - und niemand
+ * bekommt eine Meldung.
+ *
+ * Gelesen wird bin/skoda.py statisch. Deshalb wird auch statisch verglichen:
+ * gegen die VEREINIGUNG dessen, was der Code veroeffentlichen kann, nicht
+ * gegen den Zweig, der bei dieser Konfiguration gerade laeuft. Eine Pruefung,
+ * die statisch liest und dynamisch vergleicht, steht auf jeder normalen
+ * Anlage rot.
+ *
+ * Rueckgabe: array('gezaehlt','fehlend','ueberzaehlig') oder null, wenn der
+ * Dienst nicht lesbar ist - "nicht messbar" ist kein Haken.
+ */
+function sk_themen_vergleich()
+{
+    $p = sk_paths();
+    $quelle = $p['bindir'] . '/skoda.py';
+    if (!is_file($quelle)) {
+        return null;
+    }
+    $q = @file_get_contents($quelle);
+    if ($q === false || strpos($q, 'MQTT_FELDER') === false) {
+        return null;
+    }
+    /* Die beiden Listen des Dienstes: MQTT_FELDER traegt Zahlen- und
+     * Schaltwerte, MQTT_TEXTFELDER die Texte. Beide werden als Tupel von
+     * Zeichenketten geschrieben. */
+    $dienst = array();
+    foreach (array('MQTT_FELDER', 'MQTT_TEXTFELDER') as $name) {
+        if (!preg_match('/' . $name . '\s*=\s*\((.*?)\)/s', $q, $m)) {
+            return null;
+        }
+        if (preg_match_all('/"([a-z0-9_]+)"/', $m[1], $t)) {
+            $dienst = array_merge($dienst, $t[1]);
+        }
+    }
+    if (!$dienst) {
+        return null;
+    }
+    /* Und die Anleitung: aus sk_mqtt_themen() die Themen unterhalb von
+     * fahrzeugN/ - nur die stammen aus den beiden Listen oben. Die
+     * Zustandsthemen (status/...) entstehen an anderer Stelle im Dienst und
+     * werden hier nicht verglichen; das steht auch in der Antwort. */
+    $liste = array();
+    foreach (sk_mqtt_themen() as $thema => $bedeutung) {
+        if (preg_match('#^fahrzeug\{?N?\}?[0-9]*/(.+)$#', $thema, $m)) {
+            $liste[] = $m[1];
+        }
+    }
+    $liste = array_values(array_unique($liste));
+    $dienst = array_values(array_unique($dienst));
+    sort($liste);
+    sort($dienst);
+    return array(
+        'gezaehlt'     => count($liste),
+        'fehlend'      => array_values(array_diff($dienst, $liste)),
+        'ueberzaehlig' => array_values(array_diff($liste, $dienst)),
+    );
 }
 
 /**

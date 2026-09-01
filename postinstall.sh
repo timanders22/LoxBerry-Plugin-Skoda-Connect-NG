@@ -41,6 +41,18 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# Und danach wird nachgesehen, ob dabei wirklich ein LoxBerry herausgekommen
+# ist - wortgleich mit preupgrade.sh, das die Pruefung seit 0.9.14 hat.
+# Ohne sie arbeitet dieses Skript gegen "/config/plugins/..." und "/data/...",
+# legt dort Ordner an und meldet am Ende trotzdem Erfolg.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<FAIL> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
+    echo "<FAIL> weder das fuenfte Argument noch \$LBHOMEDIR noch der eigene"
+    echo "<FAIL> Ablageort fuehrten auf einen Ordner mit config/plugins und"
+    echo "<FAIL> data/plugins. Es wurde nichts eingerichtet."
+    exit 1
+fi
+
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
@@ -76,6 +88,37 @@ mkdir -p "$PDATA" "$PLOG" "$PCONFIG" "$PDATA/befehle" "$PDATA/antworten" || {
     exit 1
 }
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+
+# ---------- Was preupgrade.sh vor dem Upgrade gerettet hat ----------
+#
+# Der Installateur raeumt data/plugins/<ordner>/ beim Upgrade vollstaendig ab
+# (sbin/plugininstall.pl: &purge_installation im Upgrade-Zweig, :885, Rumpf
+# ab :1626 mit "rm -rfv .../data/plugins/$pfolder/"). preupgrade.sh legt
+# deshalb Sollmerker, Verlauf und Ladeprotokoll NEBEN den Ordner; hier kommen
+# sie zurueck.
+#
+# Nichts wird ueberschrieben: was der Archivinhalt schon mitgebracht hat,
+# bleibt stehen. Und die Rettung wird IN JEDEM FALL abgeraeumt - eine
+# liegengebliebene Rettung wuerde beim naechsten Upgrade einen alten Stand
+# ueber einen neuen legen.
+RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
+if [ -d "$RETTUNG" ]; then
+    ZURUECK=0
+    for f in soll_laufen zustand.json ladungen.csv; do
+        if [ -e "$RETTUNG/$f" ] && [ ! -e "$PDATA/$f" ]; then
+            cp -p "$RETTUNG/$f" "$PDATA/$f" 2>/dev/null && ZURUECK=$((ZURUECK+1))
+        fi
+    done
+    if [ -d "$RETTUNG/verlauf" ] && [ ! -d "$PDATA/verlauf" ]; then
+        cp -a "$RETTUNG/verlauf" "$PDATA/verlauf" 2>/dev/null && ZURUECK=$((ZURUECK+1))
+    fi
+    rm -rf "$RETTUNG"
+    if [ "$ZURUECK" -gt 0 ]; then
+        echo "<OK> $ZURUECK Eintrag/Eintraege aus dem Datenordner zurueckgelegt."
+    else
+        echo "<INFO> Es war nichts zurueckzulegen."
+    fi
+fi
 
 # ---------- Konfiguration ----------
 [ -f "$PCONFIG/skoda.json" ] || echo '{}' > "$PCONFIG/skoda.json"
@@ -269,7 +312,22 @@ fi
 # ---------- Rechte ----------
 chmod 755 "$PBIN/skoda.py" 2>/dev/null
 chmod 755 "$PBIN/dienst.sh" 2>/dev/null
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+
+# Der Eigentuemerwechsel geht NUR als root - und genau deshalb stand hier bis
+# 0.9.14 ein Befehl, der nichts tat, wenn er gebraucht wurde: als loxberry
+# aufgerufen scheitert chown, und "2>/dev/null" verschluckte es. Wo die
+# Dateien ohnehin loxberry gehoeren, war er wirkungslos; wo sie root gehoeren
+# - der einzige Fall, fuer den er da ist -, blieb es dabei und niemand sah es.
+#
+# Jetzt wird gefragt, ob er ueberhaupt greifen kann, und ein Fehlschlag wird
+# gesagt statt weggeworfen.
+if [ "$(id -u)" = "0" ]; then
+    if ! chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG"; then
+        echo "<WARNING> Der Eigentuemer liess sich nicht auf loxberry setzen."
+        echo "<WARNING> Der Dienst schreibt nach data/ und log/ - Dateien mit"
+        echo "<WARNING> fremdem Eigentuemer bitte von Hand pruefen."
+    fi
+fi
 chmod 600 "$PCONFIG/zugang.json"
 
 # ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
@@ -278,11 +336,18 @@ chmod 600 "$PCONFIG/zugang.json"
 # laufender Vorgang angehalten wurde. Bei einer Erstinstallation gibt es
 # ihn nicht, und dann passiert hier nichts.
 #
-# Er behebt keinen Stillstand: der Sollmerker unter data/ ueberlebt das
-# Upgrade (gemessen an sbin/plugininstall.pl), und der Cron-Waechter holt
-# den Dienst binnen einer Minute zurueck. Dieser Start hier ist sofort und
-# unabhaengig vom Waechter - das ist der ganze Gewinn, und mehr wird nicht
-# behauptet.
+# ZURUECKGENOMMEN am 31.08.2026. Hier stand, der Sollmerker unter data/
+# ueberlebe das Upgrade "(gemessen an sbin/plugininstall.pl)" und der
+# Cron-Waechter hole den Dienst ohnehin binnen einer Minute zurueck. Beides
+# war falsch, und das Wort "gemessen" war das Schlimmste daran: die Funktion
+# purge_installation hat ZWEI Aufrufstellen, und die zweite (:885) steht im
+# Upgrade-Zweig. data/plugins/<ordner>/ ist zwischen preupgrade.sh und dieser
+# Zeile vollstaendig abgeraeumt, der Sollmerker mit ihm.
+#
+# Dieser Start ist damit NICHT nur eine Abkuerzung, sondern das Einzige, was
+# einen laufenden Dienst nach einem Upgrade zurueckholt - der Waechter
+# (bin/dienst.sh, "waechter") startet nur, wenn soll_laufen dasteht, und
+# preupgrade.sh rettet ihn deshalb seit 0.9.15 neben den Ordner.
 #
 # Er wird IN JEDEM FALL entfernt - das erledigt der trap ganz oben, auch
 # bei einem Abbruch weiter oben. Hier wird nur noch gefragt, ob er beim

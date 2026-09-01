@@ -86,13 +86,45 @@ if ($sk_soll === '') {
         exit;
     }
     http_response_code(403);
+    if (isset($_GET['selftest'])) {
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
     exit;
 }
 if (!hash_equals($sk_soll, $sk_ist)) {
     http_response_code(403);
+    if (isset($_GET['selftest'])) {
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    exit;
+}
+
+/* ---------------- ?selftest=1 ----------------
+ *
+ * ERGAENZT 31.08.2026. Ein Token muss sich pruefen lassen, ohne dass etwas
+ * passiert. Ohne diesen Zweig gab es nur zwei schlechte Wege: entweder man
+ * setzt einen der zwoelf schaltenden Befehle ab - dann klimatisiert das Auto
+ * oder der Ladevorgang haelt an -, oder man erfaehrt nie, ob die Adresse im
+ * Miniserver noch stimmt. Ein Lesebefehl beantwortet die Frage auch nicht
+ * sauber: er ruehrt das Abbild an und liefert eine Antwort, deren OK von der
+ * Cloud abhaengt, nicht vom Token.
+ *
+ * Drei Festlegungen, alle eingehalten:
+ *   - Der Zweig steht HINTER der Tokenpruefung: ein falsches Token bekommt
+ *     dieselbe Abweisung wie sonst auch (403), nur mit dem SELFTEST-Kopf.
+ *     Ein Selbsttest darf keine Abkuerzung an der Sicherheit vorbei sein.
+ *   - Er steht VOR der Aktionsweissliste, damit ?selftest=1 ohne aktion
+ *     genuegt und keine Wirkung ausloest.
+ *   - Kein Geraetekontakt, kein Schreibzugriff, kein Protokolleintrag. Er
+ *     beantwortet genau eine Frage: stimmt das Token.
+ */
+if (isset($_GET['selftest'])) {
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
     exit;
 }
 
@@ -196,7 +228,17 @@ $sk_alter = sk_alter();
 if ($sk_alter < 0) {
     $sk_alter = 999999;
 }
-$sk_zaehler = isset($sk_lox['zaehler']) ? (int) $sk_lox['zaehler'] : 0;
+/* UND NACH OBEN GEDECKELT. Ergaenzt 31.08.2026.
+ *
+ * Die erzeugte Loxone-Vorlage traegt fuer ALTER MaxVal="999999" - dieselbe
+ * Zahl, die "noch nie abgerufen" bedeutet. Nach 11,6 Tagen ohne Abruf ginge
+ * ein groesserer Wert hinaus, den Loxone an seiner eigenen
+ * Plausibilitaetsgrenze abschneidet: die Zahl in der Antwort und die Zahl im
+ * Miniserver waeren dann verschieden. Fuer jede Ausfallerkennung ist
+ * "999999" so gut wie jede groessere Zahl. */
+$sk_alter = min(999999, $sk_alter);
+$sk_zaehler = (isset($sk_lox['zaehler']) && is_numeric($sk_lox['zaehler']))
+            ? (int) $sk_lox['zaehler'] : 0;
 $sk_alle = sk_fahrzeuge();
 
 /**
@@ -336,23 +378,25 @@ if ($sk_aktion === 'fahrzeuge') {
     $sk_gesamt = (!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0;
     echo 'FAHRZEUGE;OK=' . $sk_gesamt . ';N=' . count($sk_alle)
        . ';ALTER=' . $sk_alter . ';ZAEHLER=' . $sk_zaehler . "\n";
-    foreach ($sk_alle as $sk_nr => $sk_f) {
+    foreach ($sk_alle as $sk_nr => $sk_eintrag) {
         /* BEREINIGT wie 'position' und 'ladungen' es laengst tun. Bis 0.9.13
          * gingen modell, kennzeichen und vin ROH hinaus - Werte, die aus der
          * Skoda-Cloud kommen. Gemessen: ein Semikolon im Modellnamen machte
          * aus fuenf Feldern sechs, ein Zeilenumbruch aus "N=1" zwei Zeilen.
          * Ein Werkzeug, das die Kopfzahl gegen die Zeilenzahl haelt, sieht
          * dann einen Fehler, wo keiner ist - oder uebersieht einen. */
-        echo $sk_nr . ';' . sk_feld($sk_f, 'modell') . ';'
-           . sk_feld($sk_f, 'kennzeichen') . ';'
-           . sk_feld($sk_f, 'vin') . ';'
+        echo $sk_nr . ';' . sk_feld($sk_eintrag, 'modell') . ';'
+           . sk_feld($sk_eintrag, 'kennzeichen') . ';'
+           . sk_feld($sk_eintrag, 'vin') . ';'
            /* ausfaelle_n zuerst: der Dienst schreibt seit 0.9.13 die ZAHL
             * mit. Die Statuszeile rechnet genauso - zwei Zaehlweisen fuer
             * dieselbe Zahl waeren eine Gelegenheit, sie auseinanderlaufen zu
             * lassen. */
-           . 'Ausfaelle=' . (isset($sk_f['ausfaelle_n']) ? (int) $sk_f['ausfaelle_n']
-                             : (isset($sk_f['ausfaelle']) && is_array($sk_f['ausfaelle'])
-                                ? count($sk_f['ausfaelle']) : 0)) . "\n";
+           . 'Ausfaelle=' . (isset($sk_eintrag['ausfaelle_n'])
+                             ? (int) $sk_eintrag['ausfaelle_n']
+                             : (isset($sk_eintrag['ausfaelle'])
+                                && is_array($sk_eintrag['ausfaelle'])
+                                ? count($sk_eintrag['ausfaelle']) : 0)) . "\n";
     }
     exit;
 }
@@ -371,6 +415,21 @@ $sk_ok = (!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0;
 $sk_ausfaelle = 0;
 if ($sk_f !== null) {
     $sk_ok = ($sk_ok && !empty($sk_f['ok'])) ? 1 : 0;
+    /* UND DAS ALTER GILT AUCH JE FAHRZEUG. Ergaenzt 31.08.2026.
+     *
+     * Das OK war seit 0.9.12 je Fahrzeug, das Alter nicht: bei zwei Autos
+     * frischte ein erfolgreicher Abruf des einen den gemeinsamen Zeitstempel
+     * auf, und das ausgefallene zweite meldete OK=0 mit einem ALTER von
+     * wenigen Sekunden. Eine Loxone-Regel, die auf ALTER schaut - und dazu
+     * raet dieses Plugin ausdruecklich -, sah dort einen frischen Wert.
+     *
+     * Der Dienst schreibt den Zeitstempel seit 0.9.15 je Fahrzeug mit. Fehlt
+     * er (Abbild einer aelteren Fassung), gilt der gemeinsame - dann ist die
+     * Lage wie bisher und nicht schlechter. */
+    if (isset($sk_f['ts']) && is_numeric($sk_f['ts']) && (int) $sk_f['ts'] > 0) {
+        $sk_falter = time() - (int) $sk_f['ts'];
+        $sk_alter = min(999999, max(0, $sk_falter));
+    }
     $sk_ausfaelle = isset($sk_f['ausfaelle_n']) ? (int) $sk_f['ausfaelle_n']
                   : (isset($sk_f['ausfaelle']) && is_array($sk_f['ausfaelle'])
                      ? count($sk_f['ausfaelle']) : 0);

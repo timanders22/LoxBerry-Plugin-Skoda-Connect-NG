@@ -149,6 +149,9 @@ function sk_vorgaben()
         'empf_thema'     => '',
         'empf_grenze'    => '',
         'empf_kleiner'   => 1,
+        // Hoechstalter des empfangenen Wertes in Sekunden, 0 = ohne Grenze.
+        // Muss zu VORGABEN['empf_alter'] in bin/skoda.py passen.
+        'empf_alter'     => 10800,
         'abfahrt_ein'    => 0,
         'abfahrt_thema'  => '',
         'abfahrt_vorlauf' => 20,
@@ -208,6 +211,7 @@ function sk_regeln()
         'empf_thema'     => array('text', '#^[A-Za-z0-9_/+\#-]{0,128}$#', 128),
         'empf_grenze'    => array('zahl', -1000000, 1000000),
         'empf_kleiner'   => array('schalt'),
+        'empf_alter'     => array('ganz', 0, 86400),
         'abfahrt_ein'    => array('schalt'),
         'abfahrt_thema'  => array('text', '#^[A-Za-z0-9_/+\#-]{0,128}$#', 128),
         'abfahrt_vorlauf' => array('ganz', 5, 180),
@@ -298,11 +302,48 @@ function sk_wert_pruefen($schluessel, $wert)
 
 function sk_json_lesen($pfad)
 {
+    list($d, ) = sk_json_lage($pfad);
+    return $d;
+}
+
+/**
+ * Wie sk_json_lesen(), sagt aber, WARUM nichts herauskam.
+ *
+ * ANGELEGT 31.08.2026. Bis 0.9.14 gab sk_json_lesen() bei ungueltigem JSON
+ * stumm ein leeres Feld zurueck - eine abgeschnittene Datei (Stromausfall
+ * mitten im Schreiben) war damit von einer fehlenden nicht zu unterscheiden.
+ * Was daraus folgte, ist gemessen: die Werkseinstellung trat ein, das
+ * Aktionstoken fehlte also, sk_token() wuerfelte ein neues und schrieb es
+ * zurueck - und sk_config_speichern() kopierte die frisch erfundene Datei
+ * ueber die INTAKTE Zweitschrift. Einstellungen weg, alle Loxone-Adressen
+ * ungueltig, Sicherung vernichtet, kein Wort im Protokoll.
+ *
+ * Rueckgabe: array(daten, lage) mit lage aus
+ *   'fehlt'  - die Datei gibt es nicht (der Normalfall vor der ersten Nutzung)
+ *   'leer'   - da, aber leer oder "{}"
+ *   'ok'     - gelesen
+ *   'kaputt' - da, nicht leer, und kein gueltiges JSON-Objekt
+ */
+function sk_json_lage($pfad)
+{
+    clearstatcache(true, $pfad);
     if (!is_file($pfad)) {
-        return array();
+        return array(array(), 'fehlt');
     }
-    $d = json_decode((string) @file_get_contents($pfad), true);
-    return is_array($d) ? $d : array();
+    $roh = @file_get_contents($pfad);
+    if ($roh === false) {
+        // Da, aber nicht lesbar (Rechte). Das ist kein leerer Wert.
+        return array(array(), 'kaputt');
+    }
+    $roh = trim((string) $roh);
+    if ($roh === '' || $roh === '{}') {
+        return array(array(), 'leer');
+    }
+    $d = json_decode($roh, true);
+    if (!is_array($d)) {
+        return array(array(), 'kaputt');
+    }
+    return array($d, 'ok');
 }
 
 function sk_config()
@@ -337,7 +378,7 @@ function sk_config_lage()
         return $GLOBALS['sk_cfg_speicher'];
     }
     $p = sk_paths();
-    $datei = sk_json_lesen($p['config']);
+    list($datei, $lage) = sk_json_lage($p['config']);
     $vorgaben = sk_vorgaben();
     $cfg = $vorgaben;
     $fremd = array();
@@ -363,6 +404,11 @@ function sk_config_lage()
         'fehlend'    => array_values(array_diff(array_keys($vorgaben), array_keys($datei))),
         'fremd'      => $fremd,
         'abgewiesen' => $abgewiesen,
+        /* Der vierte Topf, seit 0.9.15. 'kaputt' heisst: die Datei ist da und
+         * unlesbar. Das ist etwas anderes als 'fehlend' - dort steht nichts,
+         * hier steht etwas Falsches, und der Unterschied entscheidet, ob man
+         * die Werkseinstellung darueberschreiben darf. */
+        'lage'       => $lage,
     );
     return $GLOBALS['sk_cfg_speicher'];
 }
@@ -379,6 +425,66 @@ function sk_config_lage()
 function sk_config_zwischenspeicher_leeren()
 {
     unset($GLOBALS['sk_cfg_speicher']);
+}
+
+/**
+ * Fehlende Schluessel EINMAL in die Datei schreiben.
+ *
+ * ANGELEGT 31.08.2026. Der Unterschied zu dem, was bis 0.9.14 geschah, ist
+ * klein und der ganze Punkt:
+ *
+ *   ergaenzen      - beim LESEN tritt fuer einen fehlenden Schluessel seine
+ *                    Vorgabe ein. Die Datei bleibt lueckenhaft, und "fehlt"
+ *                    ist von "steht auf dem Vorgabewert" nicht zu
+ *                    unterscheiden. Das tat sk_config_lage() schon immer.
+ *   vervollstaendigen - fehlt ein Schluessel, wird er einmal MIT seiner
+ *                    Vorgabe in die Datei geschrieben. Danach steht da, was
+ *                    gilt.
+ *
+ * Gemessen am 31.08.2026: eine Konfiguration aus 0.9.13 mit zehn Schluesseln
+ * blieb nach dem Update bei zehn - die sechzehn spaeter dazugekommenen
+ * standen dauerhaft nirgends. Das ist der Zustand JEDER bestehenden Anlage
+ * nach einem Update.
+ *
+ * Was ausdruecklich NICHT geschieht: fremde Schluessel werden nicht entfernt.
+ * Sie wirken zwar nicht, aber sie sind die Spur einer Umbenennung oder eines
+ * Tippfehlers, und der Reiter Test nennt sie. Ein stilles Wegraeumen waere
+ * dieselbe Klasse Fehler wie das stille Ueberschreiben, gegen das der ganze
+ * Abschnitt hier gebaut ist.
+ *
+ * Gerufen wird das nur, wo jemand angemeldet ist - aus der Oberflaeche.
+ * Der Miniserver-Endpunkt schreibt nichts.
+ *
+ * Rueckgabe: die Zahl der nachgetragenen Schluessel.
+ */
+function sk_config_vervollstaendigen()
+{
+    $p = sk_paths();
+    list($datei, $lage) = sk_json_lage($p['config']);
+    if ($lage !== 'ok') {
+        // 'fehlt', 'leer' und 'kaputt' gehoeren sk_config_heilen(); hier
+        // wuerde ein Schreibvorgang die Heilung ueberholen.
+        return 0;
+    }
+    $fehlend = array();
+    foreach (sk_vorgaben() as $k => $v) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $v;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) {
+        return 0;
+    }
+    if (!sk_json_schreiben($p['config'], $datei)) {
+        return 0;
+    }
+    sk_config_zwischenspeicher_leeren();
+    // Einmal, nicht bei jedem Lauf: nach dem Schreiben fehlt nichts mehr,
+    // und die Bedingung oben trifft nicht wieder zu.
+    sk_log_zeile('Konfiguration vervollstaendigt, ' . count($fehlend)
+               . ' Schluessel nachgetragen: ' . implode(', ', $fehlend));
+    return count($fehlend);
 }
 
 /**
@@ -404,20 +510,95 @@ function sk_config_zwischenspeicher_leeren()
 function sk_config_heilen()
 {
     $p = sk_paths();
-    clearstatcache(true, $p['config']);
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh !== '' && $roh !== '{}') || !is_file($p['sicherung'])) {
+    list(, $lage) = sk_json_lage($p['config']);
+    if ($lage === 'ok') {
+        return false;
+    }
+
+    /* EINE BESCHAEDIGTE DATEI WIRD ZUR SEITE GELEGT, NICHT UEBERSCHRIEBEN.
+     *
+     * Bis 0.9.14 heilte diese Funktion nur bei 'leer'. Eine abgeschnittene
+     * Datei ging als Werkseinstellung durch, und der naechste Schreibvorgang
+     * loeschte sie samt Zweitschrift. Jetzt bleibt sie als .kaputt liegen -
+     * einmal, nicht bei jedem Aufruf: eine zweite kaputte Datei wuerde die
+     * erste ueberschreiben, und die erste ist die interessante. */
+    if ($lage === 'kaputt') {
+        $ziel = $p['config'] . '.kaputt';
+        if (!is_file($ziel)) {
+            @copy($p['config'], $ziel);
+            @chmod($ziel, 0600);
+        }
+        sk_log_zeile('Die Konfigurationsdatei war beschaedigt (kein gueltiges JSON). '
+                   . 'Sie liegt als ' . basename($ziel) . ', '
+                   . (is_file($p['sicherung'])
+                      ? 'die Zweitschrift wird zurueckgeholt.'
+                      : 'eine Zweitschrift gibt es nicht.'));
+    }
+
+    if (!is_file($p['sicherung'])) {
+        return false;
+    }
+
+    /* Die Zweitschrift wird GELESEN, nicht kopiert. Eine kaputte Sicherung
+     * ueber eine kaputte Datei zu legen hilft niemandem, und ein 'copy'
+     * kann nicht sagen, ob der Inhalt taugt. */
+    list($gut, $slage) = sk_json_lage($p['sicherung']);
+    if ($slage !== 'ok' || !$gut) {
+        sk_log_zeile('Die Zweitschrift ist selbst unbrauchbar (' . $slage . ') - '
+                   . 'es wurde nichts zurueckgeholt.');
         return false;
     }
     if (!is_dir($p['configdir'])) {
-        if (!is_dir($p['configdir'])) {
-            @mkdir($p['configdir'], 0775, true);
-        }
+        @mkdir($p['configdir'], 0775, true);
     }
-    if (!@copy($p['sicherung'], $p['config'])) {
+    if (!sk_json_schreiben($p['config'], $gut)) {
         return false;
     }
     sk_config_zwischenspeicher_leeren();
+    return true;
+}
+
+/**
+ * Eine JSON-Datei schreiben - ueber eine Nebendatei mit rename().
+ *
+ * ANGELEGT 31.08.2026. Bis 0.9.14 schrieb sk_config_speichern() unmittelbar
+ * mit file_put_contents(). Zwei Loecher, beide gemessen an der Vertragslage
+ * der Funktion:
+ *
+ *   1. Ein Abbruch mitten im Schreiben hinterlaesst eine halbe Datei. Genau
+ *      die ist der Ausgangspunkt des Vorfalls oben. Mit Nebendatei und
+ *      rename() gibt es nur zwei Zustaende: alte Datei oder neue.
+ *   2. file_put_contents() liefert die BYTEANZAHL, nicht true. Eine
+ *      Kurzschreibung (volle Karte) ist nicht false und lief bis 0.9.14
+ *      als Erfolg durch.
+ *
+ * Die Nebendatei traegt die Prozessnummer, sonst zerlegen zwei gleichzeitige
+ * Schreiber einander. Und die Rechte stehen VOR dem Inhalt: in zugang.json
+ * steht ein Passwort im Klartext.
+ */
+function sk_json_schreiben($ziel, $daten, $rechte = 0644)
+{
+    $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+                              | JSON_UNESCAPED_SLASHES);
+    // json_encode liefert bei ungueltigem UTF-8 false, und ein blindes
+    // Schreiben legte dann eine leere Datei an - und meldete Erfolg.
+    if ($json === false) {
+        return false;
+    }
+    $tmp = $ziel . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        return false;
+    }
+    @chmod($tmp, $rechte);
+    $ok = @ftruncate($fh, 0) && @fwrite($fh, $json) === strlen($json);
+    @fflush($fh);
+    @fclose($fh);
+    if (!$ok || !@rename($tmp, $ziel)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($ziel, $rechte);
     return true;
 }
 
@@ -425,19 +606,20 @@ function sk_config_speichern($cfg)
 {
     $p = sk_paths();
     if (!is_dir($p['configdir'])) {
-        if (!is_dir($p['configdir'])) {
-        if (!is_dir($p['configdir'])) {
-            @mkdir($p['configdir'], 0775, true);
-        }
+        @mkdir($p['configdir'], 0775, true);
     }
-    }
-    $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if ($json === false || @file_put_contents($p['config'], $json) === false) {
+    if (!sk_json_schreiben($p['config'], $cfg)) {
         return false;
     }
-    @copy($p['config'], $p['sicherung']);
+    /* DIE ZWEITSCHRIFT WIRD ERST NACH GELUNGENEM ZURUECKLESEN ERNEUERT.
+     *
+     * Bis 0.9.14 stand hier ein blindes copy() der eben geschriebenen Datei.
+     * War die neue Datei unbrauchbar, war es die Sicherung eine Zeile spaeter
+     * auch - beide Staende weg, und das ist der Fall, fuer den es sie gibt. */
+    list($zurueck, $lage) = sk_json_lage($p['config']);
+    if ($lage === 'ok' && $zurueck) {
+        sk_json_schreiben($p['sicherung'], $zurueck);
+    }
     sk_config_zwischenspeicher_leeren();
     return true;
 }
@@ -486,6 +668,54 @@ function sk_log_zeile($text)
     $z = '[' . date('Y-m-d H:i:s') . '] OBERFLAECHE '
        . str_replace(array("\r", "\n"), ' ', (string) $text) . "\n";
     @file_put_contents($p['log'], $z, FILE_APPEND);
+
+    /* KAPPUNG - und sie gehoert HIERHER.
+     *
+     * Bis 0.9.14 kappte nur der Dienst (bin/skoda.py, RotatingFileHandler,
+     * 512000 Byte) - dieselbe Datei. Steht der Dienst, waechst skoda.log
+     * durch die Oberflaeche unbegrenzt weiter, und log/plugins liegt auf
+     * einer Ramdisk.
+     *
+     * clearstatcache VOR filesize: PHP merkt sich die Groesse aus dem ersten
+     * stat() eines Seitenaufbaus. Ohne das Leeren misst die Kappung die
+     * Groesse VOR dem eben angehaengten Text - bei einer Datei, die gerade
+     * die Grenze reisst, faellt sie damit still aus. */
+    clearstatcache(true, $p['log']);
+    if ((int) @filesize($p['log']) <= 512000) {
+        return;
+    }
+    $zeilen = @file($p['log']);
+    if (!is_array($zeilen)) {
+        return;
+    }
+    /* GEKAPPT WIRD IN DER DATEI, NICHT UEBER EINE NEBENDATEI.
+     *
+     * Berichtigt 01.09.2026, noch vor der Auslieferung. Der erste Entwurf
+     * schrieb eine Nebendatei und benannte sie um - genau der Handgriff, der
+     * den Dauerlaeufer sein Protokoll kostet: er haelt seinen Dateizeiger auf
+     * die alte Inode und schreibt dort weiter, wo niemand mehr liest.
+     *
+     * In der Datei zu kuerzen behaelt die Inode. Der Dauerlaeufer hat sie im
+     * Anhaengemodus offen (O_APPEND), setzt also vor jedem Schreiben ans
+     * Ende - er haengt danach an den gekuerzten Inhalt an, ohne Luecke.
+     *
+     * Der Preis: waehrend des Kuerzens ist die Datei kurz halb geschrieben.
+     * Das ist die kleinere Muenze - eine Protokollzeile, die einmal
+     * verstuemmelt aussieht, gegen ein Protokoll, das ab dem Umlauf leer
+     * bleibt. */
+    $inhalt = implode('', array_slice($zeilen, -200));
+    $fh = @fopen($p['log'], 'r+');
+    if ($fh === false) {
+        return;
+    }
+    if (@flock($fh, LOCK_EX)) {
+        @ftruncate($fh, 0);
+        @rewind($fh);
+        @fwrite($fh, $inhalt);
+        @fflush($fh);
+        @flock($fh, LOCK_UN);
+    }
+    @fclose($fh);
 }
 
 /**
@@ -522,11 +752,7 @@ function sk_zugang_speichern($email, $passwort)
 {
     $p = sk_paths();
     if (!is_dir($p['configdir'])) {
-        if (!is_dir($p['configdir'])) {
-        if (!is_dir($p['configdir'])) {
-            @mkdir($p['configdir'], 0775, true);
-        }
-    }
+        @mkdir($p['configdir'], 0775, true);
     }
     $alt = sk_json_lesen($p['zugang']);
     $neu = array(
@@ -535,12 +761,10 @@ function sk_zugang_speichern($email, $passwort)
                       ? $passwort
                       : (isset($alt['passwort']) ? $alt['passwort'] : ''),
     );
-    $json = json_encode($neu, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-    // schriebe dann eine LEERE Datei - hier waeren das die Zugangsdaten.
-    $ok = $json !== false && @file_put_contents($p['zugang'], $json) !== false;
-    @chmod($p['zugang'], 0600);
-    return $ok;
+    // Rechte VOR dem Inhalt, und ueber eine Nebendatei: hier steht ein
+    // Passwort im Klartext, und "schreiben, dann chmod" laesst die Datei fuer
+    // die Dauer des Schreibens mit den Vorgaben der umask stehen.
+    return sk_json_schreiben($p['zugang'], $neu, 0600);
 }
 
 /**
@@ -950,7 +1174,10 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
     if ($wartezeit === null) {
         $wartezeit = (int) $cfg['wartezeit'];
     }
-    $wartezeit = max(0, min(30, (int) $wartezeit));
+    /* Die Grenzen stehen in sk_regeln() - eine zweite Wahrheit ueber einen
+     * zulaessigen Wert ist genau das, was diese Funktion dort ausschliesst. */
+    $sk_r = sk_regeln();
+    $wartezeit = max($sk_r['wartezeit'][1], min($sk_r['wartezeit'][2], (int) $wartezeit));
 
     /* Die PID-Pruefung steht HIER und nicht beim Aufrufer.
      *
@@ -966,6 +1193,22 @@ function sk_befehl_absetzen($befehl, $wartezeit = null)
      * eingeloest ist das erst jetzt. */
     if (sk_dienst_pid() === 0) {
         return array(0, sk_t('ALLG.DIENST_LAEUFT_NICHT'));
+    }
+
+    /* UND DIE SPERRE STEHT AUCH HIER - seit 0.9.15.
+     *
+     * Bis 0.9.14 pruefte nur der Miniserver-Endpunkt 'steuerung_ein'. Die
+     * Knoepfe des Reiters Test gingen an ihm vorbei: elf davon wies der
+     * Dienst ab, der zwoelfte nicht - 'abruf' wird in bin/skoda.py VOR der
+     * Sperre abgearbeitet. Wer den Haken ausgeschaltet hatte, loeste mit
+     * "Sofortabruf" weiter vollstaendige Cloud-Durchgaenge aus, waehrend im
+     * selben Bild stand: "Die Knoepfe geben deshalb eine Ablehnung zurueck."
+     *
+     * Drei Stellen, zwei Wahrheiten - jetzt eine. Der Endpunkt fuehrt
+     * 'abruf' seit 0.9.13 ausdruecklich unter den schaltenden Aktionen; der
+     * Dienst zieht mit derselben Fassung nach. */
+    if (empty($cfg['steuerung_ein'])) {
+        return array(0, sk_t('ALLG.STEUERUNG_AUS'));
     }
 
     $ordner = $p['datadir'] . '/befehle';
@@ -1408,7 +1651,7 @@ function sk_status_felder()
         'HEIMENTF'  => array('m',   'SK_FELD.HEIMENTF',   0, 20000000),
         'EMPFEHLUNG'=> array('',    'SK_FELD.EMPFEHLUNG', 0, 1),
         'AUSFAELLE' => array('',    'SK_FELD.AUSFAELLE',  0, 50),
-        'ZAEHLER'   => array('',    'SK_FELD.ZAEHLER',    0, 10000000),
+        'ZAEHLER'   => array('',    'SK_FELD.ZAEHLER',    0, 999),
         'ALTER'     => array('s',   'SK_FELD.ALTER',      0, 999999),
         'OK'        => array('',    'SK_FELD.OK',         0, 1),
     );
@@ -1566,6 +1809,27 @@ function sk_vorlagenarten()
     );
 }
 
+/**
+ * Der Name eines virtuellen Eingangs - aus DERSELBEN Rechnung wie in
+ * sk_vorlage().
+ *
+ * ANGELEGT 31.08.2026 aus einem Befund: die Baustein-Liste im Reiter
+ * "Einbindung in Loxone" fuehrte ihre zwoelf Namen als Sprachschluessel, die
+ * Vorlage baut sie aus der Feldliste. Bei elf stimmten beide ueberein, beim
+ * zwoelften nicht - INSPTAGE gehoert zur Wartungsvorlage, und die haengt ihre
+ * Art in den Namen. Wer die Tabelle nachbaute, legte einen Baustein an, der
+ * nie etwas empfaengt.
+ *
+ * Zwei Stellen, die dieselbe Zeichenkette zusammensetzen, laufen auseinander.
+ * Hier ist es eine.
+ */
+function sk_eingangsname($feld, $art = 'status', $nummer = 1)
+{
+    $nummer = max(1, min(99, (int) $nummer));
+    return 'SKODA_' . $nummer . ($art === 'status' ? '' : '_' . strtoupper($art))
+         . '_' . $feld;
+}
+
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function sk_vorlage($nummer = 1, $art = 'status')
 {
@@ -1603,8 +1867,7 @@ function sk_vorlage($nummer = 1, $art = 'status')
          * der Feldliste wie der Klammerzusatz im Kommentar - zwei
          * Darstellungen, eine Quelle. */
         $cmds[] = array(
-            'title'   => 'SKODA_' . $nummer . ($art === 'status' ? '' : '_' . strtoupper($art))
-                         . '_' . $feld,
+            'title'   => sk_eingangsname($feld, $art, $nummer),
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => sk_check($feld),
             'einheit' => $einheit,

@@ -84,16 +84,57 @@ def mqtt_wert_saeubern(wert):
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
 PNAME = SELF.name
-if len(SELF.parents) >= 3:
-    LBHOME = SELF.parents[2]
-else:
-    LBHOME = Path(os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln())
+
+
+def _lb_wurzel():
+    """Den LoxBerry-Wurzelordner bestimmen - und zwar nachgesehen.
+
+    GEPRUEFT WIRD DIE PLAUSIBILITAET, NICHT DIE TIEFE. Berichtigt 31.08.2026.
+
+    Bis 0.9.14 stand hier "if len(SELF.parents) >= 3: LBHOME = SELF.parents[2]".
+    Das ist keine Wache, sondern eine Zaehlung: drei Ebenen ueber sich hat fast
+    jeder Pfad. Nachgerechnet:
+
+      <home>/bin/plugins/skodaconnect/         ->  <home>            richtig
+      /home/x/LoxBerry-Plugin-Skoda-.../bin/   ->  /home             falsch
+      /srv/repo/bin/                           ->  /                 falsch
+
+    In den beiden unteren Faellen wurde PNAME zu "bin" und PDATA zu
+    "/home/data/plugins/bin" - also genau der Dienst, der "gegen /-Pfade
+    werkelt und trotzdem Erfolg meldet", vor dem der Kommentar darueber warnt.
+    Und lb_wurzel_ermitteln(), die Funktion, die wirklich nachsieht, wurde
+    dabei nie erreicht.
+    """
+    kandidat = SELF.parents[2] if len(SELF.parents) >= 3 else None
+    if kandidat is not None and (kandidat / "config" / "plugins").is_dir() \
+            and (kandidat / "webfrontend").is_dir():
+        return kandidat
+    umgebung = os.environ.get("LBHOMEDIR") or ""
+    if umgebung and os.path.isdir(os.path.join(umgebung, "config", "plugins")):
+        return Path(umgebung)
+    gesucht = lb_wurzel_ermitteln()
+    if gesucht:
+        return Path(gesucht)
+    # Nichts davon hat getragen. Geraten wird nicht - main() bricht mit einer
+    # Meldung ab. Der Rueckfall haelt nur den Modulimport am Leben, den die
+    # Pruefstaende brauchen.
+    return kandidat if kandidat is not None else SELF
+
+
+LBHOME = _lb_wurzel()
+LBHOME_ECHT = ((LBHOME / "config" / "plugins").is_dir()
+               and (LBHOME / "webfrontend").is_dir())
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME
 
 DATEI_CONFIG = PCONFIG / "skoda.json"
 DATEI_ZUGANG = PCONFIG / "zugang.json"
+# Die Zweitschriften liegen NEBEN dem Konfigordner, nicht darin - der
+# Installateur raeumt config/plugins/<ordner>/ bei jedem Upgrade ab. Sie
+# werden hier nur GELESEN; geschrieben werden sie von der Oberflaeche.
+DATEI_CONFIG_ZWEIT = LBHOME / "config" / "plugins" / (PNAME + ".backup.skoda.json")
+DATEI_ZUGANG_ZWEIT = LBHOME / "config" / "plugins" / (PNAME + ".backup.zugang.json")
 DATEI_CACHE = PDATA / "cache.json"
 DATEI_LOXONE = PDATA / "loxone.json"
 DATEI_ZUSTAND = PDATA / "zustand.json"
@@ -125,6 +166,8 @@ GRENZE_ABRUF = 30      # ein Lese-Endpunkt
 GRENZE_BEFEHL = 60     # ein Schreibbefehl - ein schlafendes Fahrzeug braucht laenger
 GRENZE_ANMELDUNG = 60  # der Anmeldeweg umfasst mehrere Abrufe hintereinander
 GRENZE_SITZUNG = 90    # Auffanglinie je einzelnem HTTP-Abruf
+# Hoechstzahl der Befehle, die EIN Lauf der Warteschlange abarbeitet.
+GRENZE_BEFEHLE_JE_LAUF = 12
 # Wie lange ein eingereihter Befehl gueltig bleibt, wenn die Oberflaeche
 # nichts anderes sagt. Der Endpunkt setzt 'gueltig_bis' selbst; dieser Wert
 # faengt nur Dateien aus einer aelteren Fassung ab.
@@ -152,6 +195,15 @@ VORGABEN = {
     "empf_thema": "",
     "empf_grenze": "",
     "empf_kleiner": 1,
+    # Hoechstalter des empfangenen Wertes in Sekunden, 0 = ohne Grenze.
+    #
+    # Das ist eine EINSTELLUNG und keine Messung: 10800 s (drei Stunden) ist
+    # eine gewaehlte Schranke, kein Wert, den jemand ermittelt haette. Sie
+    # steht deshalb im Formular und nicht als Zahl im Code. Der Gedanke
+    # dahinter: ein Thema, das einen Strompreis oder einen PV-Ueberschuss
+    # fuehrt, meldet sich weit oefter als alle drei Stunden; schweigt es
+    # laenger, sagt sein letzter Wert nichts mehr ueber jetzt.
+    "empf_alter": 10800,
     "abfahrt_ein": 0,
     "abfahrt_thema": "",
     "abfahrt_vorlauf": 20,
@@ -210,11 +262,35 @@ _NEU_ANMELDEN = False
 # ohnehin in dieselbe Datei um - ein zweiter Kanal nach stdout schriebe jede
 # Zeile doppelt hinein.
 # ---------------------------------------------------------------------------
-def log_einrichten() -> None:
+def log_einrichten(dauerlaeufer: bool = False) -> None:
+    """Den Protokollkanal einrichten.
+
+    NUR DER DAUERLAEUFER LAESST DIE DATEI UMLAUFEN. Berichtigt 01.09.2026.
+
+    Bis dahin bekam JEDER Lauf einen RotatingFileHandler - auch der
+    Minutencron ("--wachzeichen") und der Selbsttest. Gemessen in der
+    installierten Lage: eine 600 023 Byte grosse skoda.log, ein einziger
+    Cron-Lauf, und danach lag skoda.log.1 mit 600 023 Byte daneben.
+
+    Der Umlauf benennt um. Linux laesst das an einer Datei zu, die ein
+    anderer Vorgang offen haelt - und der Dauerlaeufer schreibt danach in
+    die verwaiste Inode weiter. Seine Zeilen erscheinen in skoda.log nie
+    wieder und sind beim naechsten Umlauf fort. Ein Cron, der jede Minute
+    laeuft, kann das jederzeit ausloesen; der Dauerlaeufer bemerkt es nicht.
+
+    (Die Folge selbst ist hier nicht messbar - Windows verweigert das
+    Umbenennen einer offenen Datei. Gemessen ist der Ausloeser.)
+
+    Wer nur anhaengt, kann nichts verlieren. Die Oberflaeche haelt es
+    genauso: sk_log_zeile() kappt seit 0.9.15 IN DER DATEI statt umzubenennen.
+    """
     PLOG.mkdir(parents=True, exist_ok=True)
     _LOG.setLevel(logging.INFO)
     try:
-        h = RotatingFileHandler(DATEI_LOG, maxBytes=512000, backupCount=1, encoding="utf-8")
+        h = (RotatingFileHandler(DATEI_LOG, maxBytes=512000, backupCount=1,
+                                 encoding="utf-8")
+             if dauerlaeufer
+             else logging.FileHandler(DATEI_LOG, encoding="utf-8"))
     except OSError as err:
         # Scheitert die Datei, nach stderr - nicht nach stdout.
         h = logging.StreamHandler(sys.stderr)
@@ -284,13 +360,36 @@ def melde_gebremst(schluessel: str, text: str, sekunden: int = 3600) -> None:
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
-def json_lesen(pfad: Path) -> dict:
+def json_lage(pfad: Path):
+    """Wie json_lesen(), sagt aber, WARUM nichts herauskam.
+
+    ANGELEGT 31.08.2026, aus demselben Anlass wie sk_json_lage() in
+    webfrontend/html/sk_lib.php. Bis 0.9.14 gab json_lesen() bei kaputtem
+    JSON stumm {} zurueck - eine beschaedigte skoda.json war damit von einer
+    fehlenden nicht zu unterscheiden, und der Dienst fuhr lautlos auf
+    Werkseinstellung: steuerung_ein 0, mqtt_ein 0, Takt 300. In Loxone sieht
+    das aus wie ein Haus, an dem alles in Ordnung ist.
+
+    Rueckgabe: (daten, lage) mit lage aus 'fehlt', 'leer', 'ok', 'kaputt'.
+    """
     try:
-        with pfad.open("r", encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
+        roh = pfad.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ({}, "fehlt")
+    except OSError:
+        return ({}, "kaputt")
+    if roh.strip() in ("", "{}"):
+        return ({}, "leer")
+    try:
+        d = json.loads(roh)
+    except ValueError:
+        return ({}, "kaputt")
+    return (d, "ok") if isinstance(d, dict) else ({}, "kaputt")
+
+
+def json_lesen(pfad: Path) -> dict:
+    daten, _ = json_lage(pfad)
+    return daten
 
 
 def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
@@ -298,7 +397,16 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
     eine halb geschriebene Datei."""
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
-        tmp = pfad.with_suffix(pfad.suffix + ".tmp")
+        # Die Nebendatei traegt die PROZESSNUMMER. Berichtigt 01.09.2026.
+        #
+        # Sie hiess "<ziel>.tmp" - fuer alle Schreiber derselbe Name. Der
+        # Dauerlaeufer und der Minutencron schreiben beide meldebremse.json;
+        # treffen sie zusammen, truncatet der eine die Nebendatei, waehrend
+        # der andere hineinschreibt, und das rename veroeffentlicht einen
+        # halben Inhalt. Die Hausregel sagt es woertlich: "<ziel>.tmp.<pid>,
+        # nicht <ziel>.tmp - sonst zerlegen zwei gleichzeitige Schreiber
+        # einander."
+        tmp = pfad.with_suffix(pfad.suffix + ".tmp." + str(os.getpid()))
         if rechte is None:
             with tmp.open("w", encoding="utf-8") as f:
                 json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
@@ -352,12 +460,46 @@ def in_grenzen(wert, unten: int, oben: int, vorgabe: int) -> int:
     return n if unten <= n <= oben else vorgabe
 
 
+def _mit_zweitschrift(datei: Path, zweit: Path, was: str) -> dict:
+    """Eine Konfigurationsdatei lesen - und bei Schaden die Zweitschrift.
+
+    ANGELEGT 31.08.2026. Der Dienst kannte die Zweitschriften bis 0.9.14
+    NICHT (null Treffer im ganzen Modul), obwohl die Oberflaeche sie bei
+    jedem Speichern schreibt. Nach einem Schaden an skoda.json lief er also
+    stumm auf Werkseinstellung weiter, waehrend eine gute Fassung danebenlag.
+
+    GELESEN, NICHT KOPIERT: der Dienst laeuft als Dauerlaeufer und schreibt
+    hier nichts zurueck. Das Wiederherstellen ist Sache der Oberflaeche
+    (sk_config_heilen), die dabei auch die kaputte Datei als .kaputt
+    beiseitelegt. Ein Dienst, der viermal die Minute liest, wuerde sonst
+    viermal die Minute heilen und protokollieren.
+    """
+    daten, lage = json_lage(datei)
+    if lage != "kaputt":
+        return daten
+    gut, zlage = json_lage(zweit)
+    if zlage == "ok" and gut:
+        melde_gebremst(
+            "kaputt_" + was,
+            f"{datei.name} ist beschaedigt (kein gueltiges JSON) - es gilt die "
+            f"Zweitschrift {zweit.name}. Die Oberflaeche einmal oeffnen, dann "
+            f"wird sie zurueckgeschrieben.", 3600)
+        return gut
+    melde_gebremst(
+        "kaputt_" + was,
+        f"{datei.name} ist beschaedigt (kein gueltiges JSON), und eine "
+        f"brauchbare Zweitschrift gibt es nicht. Es gelten die "
+        f"Voreinstellungen.", 3600)
+    return {}
+
+
 def config() -> dict:
     c = dict(VORGABEN)
-    c.update(json_lesen(DATEI_CONFIG))
+    c.update(_mit_zweitschrift(DATEI_CONFIG, DATEI_CONFIG_ZWEIT, "config"))
     c["intervall"] = in_grenzen(c.get("intervall"), 60, 3600, 300)
     c["takt_stamm"] = in_grenzen(c.get("takt_stamm"), 1, 240, 12)
     c["takt_wartung"] = in_grenzen(c.get("takt_wartung"), 1, 240, 24)
+    c["empf_alter"] = in_grenzen(c.get("empf_alter"), 0, 86400, VORGABEN["empf_alter"])
     c["temp_min"] = in_grenzen(c.get("temp_min"), 10, 30, 16)
     c["temp_max"] = in_grenzen(c.get("temp_max"), 10, 30, 29)
     if c["temp_min"] > c["temp_max"]:
@@ -430,7 +572,7 @@ def ganz(wert, ersatz: int) -> int:
 
 
 def zugang() -> dict:
-    z = json_lesen(DATEI_ZUGANG)
+    z = _mit_zweitschrift(DATEI_ZUGANG, DATEI_ZUGANG_ZWEIT, "zugang")
     return {
         "email": str(z.get("email") or "").strip(),
         "passwort": str(z.get("passwort") or ""),
@@ -1047,6 +1189,25 @@ class Horcher:
                 self.empfangen[m.topic] = time.time()
 
             def verbunden(_c, _u, _f, _rc, *_a):
+                # DER RUECKGABECODE WIRD GELESEN. Ergaenzt 31.08.2026.
+                #
+                # Bis 0.9.14 nahm dieser Rueckruf _rc entgegen und sah ihn nie
+                # an: self.verbunden ging auf True, auch wenn der Broker die
+                # Anmeldung gerade abgewiesen hatte (CONNACK 5, "nicht
+                # autorisiert"). pflegen() benutzt genau dieses Merkmal als
+                # Gesundheitspruefung - der Horcher galt also als gesund und
+                # war auf nichts abonniert.
+                #
+                # "Laeuft" ist nicht "erreichbar", und "erreichbar" ist nicht
+                # "angemeldet". Am Broker dieser Anlage ist das NICHT
+                # nachgemessen; gemessen ist nur, dass der Code den Wert
+                # bisher verwarf.
+                if _rc:
+                    self.verbunden = False
+                    self.grund = (f"Der Broker {broker}:{port} hat die Anmeldung "
+                                  f"abgewiesen (CONNACK {_rc}).")
+                    melde_gebremst("horcher_connack", self.grund, 1800)
+                    return
                 # ABONNIERT WIRD HIER, NICHT NACH connect(). Behoben
                 # 31.08.2026: paho baut die Verbindung ueber loop_start()
                 # selbst wieder auf, fuehrt aber KEINEN Abonnementspeicher
@@ -1077,13 +1238,38 @@ class Horcher:
         _LOG.info("Horcher: %s abonniert (%s:%d).", ", ".join(soll), broker, port)
 
     def empfehlung(self, cfg: dict):
-        """1, 0 oder None - None heisst: es liegt kein Wert vor."""
+        """1, 0 oder None - None heisst: es gibt hier keine Aussage.
+
+        DAS ALTER ZAEHLT MIT. Ergaenzt 31.08.2026, und es ist die zweite
+        Haelfte einer Korrektur, die halb liegengeblieben war: self.empfangen
+        wurde am selben Tag eingefuehrt, ausdruecklich weil "ein einmal
+        empfangener Wert fuer immer stehen blieb und in jedem Takt als frische
+        EMPFEHLUNG nach Loxone ging" - benutzt hat ihn dann nur
+        abfahrt_faellig(). Die EMPFEHLUNG, die im Kommentar als Opfer steht,
+        rechnete weiter mit einem Wert von vorgestern.
+
+        UND SIE VERSTUMMT NICHT, SIE SAGT 0. Ein virtueller Eingang behaelt
+        seinen letzten Wert: bliebe die Empfehlung bei veraltetem Preis leer,
+        stuende in Loxone weiter die 1, und die Anlage lade weiter, weil
+        niemand mehr widersprochen hat. Nur wenn die Funktion gar nicht
+        eingerichtet ist, gibt es keine Aussage (None).
+        """
         thema = str(cfg.get("empf_thema") or "")
         if not thema or cfg.get("empf_grenze") == "":
             return None
         roh = self.werte.get(thema)
         if roh is None:
             return None
+        grenze_alter = ganz(cfg.get("empf_alter"), VORGABEN["empf_alter"])
+        if grenze_alter > 0:
+            seit = time.time() - self.empfangen.get(thema, 0.0)
+            if seit > grenze_alter:
+                melde_gebremst(
+                    "empf_alt",
+                    f"Der letzte Wert auf '{thema}' ist {int(seit)} s alt "
+                    f"(Grenze {grenze_alter} s). Die Ladeempfehlung geht als 0 "
+                    f"hinaus, nicht als der alte Stand.", 3600)
+                return 0
         wert = zahl(roh, 3)
         if wert is None:
             return None
@@ -1343,15 +1529,27 @@ async def befehl_ausfuehren(ms, vins: list[str], cfg: dict, b: dict) -> tuple[in
     """
     aktion = str(b.get("aktion") or "")
 
+    # DIE SPERRE STEHT VOR ALLEM, AUCH VOR 'abruf'. Berichtigt 31.08.2026.
+    #
+    # Bis 0.9.14 stand der abruf-Zweig DAVOR. Drei Stellen, zwei Wahrheiten:
+    # der Miniserver-Endpunkt weist 'abruf' seit 0.9.13 ausdruecklich ab
+    # (webfrontend/html/index.php), der Dienst liess ihn durch - und der
+    # Reiter Test, der ueber sk_befehl_absetzen() einreiht, kam damit an der
+    # Sperre vorbei, waehrend im selben Bild stand: "Die Knoepfe geben
+    # deshalb eine Ablehnung zurueck."
+    #
+    # Es ist der Weg, ueber den laut dem Kommentar zur Bremse in 0.9.12 3600
+    # vollstaendige Cloud-Durchgaenge in der Stunde entstanden sind. Wer den
+    # Haken ausschaltet, will genau das nicht mehr.
+    if not cfg.get("steuerung_ein"):
+        return (0, "Die Steuerung ist ausgeschaltet. Reiter Einstellungen, "
+                   "Haken 'Schreibende Befehle zulassen'.", {})
+
     if aktion == "abruf":
         erlaubt, grund = _BREMSE.abruf_erlaubt(cfg)
         if not erlaubt:
             return (0, grund, {})
         return (1, "Sofortabruf eingeplant.", {})
-
-    if not cfg.get("steuerung_ein"):
-        return (0, "Die Steuerung ist ausgeschaltet. Reiter Einstellungen, "
-                   "Haken 'Schreibende Befehle zulassen'.", {})
 
     if not vins:
         return (0, "Es ist noch kein Fahrzeug bekannt. Erst einen Abruf abwarten.", {})
@@ -1454,7 +1652,22 @@ async def warteschlange(ms, vins: list[str], cfg: dict) -> bool:
     # Sekunden spaeter laden_stop, ausgefuehrt wurde stop und dann start -
     # das Auto lud. sk_befehl_absetzen() stellt der Kennung jetzt die Zeit
     # voran (%d.%06d-), damit die Namensfolge die Zeitfolge ist.
-    for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
+    # EINE HARTE OBERGRENZE. Ergaenzt 31.08.2026.
+    #
+    # Diese Schleife hatte keine, und jeder Durchgang darf bis GRENZE_BEFEHL
+    # dauern. Wer den Ordner - versehentlich oder nicht - mit tausend Dateien
+    # fuellt, haelt den Dienst damit beliebig lange von seinem Abruf ab; die
+    # Warteschlange laeuft im Sekundentakt, der Rest wartet also hoechstens
+    # eine Sekunde. Die Zahl ist eine gewaehlte Schranke, keine Messung: mehr
+    # als zwoelf Befehle auf einmal erzeugt keine Bedienung dieses Plugins -
+    # es hat zwoelf Knoepfe.
+    offen = sorted(ORDNER_BEFEHLE.glob("*.json"))
+    if len(offen) > GRENZE_BEFEHLE_JE_LAUF:
+        melde_gebremst("befehlsstau",
+                       f"{len(offen)} Befehle liegen in der Warteschlange. Es werden "
+                       f"{GRENZE_BEFEHLE_JE_LAUF} je Sekunde abgearbeitet, der Rest "
+                       f"in den naechsten Laeufen.", 600)
+    for datei in offen[:GRENZE_BEFEHLE_JE_LAUF]:
         b = json_lesen(datei)
         kennung = datei.stem
         try:
@@ -1697,7 +1910,8 @@ def entfernung_m(b1, l1, b2, l2):
         if w is None or w == "":
             return None
     try:
-        import math
+        # math steht im Kopf dieser Datei; der zweite Import hier war ein
+        # Rest und hat nichts bewirkt.
         p1, p2 = math.radians(float(b1)), math.radians(float(b2))
         dp = p2 - p1
         dl = math.radians(float(l2) - float(l1))
@@ -1739,7 +1953,13 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
 
     # Vollstaendiges Abbild fuer die Fehlersuche. Zugangsdaten stehen hier
     # nicht drin - die fuehrt die Bibliothek getrennt.
-    json_schreiben(DATEI_CACHE, {"ts": int(time.time()), "ok": ok,
+    # DER ZEITSTEMPEL IST DER DES STANDES, nicht der der Schreibung.
+    # Bis 0.9.14 bekam cache.json in JEDEM Lauf ein frisches "ts" - auch bei
+    # ok=0 und mit den ALTEN Fahrzeugwerten daneben. Drei Zeilen weiter oben
+    # steht die Begruendung, warum genau das nicht sein darf. Wer die Datei
+    # zur Fehlersuche aufschlaegt, liest sonst ein Alter, das es nicht gibt.
+    json_schreiben(DATEI_CACHE, {"ts": int(stand.get("ts") or 0), "ok": ok,
+                                 "geschrieben": int(time.time()),
                                  "fehler": fehler, "fahrzeuge": fahrzeuge})
 
     praefix = thema_saeubern(cfg.get("mqtt_topic"))
@@ -1814,6 +2034,49 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
         json_schreiben(DATEI_LOXONE, lox)
 
     return lox
+
+
+def nummern_zuordnen(vins: list) -> dict:
+    """Welche Fahrzeugnummer gehoert zu welcher VIN?
+
+    ANGELEGT 01.09.2026. Bis dahin entstand die Nummer aus der POSITION in
+    sorted(vins) - "fuer i, vin in enumerate(vins, start=1)". Das ist keine
+    Adresse, sondern eine Reihenfolge: laesst die Skoda-Cloud voruebergehend
+    die erste VIN weg (Wartung, Teilausfall, ein Wagen kurz aus dem Konto),
+    rutscht das zweite Auto auf fahrzeug1. Es bekommt dann dieselben
+    MQTT-Themen und dieselben virtuellen Eingaenge wie vorher der erste -
+    und in Loxone steht der Ladezustand des einen Wagens unter dem Namen des
+    anderen. Nichts daran meldet sich; die Zahlen sehen plausibel aus.
+
+    Die Zuordnung liegt deshalb in zustand.json und ueberlebt einen Neustart
+    wie ein Upgrade (preupgrade.sh rettet die Datei seit 0.9.15 neben den
+    Ordner). Sie waechst nur: eine einmal vergebene Nummer wird nie neu
+    vergeben, ein verschwundenes Fahrzeug behaelt seine.
+
+    KEIN BRUCH FUER BESTEHENDE ANLAGEN: ist noch keine Zuordnung da, entsteht
+    sie aus derselben sortierten Reihenfolge, die bisher galt. Der erste Lauf
+    nach dem Update vergibt also genau die Nummern, die schon im Miniserver
+    stehen.
+    """
+    z = json_lesen(DATEI_ZUSTAND)
+    karte = z.get("vin_nummern")
+    karte = {str(k): int(v) for k, v in karte.items()
+             if isinstance(v, int) or (isinstance(v, str) and str(v).isdigit())} \
+        if isinstance(karte, dict) else {}
+    vergeben = set(karte.values())
+    neu = False
+    for vin in sorted(vins):
+        if str(vin) in karte:
+            continue
+        n = 1
+        while n in vergeben:
+            n += 1
+        karte[str(vin)] = n
+        vergeben.add(n)
+        neu = True
+    if neu:
+        zustand_schreiben(vin_nummern=karte)
+    return karte
 
 
 def zustand_schreiben(**felder) -> None:
@@ -1907,10 +2170,6 @@ async def dienst(einmal: bool = False) -> int:
 
     cfg = config()
     z = zugang()
-    if not z["email"] or not z["passwort"]:
-        _LOG.error("Zugangsdaten fehlen. Reiter Einstellungen der Plugin-Oberflaeche oeffnen.")
-        zustand_schreiben(ok=0, fehler="Zugangsdaten fehlen.")
-        return 1
 
     _LOG.info("Dienst startet (Takt %s s, Steuerung %s).",
               cfg["intervall"], "ein" if cfg.get("steuerung_ein") else "aus")
@@ -1947,6 +2206,40 @@ async def dienst(einmal: bool = False) -> int:
             """
             versuch = 0
             while _LAUF:
+                # DER ZUGANG WIRD VOR JEDEM VERSUCH NEU GELESEN. Behoben
+                # 31.08.2026. Bis 0.9.14 stand "z = zugang()" ein einziges
+                # Mal vor der Schleife, und diese Funktion arbeitete mit der
+                # geschlossenen Kopie weiter. Zusammen mit der ansteigenden
+                # Wartezeit bis 3600 s hiess das: wer nach "Anmeldung
+                # abgewiesen" das Passwort in der Oberflaeche berichtigte,
+                # aenderte nichts - der Dienst klopfte bis zum naechsten
+                # Neustart mit dem alten an. Die Konfiguration daneben wurde
+                # laengst in jedem Takt neu gelesen, ausdruecklich damit
+                # Aenderungen ohne Neustart ankommen; die Zugangsdaten sind
+                # der Fall, in dem das am dringendsten gebraucht wird.
+                z = zugang()
+                if not z["email"] or not z["passwort"]:
+                    # KEIN Abbruch mehr. Bis 0.9.14 gab dienst() hier 1
+                    # zurueck, der Prozess endete, der Sollmerker blieb
+                    # liegen - und cron.01min startete ihn binnen 60 Sekunden
+                    # in denselben Abbruch: 1440 Starts am Tag, jeder mit
+                    # einer Zeile im Protokoll. Das ist genau die Schleife,
+                    # die der Kommentar oben fuer die ABGEWIESENE Anmeldung
+                    # als behoben beschreibt; der FEHLENDE Zugang war
+                    # uebersehen worden.
+                    zustand_schreiben(ok=0, fehler="Zugangsdaten fehlen.")
+                    melde_gebremst("zugang_fehlt",
+                                   "Zugangsdaten fehlen. Reiter Einstellungen der "
+                                   "Plugin-Oberflaeche oeffnen.", 3600)
+                    if einmal:
+                        return False
+                    warten = ANMELDEWARTEN[min(versuch, len(ANMELDEWARTEN) - 1)]
+                    versuch += 1
+                    for _ in range(warten):
+                        if not _LAUF:
+                            return False
+                        await asyncio.sleep(1)
+                    continue
                 try:
                     weg = await anmelden(ms, z, cfg)
                 except Exception as err:  # noqa: BLE001
@@ -2000,7 +2293,31 @@ async def dienst(einmal: bool = False) -> int:
                 if not vins or zyklus % cfg["takt_stamm"] == 0:
                     vins = sorted(await asyncio.wait_for(
                         ms.list_vehicle_vins(), timeout=GRENZE_ABRUF))
-                for i, vin in enumerate(vins, start=1):
+                nummern = nummern_zuordnen(vins)
+                for vin in sorted(vins):
+                    i = nummern.get(str(vin), 0)
+                    if not i:
+                        # Kann nur eintreten, wenn zustand.json nicht
+                        # beschreibbar ist. Dann lieber gar keine Nummer als
+                        # eine geratene: eine falsche Zuordnung schiebt die
+                        # Werte des einen Wagens unter den Namen des anderen.
+                        melde_gebremst("nummer_fehlt",
+                                       f"Fuer {vin[-6:]} liess sich keine feste "
+                                       f"Fahrzeugnummer vergeben (zustand.json nicht "
+                                       f"beschreibbar?) - das Fahrzeug wird "
+                                       f"uebersprungen.", 3600)
+                        continue
+                    # ANHALTEN WIRKT ZWISCHEN DEN FAHRZEUGEN. Ergaenzt
+                    # 31.08.2026. Ein Fahrzeug kostet bis zu neun Endpunkte
+                    # a GRENZE_ABRUF (30 s); bei zwei Wagen sind das im
+                    # Stoerfall ueber acht Minuten. bin/dienst.sh wartet beim
+                    # Anhalten 70 Sekunden und greift danach zu kill -9 -
+                    # genau dem, was es vermeiden will, weil ein Befehl dabei
+                    # spurlos verschwindet. Zwischen den Fahrzeugen
+                    # auszusteigen kostet nichts und bringt die schlimmste
+                    # Wartezeit auf die eines einzelnen Endpunkts herunter.
+                    if not _LAUF:
+                        break
                     stammdaten.setdefault(vin, {})
                     try:
                         fahrzeuge[str(i)] = await fahrzeug_abrufen(
@@ -2041,8 +2358,61 @@ async def dienst(einmal: bool = False) -> int:
                     fehler = fehlertext(err2)
                     _LOG.error("Neuanmeldung fehlgeschlagen: %s", fehler)
 
-            if ok and fahrzeuge:
-                stand = {"ts": int(time.time()), "fahrzeuge": fahrzeuge}
+            # DER STAND WIRD JE FAHRZEUG ZUSAMMENGEFUEHRT. Behoben 31.08.2026.
+            #
+            # Bis 0.9.14 stand hier "stand = {ts, fahrzeuge}" - der ganze Satz
+            # wurde ersetzt. Zwei Folgen, beide still:
+            #
+            #  1. Faellt ein Fahrzeug mit einer Ausnahme AUSSERHALB von
+            #     endpunkt() aus, wird sein Eintrag gar nicht erst gesetzt.
+            #     Genuegte ein anderes Fahrzeug fuer ok=1, verschwand das
+            #     ausgefallene aus loxone.json: anzahl_fahrzeuge sank, und der
+            #     Endpunkt antwortete FAHRZEUG_UNBEKANNT statt OK=0.
+            #  2. Liefert ein Fahrzeug nur sein eigenes ok=0 mit lauter
+            #     Strichen, ueberschrieb dieser duenne Satz die zuletzt
+            #     gemessenen Werte - genau das, was abbild_schreiben() drei
+            #     Zeilen weiter als ausgeschlossen beschreibt.
+            #
+            # Und jedes Fahrzeug traegt jetzt seinen EIGENEN Zeitstempel. Das
+            # 'ok' ist seit 0.9.12 je Fahrzeug; das Alter war es nicht, und
+            # damit sah ein ausgefallenes Fahrzeug neben einem gesunden
+            # weiterhin frisch aus.
+            alt_f = dict(stand.get("fahrzeuge") or {})
+            zusammen: dict[str, dict] = {}
+            jetzt = int(time.time())
+            for nr in sorted(set(list(alt_f.keys()) + list(fahrzeuge.keys())),
+                             key=lambda s: (len(s), s)):
+                neu = fahrzeuge.get(nr)
+                if neu is not None and neu.get("ok"):
+                    neu["ts"] = jetzt
+                    zusammen[nr] = neu
+                    continue
+                # Kein Erfolg fuer dieses Fahrzeug: die zuletzt gueltigen
+                # Werte bleiben stehen, aber sein ok geht auf 0 und sein
+                # Zeitstempel wird NICHT aufgefrischt. Genau daran haengt die
+                # Ausfallerkennung in Loxone.
+                behalten = dict(alt_f.get(nr) or {})
+                if not behalten:
+                    behalten = dict(neu or {})
+                if neu is not None:
+                    # Was der Lauf ueber den Ausfall weiss, gehoert dazu.
+                    for schluessel in ("ausfaelle", "ausfaelle_n", "vin"):
+                        if schluessel in neu:
+                            behalten[schluessel] = neu[schluessel]
+                behalten["ok"] = 0
+                zusammen[nr] = behalten
+            if zusammen:
+                stand = {"ts": jetzt if ok else stand.get("ts"),
+                         "fahrzeuge": zusammen}
+                if stand["ts"] is None:
+                    stand.pop("ts")
+
+            # Wurde der Durchgang durch ein Beendigungssignal abgebrochen,
+            # wird NICHTS geschrieben. Ein halber Zyklus haette sonst ok=0
+            # und damit in Loxone eine Stoerung gemeldet, wo nur jemand den
+            # Dienst angehalten hat.
+            if not _LAUF:
+                break
             _HORCHER.pflegen(cfg)
             empfehlung = _HORCHER.empfehlung(cfg)
             zaehler = zaehler_naechster()
@@ -2337,7 +2707,10 @@ def selbsttest() -> int:
 
 
 def main() -> int:
-    log_einrichten()
+    # Der Umlauf gehoert dem Dauerlaeufer allein - siehe log_einrichten().
+    # Selbsttest und Minutencron haengen nur an.
+    kurzlaeufer = "--selbsttest" in sys.argv or "--wachzeichen" in sys.argv
+    log_einrichten(dauerlaeufer=not kurzlaeufer)
     if "--selbsttest" in sys.argv:
         return selbsttest()
     if "--wachzeichen" in sys.argv:

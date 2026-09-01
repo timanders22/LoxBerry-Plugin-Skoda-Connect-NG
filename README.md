@@ -6,14 +6,252 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.14 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.15 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
-> erwartete Wirkung haben, ist es **nicht**. Deshalb 0.9.x und nicht 1.0.0,
+> erwartete Wirkung haben, ist es **nicht**. Ebensowenig `retain` an einem
+> laufenden MQTT-Gateway und das Mithören fremder Themen — dafür gibt es hier
+> keinen Broker. Deshalb 0.9.x und nicht 1.0.0,
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.15 ändert
+
+Eine dritte Durchsicht, diesmal mit vier unabhängigen Prüfagenten auf einer
+Kopie und einer eigenen Prüfbank für die Konfigurationslagen. Der schwerste
+Befund war ein Satz, der in diesem Plugin an zwei Stellen stand und **mit dem
+Wort „gemessen" versehen war**.
+
+### `data/` überlebt ein Upgrade NICHT — und der Satz, der das Gegenteil sagte
+
+In `preupgrade.sh` und `postinstall.sh` stand seit 0.9.6, `purge_installation`
+laufe „ausschließlich im Deinstallations-Zweig", der Sollmerker überlebe das
+Upgrade und der Cron-Wächter hole den Dienst ohnehin binnen einer Minute
+zurück. Nachgemessen am 31.08.2026 an der Primärquelle — `sbin/plugininstall.pl`
+aus dem Zweig `master`, 2054 Zeilen, `grep -n purge_installation`:
+
+    :233   &purge_installation("all")   Deinstallation
+    :885   &purge_installation          IM UPGRADE-ZWEIG
+    :1626ff  rm -rfv .../config/plugins/$pfolder/  bin/  data/  templates/
+             unter "if ($pfolder)" und OHNE Prüfung auf $option eq "all"
+
+Es gibt **zwei** Aufrufstellen, und die zweite steht im Upgrade-Zweig.
+`data/plugins/<ordner>/` wird also bei **jeder** Aktualisierung vollständig
+abgeräumt: der Sollmerker, der Mehrtagesverlauf, das Ladeprotokoll und der
+Zustandszähler. `preupgrade.sh` rettet sie jetzt **neben** den Ordner
+(`data/plugins/<ordner>.rettung/`), `postinstall.sh` legt sie zurück und
+`uninstall` räumt sie ab. Bewusst **nicht** gerettet wird `sitzung.json`: darin
+steht der zwischengespeicherte Refresh-Token, und ein Geheimnis mehr außerhalb
+des Konfigordners wäre teurer als eine zusätzliche Anmeldung.
+
+**Die vorhandene Rettung wird erst gelöscht, wenn eine neue steht.**
+`preupgrade.sh` läuft bei *jedem* Upgrade, und der Installateur räumt
+`data/plugins/<ordner>/` dazwischen ab. Bricht ein Upgrade nach `preupgrade`
+ab — kein Netz, Paketfehler, Neustart — und der Anwender spielt erneut ein,
+dann ist der Datenordner bereits leer. Ein `rm -rf` gleich zu Beginn hätte in
+diesem zweiten Lauf die Rettung des ersten gelöscht und nichts Neues gefunden;
+Sollmerker, Mehrtagesverlauf und Ladeprotokoll wären endgültig weg — genau der
+Verlust, den die Stelle verhindern soll, nur einen Lauf später. Die neue
+Rettung entsteht deshalb daneben und wird erst dann an ihren Platz gerückt,
+wenn sie wirklich etwas enthält. Nachgestellt in beiden Lagen: nach Abbruch
+und zweitem Anlauf stehen die vier Einträge wieder da, und zwei gewöhnliche
+Upgrades hintereinander lassen keinen Rest liegen.
+
+### Eine beschädigte Konfiguration galt als leere
+
+`sk_json_lesen()` gab bei ungültigem JSON stumm ein leeres Feld zurück, und die
+Selbstheilung prüfte nur auf `""` und `{}`. Gemessen an einer abgeschnittenen
+`skoda.json` mit **intakter Zweitschrift daneben**, ein Aufruf der Oberfläche:
+
+    vorher    skodaconnect.backup.skoda.json  10 Schlüssel, Token AAAA…
+              skoda.json                      nicht lesbar, 57 Byte
+    nachher   skodaconnect.backup.skoda.json  26 Schlüssel, Token rjvmfg…
+              skoda.json                      26 Schlüssel, Token rjvmfg…
+              Protokoll                       nichts geschrieben
+
+Einstellungen weg, Aktionstoken neu — also **jede Adresse im Miniserver tot** —,
+die intakte Zweitschrift überschrieben, kein Wort im Protokoll. Jetzt wird die
+beschädigte Datei als `skoda.json.kaputt` beiseitegelegt, die Zweitschrift
+**gelesen** (nicht kopiert) und zurückgeschrieben, und eine Zeile geht ins
+Protokoll. Dieselbe Messung nach der Korrektur: alle zehn Schlüssel und das
+alte Token stehen wieder da. Der Dienst kennt die Zweitschriften jetzt
+ebenfalls — er lief bis 0.9.14 in diesem Fall stumm auf Werkseinstellung, also
+mit gesperrter Steuerung und ausgeschaltetem MQTT.
+
+Dazu: geschrieben wird über eine Nebendatei mit `rename()` und mit Prüfung der
+Byteanzahl (`file_put_contents` liefert die Länge, nicht `true` — eine
+Kurzschreibung auf voller Karte lief bisher als Erfolg durch), die Zweitschrift
+wird erst nach erfolgreichem Zurücklesen erneuert, und die Rechte stehen vor
+dem Inhalt.
+
+### Die Konfiguration wird jetzt vervollständigt
+
+Eine Konfiguration aus 0.9.13 mit zehn Schlüsseln blieb nach dem Update bei
+zehn; die sechzehn später dazugekommenen standen dauerhaft nirgends, und
+„fehlt" war von „steht auf dem Vorgabewert" nicht zu unterscheiden. Die
+Oberfläche trägt sie jetzt **einmal** nach und schreibt in die Logdatei,
+welche. Fremde Schlüssel bleiben dabei stehen — sie sind die Spur einer
+Umbenennung, und der Reiter *Test* nennt sie.
+
+### `?selftest=1` am Endpunkt
+
+Ein Token ließ sich nicht prüfen, ohne etwas auszulösen. Der Endpunkt
+beantwortet jetzt `?selftest=1&token=…` mit `SELFTEST;OK=1;TOKEN=OK`, ein
+falsches Token mit HTTP 403 und `SELFTEST;OK=0;ERR=TOKEN`, ein nicht
+eingerichtetes mit `ERR=KEIN_TOKEN_EINGERICHTET`. Kein Gerätekontakt, kein
+Schreibzugriff. Alle drei Antworten sind über die CGI-Schnittstelle unter
+PHP 7.4 und 8.4 gemessen, und der Dateibaum war danach jedes Mal unverändert.
+
+### Der Reiter *Test* misst fünf Dinge mehr
+
+*Antwortet der eigene Endpunkt?* (echter Aufruf auf `127.0.0.1`, 300 Sekunden
+zwischengespeichert, mit drittem Ausgang „nicht feststellbar"), *ist der eigene
+Cron-Eintrag da und ist er eine Datei?* (an ihm hängen der Wächter und das
+vierte Lebenszeichen), *tragen alle Formulare das Merkmal?* — jetzt **gezählt**
+statt behauptet —, *stimmt die Themenliste mit dem Sendecode überein?* und
+*sind die fünf Loxone-Vorlagen wohlgeformt?*
+
+### Baustein #12 nannte einen Eingang, den es nicht gibt
+
+Die Baustein-Liste verlangte `SKODA_1_INSPTAGE`. `sk_vorlage()` hängt bei jeder
+Art außer `status` die Art in den Namen — der Wartungsabruf erzeugt
+`SKODA_1_WARTUNG_INSPTAGE`. Wer die Tabelle von oben nach unten abgearbeitet
+hat, saß vor einem Baustein, der nie etwas empfängt, und mit ihm schwiegen die
+beiden Bausteine der Inspektionsmeldung. Das hauseigene Prüfwerkzeug hat es
+nicht gefunden, weil es nur den Feldnamen verglich, nicht den erzeugten Titel;
+es ist mitberichtigt und in beide Richtungen geeicht.
+
+### Zwölf Knöpfe, elf Ablehnungen
+
+Bei gesperrten schreibenden Befehlen sagte der Reiter *Test*: „Die Knöpfe geben
+deshalb eine Ablehnung zurück." Für elf stimmte das. Der zwölfte —
+*Sofort abrufen* — ging daran vorbei: `sk_befehl_absetzen()` prüfte den Haken
+nicht, und der Dienst behandelte `abruf` **vor** der Sperre. Der
+Miniserver-Endpunkt sperrt ihn seit 0.9.13 ausdrücklich; drei Stellen, zwei
+Wahrheiten. Jetzt eine: gesperrt heißt gesperrt, an allen drei Stellen.
+
+### Der Dienst
+
+* **Zugangsdaten werden vor jedem Anmeldeversuch neu gelesen.** Sie wurden
+  einmal beim Start gelesen; wer nach „Anmeldung abgewiesen" das Passwort
+  berichtigte, änderte nichts — der Dienst klopfte mit ansteigender Wartezeit
+  bis zu einer Stunde weiter mit dem alten an. Und ein **fehlender** Zugang
+  beendete den Prozess, worauf der Minutencron ihn zurückholte: 1440 Starts am
+  Tag. Er bleibt jetzt am Leben und wartet ansteigend, wie beim abgewiesenen.
+* **Ein ausgefallenes Fahrzeug verschwindet nicht mehr.** Der Fahrzeugstand
+  wurde als Ganzes ersetzt. Fiel eines mit einer Ausnahme aus und genügte ein
+  anderes für `ok=1`, war es aus `loxone.json` fort — der Endpunkt antwortete
+  `FAHRZEUG_UNBEKANNT` statt `OK=0`. Zusammengeführt wird jetzt je Fahrzeug,
+  und **jedes trägt seinen eigenen Zeitstempel**: `OK` war seit 0.9.12 je
+  Fahrzeug, `ALTER` nicht, und damit sah ein ausgefallener Wagen neben einem
+  gesunden frisch aus.
+* **Die Ladeempfehlung altert.** Ein einmal empfangener Wert ging in jedem Takt
+  als frische `EMPFEHLUNG` nach Loxone, auch wenn der Broker längst schwieg.
+  Der Zeitstempel dafür wurde in 0.9.14 eingeführt — benutzt hat ihn nur die
+  Vorklimatisierung. Neu ist eine **Einstellung** „Höchstalter des empfangenen
+  Wertes" (Vorgabe 10800 s, 0 schaltet sie ab); nach Ablauf geht eine **0**
+  hinaus und nicht der alte Stand, denn ein virtueller Eingang behält seinen
+  letzten Wert.
+* **Der CONNACK-Code des Brokers wird gelesen.** Er wurde entgegengenommen und
+  verworfen: ein Broker, der die Anmeldung abweist, galt als verbunden, und die
+  Gesundheitsprüfung sah nichts. *Am Broker dieser Anlage ist das nicht
+  nachgemessen — gemessen ist nur, dass der Wert bisher verworfen wurde.*
+* **Der Wurzelordner wird nachgesehen, nicht gezählt.** `SELF.parents[2]` galt,
+  sobald es drei Ebenen gab — bei einem Ablageort außerhalb der Installation
+  ergab das `/home` oder `/` als LoxBerry-Wurzel. Geprüft wird jetzt, ob dort
+  `config/plugins` und `webfrontend` liegen.
+* Die Warteschlange arbeitet höchstens zwölf Befehle je Sekunde ab und sagt es,
+  wenn mehr liegen; `cache.json` trägt den Zeitstempel des Standes statt bei
+  jedem Lauf einen frischen.
+
+### Nachgetragen: vier Punkte, die zuerst offen bleiben sollten
+
+Sie standen als „bewusst nicht angefasst" in der Durchsicht. Nachgemessen
+waren drei davon mehr als Schönheitsfehler.
+
+**Den Umlauf der Logdatei besorgt nur noch der Dauerläufer.** Bis 0.9.14 bekam
+*jeder* Lauf einen `RotatingFileHandler` — auch der Minutencron. Gemessen in
+der installierten Lage: eine 600 023 Byte große `skoda.log`, ein einziger
+Aufruf `skoda.py --wachzeichen`, und danach lag `skoda.log.1` mit 600 023 Byte
+daneben. Der Umlauf benennt um; Linux lässt das an einer Datei zu, die der
+Dauerläufer offen hält, und der schreibt danach in die verwaiste Inode weiter.
+Seine Zeilen erscheinen dann nie wieder in `skoda.log` und sind beim nächsten
+Umlauf fort — das Protokoll ist die einzige Stelle, an der sich dieses Plugin
+erklärt. *(Die Folge selbst ist hier nicht messbar: Windows verweigert das
+Umbenennen einer offenen Datei. Gemessen ist der Auslöser, und dass 0.9.15 ihn
+nicht mehr auslöst.)* Cron und Selbsttest hängen jetzt nur an; die Kappung in
+der Oberfläche kürzt **in** der Datei statt umzubenennen.
+
+**Die Fahrzeugnummer hängt an der VIN, nicht an der Reihenfolge.** Sie entstand
+aus der Position in `sorted(vins)`. Lässt die Skoda-Cloud vorübergehend die
+erste VIN weg, rutscht das zweite Auto auf `fahrzeug1` — dieselben MQTT-Themen,
+dieselben virtuellen Eingänge, anderer Wagen; in Loxone steht der Ladezustand
+des einen unter dem Namen des anderen, und nichts daran meldet sich. Die
+Zuordnung liegt jetzt in `zustand.json` und wächst nur. Gemessen: erster Lauf
+mit zwei Wagen `{VIN1: 1, VIN2: 2}` — genau die bisherige sortierte Reihenfolge,
+für bestehende Anlagen ändert sich also nichts; fehlt danach die erste VIN,
+bleibt die Zuordnung stehen; ein dritter Wagen bekommt die 3.
+
+**Die Namen der Baustein-Liste werden gebaut, nicht abgeschrieben.** Sie
+standen als zwölf Schlüssel in beiden Sprachdateien und mussten von Hand
+nachgezogen werden — genau das war bei `#12` unterblieben. Jetzt bildet sie
+`sk_eingangsname()`, dieselbe Funktion, aus der auch `sk_vorlage()` ihre Titel
+baut. Nebenwirkung: die Nummer ist nicht mehr fest die 1. Gemessen an der
+gerenderten Seite — mit den Fahrzeugen 2 und 3 steht dort `SKODA_2_SOC` bis
+`SKODA_2_WARTUNG_INSPTAGE` statt zwölfmal `SKODA_1_…`.
+
+**Die Nebendatei trägt die Prozessnummer.** `json_schreiben()` benutzte für
+alle Schreiber denselben Namen `<ziel>.tmp`. Dauerläufer und Minutencron
+schreiben beide `meldebremse.json`; treffen sie zusammen, veröffentlicht das
+`rename` einen halben Inhalt.
+
+**Und einer bleibt bewusst, wie er ist: `LB_MINIMUM=3.0.0`.** Die Frage lag
+nahe, weil `postinstall.sh` Python 3.13 verlangt und Debian 12 nur 3.11
+liefert. `LB_MINIMUM` prüft aber die **LoxBerry**-Fassung, und es gibt keine,
+die Python 3.13 mitbringt — eine höhere Zahl würde die Installation überall
+verhindern, ohne irgendwo etwas zu erlauben. Die Prüfung gehört dorthin, wo
+sie schon steht: `postinstall.sh` sucht `python3.15`, `3.14`, `3.13` und ein
+`python3 >= 3.13`, und bricht sonst mit `exit 1` und einer benannten Meldung
+ab. Das ist fail-closed und sagt dem Anwender, was zu tun ist.
+
+### Installation und Deinstallation
+
+`preupgrade.sh` tötete die Nummer aus der PID-Datei ohne zu prüfen, wem sie
+gehört (`kill -0` sagt nur, *dass* es sie gibt) — bei einer wiederverwendeten
+Nummer traf es einen Unbeteiligten. Es prüft jetzt argumentweise gegen den
+vollen Pfad, wie `uninstall` und `dienst.sh` es längst tun. Die Meldung
+„Laufender Dienst angehalten" stand außerhalb der Bedingung und erschien auch
+bei einer verwaisten PID-Datei. `postinstall.sh` und `uninstall` sind jetzt
+fail-closed wie `preupgrade.sh`: sieht die Lage nicht wie ein LoxBerry aus,
+geschieht nichts. Das `chown -R … 2>/dev/null` griff nur als root und
+verschluckte den Fehlschlag genau dort, wo es gebraucht wird — es läuft jetzt
+nur als root und meldet einen Fehlschlag. Und die Zeile „Die Zugangsdaten sind
+damit entfernt" stand unbedingt da, auch nach einem gescheiterten `rm`: es wird
+nachgezählt, und der Rückgabewert 1 aus dem Dateikopf existiert jetzt wirklich.
+
+### Kleineres
+
+Das MQTT-Thema wurde beim Speichern nach einem weiteren Muster geprüft als
+beim Lesen (`auto//skoda` ging durch und wurde beim nächsten Aufruf verworfen —
+„Gespeichert" und dann doch der alte Wert). Die Statuskachel „MQTT" und der
+grüne Kasten „Nachrichten dieses Plugins können also ankommen" hingen allein am
+LoxBerry-Gateway und standen auch bei ausgeschaltetem Plugin-Haken auf Grün.
+Die Zeile „MQTT-Gateway" im Reiter *Test* stand auf jeder Anlage ohne MQTT
+dauerhaft rot. „Eingereiht, aber keine Antwort" — der dritte, unbekannte
+Ausgang — erschien unter der roten Überschrift „Es wurde nichts gespeichert";
+es gibt jetzt eine dritte Meldungsart. Ein Selbsttest ohne Ausgabe zeigte gar
+nichts an. Die Grenzen der Eingabefelder, die Prüfung beim Speichern und die
+`min`/`max`-Attribute kommen aus **einer** Quelle. Die Positionstabelle in
+Schritt 4 zeigte zwei von sechs Befehlserkennungen — ausgerechnet `ALTER`
+fehlte, auf dem Schritt 7 die Ausfallerkennung aufbaut. `MaxVal` des Zählers
+stand auf 10 000 000, obwohl er bei 1000 umläuft. `ALTER` ist nach oben auf
+999999 gedeckelt, den Wert, den die Vorlage als `MaxVal` trägt. Die Warnung am
+Sicherungsknopf behauptete, die Datei enthalte die Zugangsdaten — sie tut es
+nur mit gesetztem Haken, und die Zeile darunter sagte längst das Gegenteil. Der
+Satz im Reiter *Test* nannte „die Nummer 0.9.0"; die Fassungsnummer steht nicht
+mehr in der Sprachdatei.
 
 ## Was 0.9.14 ändert
 
@@ -48,7 +286,9 @@ veröffentlicht `nan` für einen Sensor ohne Wert.
 
 Blieb der Wert des Abfahrtsthemas im Fenster stehen — bei `retain` der
 Normalfall —, löste die Klimatisierung **stündlich** aus, Tag und Nacht.
-Gemessen: fünf Auslösungen in fünf Stunden. Jetzt zählt, ob seit der letzten
+Nachgestellt an `Horcher.abfahrt_faellig()` mit vorgestellter Uhr, nicht an
+einem Broker gemessen — den gibt es hier nicht: 0.9.13 fünf Auslösungen in
+fünf Stunden, 0.9.14 und 0.9.15 eine. Jetzt zählt, ob seit der letzten
 Auslösung ein neuer Wert eingetroffen ist.
 
 ### Der Endpunkt: acht Befunde
@@ -94,8 +334,10 @@ der ganze `pip`-Baum wurde bei jedem Upgrade zweimal geholt. Die
 Prozesserkennung der Deinstallation traf jeden Editor, in dem `skoda.py`
 geöffnet war. Die Zugangs-Zweitschriften wurden gelöscht, ohne überschrieben
 zu werden. Und mit gesetztem `retain` blieben bis zu 49 Themen im Broker
-stehen — darunter Standort und Kennzeichen; sie werden jetzt beim
-Deinstallieren geleert.
+stehen — 9 Zustandsthemen und 40 **je Fahrzeug**, darunter Standort und
+Kennzeichen; sie werden jetzt beim Deinstallieren geleert. *(Die 49 galt bis
+0.9.14 als Summe je Anlage. Sie stimmt für einen Wagen; bei zweien sind es 89.
+Der Aufräumcode rechnete von Anfang an richtig.)*
 
 ### Was am Gerät weiterhin ungeprüft ist
 
@@ -347,17 +589,18 @@ Konfigurationsordner sagt dem `postinstall.sh`, dass er lief, und der startet
 ihn wieder — sofort und ohne Umweg. Der Merker wird nur gesetzt, wenn der
 Vorgang wirklich lief, und in jedem Fall wieder entfernt.
 
-> **Was diese Korrektur NICHT ist, und das gehört hierher.** Ursprünglich stand
-> hier, das Plugin habe nach jeder Aktualisierung stillgestanden, weil der
-> Installateur `data/` ausräume. **Das war falsch und nie gemessen.** Nachgelesen
-> in `sbin/plugininstall.pl`: beim Upgrade werden `config/` und `data/` des
-> Plugins angelegt, falls sie fehlen, und der Archivinhalt wird darüber kopiert
-> (`:891`, `:895`, `:996`, `:1000`); gelöscht werden sie nur in
-> `purge_installation` (`:1604`, `:1606`), und die läuft ausschließlich beim
-> **Deinstallieren** (`:233`). Der Sollmerker `soll_laufen` überlebt das Upgrade
-> also, und der Cron-Wächter holt den Dienst binnen einer Minute von selbst
-> zurück. Diese Korrektur verkürzt ein Fenster von bis zu 60 Sekunden und macht
-> den Start unabhängig vom Wächter — sie behebt keinen Stillstand.
+> **Diese Berichtigung war selbst falsch — zurückgenommen am 31.08.2026.**
+> Hier stand, `purge_installation` laufe „ausschließlich beim Deinstallieren
+> (`:233`)", der Sollmerker überlebe das Upgrade und der Cron-Wächter hole den
+> Dienst ohnehin zurück. Die Funktion hat **zwei** Aufrufstellen; die zweite
+> (`:885`) steht im Upgrade-Zweig, und ihr Rumpf `rm -rf`t auch
+> `data/plugins/<ordner>/`. Der Sollmerker überlebt also **nicht**, und der
+> Wächter startet ohne ihn nichts. Damals wurde eine Aufrufstelle gefunden und
+> daraus „es gibt nur eine" gemacht — schlimmer noch: mit dieser Begründung
+> wurde eine frühere, richtige Aussage überschrieben. Was jetzt gilt und wie es
+> gemessen wurde, steht oben unter *Was 0.9.15 ändert*. Der Merker
+> `lief_vorher` bleibt richtig und ist seither das Einzige, was einen laufenden
+> Dienst nach einem Upgrade sofort zurückholt.
 
 ### Die Prozessprüfung war zu weich
 
@@ -474,7 +717,8 @@ benannten Meldung ab, statt stillschweigend ein totes Plugin zu hinterlassen.
     bin/skoda.py              Abrufdienst (Python, eigene venv)
     bin/dienst.sh             Start, Stopp, Wächter
     cron/cron.01min           minütlicher Wächter
-    uninstall/uninstall       Deinstallation (Dienst beenden, Sicherungen löschen)
+    uninstall/uninstall       Deinstallation (Dienst beenden, Sicherungen löschen,
+                              behaltene MQTT-Themen im Broker leeren)
     webfrontend/htmlauth/     Bedienoberfläche (fünf Reiter)
     webfrontend/html/         Endpunkt für den Miniserver + gemeinsame Bibliothek
 
@@ -532,10 +776,12 @@ Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
 
 | Aufruf | Zweck |
 |---|---|
-| `?token=T&aktion=status&fahrzeug=N` | `SKODA;OK=..;SOC=..;TANK=..;REICHW=..;KM=..;VERR=..;TUEREN=..;FENSTER=..;KOFFER=..;HAUBE=..;LICHT=..;KLIMA=..;ZIELTEMP=..;AUSSEN=..;WARN=..;ERREICH=..;BEWEG=..;ZUEND=..;ALTER=..` |
+| `?token=T&aktion=status&fahrzeug=N` | `SKODA;OK=..;SOC=..;TANK=..;REICHW=..;KM=..;VERR=..;TUEREN=..;FENSTER=..;KOFFER=..;HAUBE=..;LICHT=..;KLIMA=..;ZIELTEMP=..;AUSSEN=..;WARN=..;ERREICH=..;BEWEG=..;ZUEND=..;ZUHAUSE=..;HEIMENTF=..;EMPFEHLUNG=..;AUSFAELLE=..;ZAEHLER=..;ALTER=..` |
 | `?token=T&aktion=laden&fahrzeug=N` | `LADEN;OK=..;SOC=..;LAEDT=..;LADEKW=..;TEMPO=..;RESTMIN=..;LADEGR=..;KABEL=..;REICHWBAT=..;ALTER=..` |
 | `?token=T&aktion=wartung&fahrzeug=N` | `WARTUNG;OK=..;INSPTAGE=..;INSPKM=..;OELTAGE=..;OELKM=..;KM=..;WARN=..;ALTER=..` |
-| `?token=T&aktion=position&fahrzeug=N` | `POSITION;OK=..;BREITE=..;LAENGE=..;ALTER=..` plus Anschrift in einer zweiten Zeile |
+| `?token=T&aktion=position&fahrzeug=N` | `POSITION;OK=..;BREITE=..;LAENGE=..;ZUHAUSE=..;HEIMENTF=..;ALTER=..`, dazu `ADRESSE;<Anschrift>` in einer zweiten Zeile |
+| `?token=T&aktion=ladungen&fahrzeug=N` | das Ladeprotokoll, eine Zeile je abgeschlossenem Vorgang |
+| `?token=T&selftest=1` | `SELFTEST;OK=1;TOKEN=OK` &mdash; prüft nur das Token, löst nichts aus |
 | `?token=T&aktion=fahrzeuge` | Liste der erkannten Fahrzeuge |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
 | `?token=T&aktion=klima_start&temp=21` | Klimatisierung starten |
@@ -545,7 +791,7 @@ Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
 | `?token=T&aktion=ladegrenze&prozent=80` | Ladegrenze setzen (50–100) |
 | `?token=T&aktion=scheibe_ein` / `scheibe_aus` | Scheibenheizung |
 | `?token=T&aktion=lueftung_start` / `lueftung_stop` | Standlüftung |
-| `?token=T&aktion=wecken` | Weckruf (Skoda erlaubt höchstens dreimal am Tag) |
+| `?token=T&aktion=wecken` | Weckruf (höchstens dreimal am Tag — so die Bibliothek `myskoda` in ihrem eigenen Quelltext: *Can be called maximum three times a day.*) |
 | `?token=T&aktion=abruf` | sofort abrufen statt auf den Takt zu warten |
 
 **Ein Strich als Wert** heißt: dieser Wert liegt nicht vor. Es wird bewusst

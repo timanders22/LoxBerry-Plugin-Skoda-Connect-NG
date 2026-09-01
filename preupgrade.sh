@@ -47,38 +47,129 @@ fi
 
 # Der Merker sagt dem postinstall, dass der Dienst LIEF.
 #
-# BERICHTIGT am 20.08.2026. Hier stand, der Installateur raeume beim
-# Upgrade data/ und config/ des Plugins aus. Das ist FALSCH und war nie
-# gemessen. Nachgelesen in sbin/plugininstall.pl: beide Ordner werden
-# angelegt, falls sie fehlen, und der Archivinhalt wird darueber kopiert
-# (:891, :895, :996, :1000). Geloescht werden sie nur in
-# purge_installation (:1604, :1606), und die laeuft ausschliesslich im
-# Deinstallations-Zweig (:233).
+# ZURUECKGENOMMEN am 31.08.2026, und das ist die zweite Berichtigung an
+# dieser Stelle. Hier stand seit 0.9.6, purge_installation laufe
+# "ausschliesslich im Deinstallations-Zweig (:233)", der Sollmerker
+# ueberlebe das Upgrade und der Cron-Waechter hole den Dienst binnen einer
+# Minute von selbst zurueck. Das war falsch: die Funktion hat ZWEI
+# Aufrufstellen, und die zweite steht im Upgrade-Zweig.
 #
-# Was daraus folgt, und es ist wichtiger als der Merker: der Sollmerker
-# data/plugins/<ordner>/soll_laufen UEBERLEBT das Upgrade, und dieses
-# preupgrade loescht ihn nicht. Der Cron-Waechter holt den Dienst also von
-# selbst zurueck - binnen einer Minute. Der Merker hier macht daraus einen
-# SOFORTIGEN Start und macht ihn unabhaengig vom Waechter; er behebt keinen
-# Stillstand, er verkuerzt ein Fenster von bis zu 60 Sekunden, in dem
-# Loxone auf alten Werten sitzt.
+# Nachgemessen an der Primaerquelle, nicht aus zweiter Hand -
+# sbin/plugininstall.pl, Zweig master, 2054 Zeilen:
+#
+#   :858   if ($isupgrade) {
+#   :859ff   darin zuerst die preupgrade*-Skripte
+#   :885     &purge_installation;                  <- hier
+#   :1626ff  rm -rfv config/plugins/$pfolder/ bin/ data/ templates/
+#            und beide webfrontend/ - unter "if ($pfolder)" und OHNE
+#            Pruefung auf $option eq "all"
+#   :233   &purge_installation("all") im Deinstallations-Zweig; das "all"
+#          schaltet nur ZUSAETZLICH Crontab und uninstall frei
+#
+# Was daraus folgt: zwischen diesem Skript und postinstall.sh wird
+# data/plugins/<ordner>/ VOLLSTAENDIG abgeraeumt. Es ueberlebt nichts -
+# weder der Sollmerker noch der Verlauf noch das Ladeprotokoll. Und der
+# Waechter (bin/dienst.sh, "waechter") startet nur, wenn soll_laufen da
+# ist; ohne ihn steht der Dienst still, waehrend die Installation Erfolg
+# meldet.
+#
+# Deshalb wird hier NEBEN den Ordner gerettet, was ein Upgrade ueberstehen
+# muss - ein "rm -rf <ordner>/" trifft den Nachbarn mit dem Punkt nicht -,
+# und postinstall.sh legt es zurueck. Bewusst NICHT gerettet wird
+# sitzung.json: darin steht der zwischengespeicherte Refresh-Token, und
+# ein Geheimnis mehr ausserhalb des Konfigordners waere teurer als die
+# eine zusaetzliche Anmeldung nach einem Update.
 MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
 rm -f "$MERKER"
 
-PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
+PDATA="$BASE/data/plugins/$PFOLDER"
+PBIN="$BASE/bin/plugins/$PFOLDER"
+PID="$PDATA/dienst.pid"
+
+# Gehoert die Nummer wirklich unserem Dienst?
+#
+# "kill -0" beantwortet nur, DASS es die Nummer gibt, nicht WESSEN sie ist.
+# Nach einem Neustart mit liegengebliebener PID-Datei und wiederverwendeter
+# Nummer traf SIGTERM und zwei Sekunden spaeter SIGKILL einen unbeteiligten
+# Vorgang - und der Startmerker wurde gesetzt, weil der Fremdvorgang als
+# "unser Dienst lief" galt.
+#
+# Geprueft wird argumentweise gegen den VOLLEN Pfad: /proc/<pid>/cmdline
+# trennt mit Nullbytes, das zweite Argument ist das Skript, das erste muss
+# ein Python sein. Der volle Pfad, damit das Upgrade des einen Exemplars
+# nicht den Dienst eines zweiten abschiesst (LoxBerry haengt bei
+# Namenskonflikt 01, 02 ... an den Ordnernamen an). Wortgleich mit
+# uninstall/uninstall und bin/dienst.sh.
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    return 0
+}
+
 if [ -f "$PID" ]; then
-    # Gefragt wird, ob der Vorgang WIRKLICH laeuft. Eine liegengebliebene
-    # PID-Datei ist kein laufender Dienst - und sie darf nach dem Upgrade
-    # keinen Start ausloesen, den niemand gewollt hat.
-    if kill -0 "$(cat "$PID")" 2>/dev/null; then
+    PNUM=$(cat "$PID" 2>/dev/null)
+    if [ -n "$PNUM" ] && ist_unser_dienst "$PNUM"; then
         : > "$MERKER"
         echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
+        kill "$PNUM" 2>/dev/null || true
+        sleep 2
+        kill -9 "$PNUM" 2>/dev/null || true
+        echo "<INFO> Laufender Dienst angehalten."
+    else
+        # Kein Wort von "angehalten": es lief nichts. Bis 0.9.14 stand die
+        # Zeile ausserhalb der Bedingung und behauptete das Gegenteil.
+        echo "<INFO> Die PID-Datei war verwaist - es lief kein Dienst."
     fi
-    kill "$(cat "$PID")" 2>/dev/null || true
-    sleep 2
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
     rm -f "$PID"
-    echo "<INFO> Laufender Dienst angehalten."
+fi
+
+# Was ein Upgrade ueberstehen muss, wandert NEBEN den Ordner (siehe oben).
+#
+# DIE VORHANDENE RETTUNG WIRD ERST GELOESCHT, WENN EINE NEUE STEHT.
+#
+# Dieses Skript laeuft bei JEDEM Upgrade, und der Installateur raeumt
+# data/plugins/<ordner>/ dazwischen ab. Bricht ein Upgrade nach preupgrade ab
+# - kein Netz, Paketfehler, Neustart -, und der Anwender spielt erneut ein,
+# dann ist der Datenordner bereits leer. Ein "rm -rf" gleich zu Beginn haette
+# in diesem Lauf die Rettung des ersten geloescht und nichts Neues gefunden:
+# Sollmerker, Mehrtagesverlauf und Ladeprotokoll waeren endgueltig weg. Genau
+# der Verlust, den diese Stelle verhindern soll, nur einen Lauf spaeter.
+#
+# Nachgestellt: erster Lauf rettet 4 Eintraege, Installateur raeumt ab,
+# Abbruch, zweiter Lauf - mit der alten Reihenfolge blieben 0 Eintraege.
+RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
+NEU="$BASE/data/plugins/$PFOLDER.rettung.neu"
+rm -rf "$NEU"
+if [ -d "$PDATA" ]; then
+    mkdir -p "$NEU" 2>/dev/null
+    for f in soll_laufen zustand.json ladungen.csv; do
+        [ -e "$PDATA/$f" ] && cp -p "$PDATA/$f" "$NEU/$f" 2>/dev/null
+    done
+    [ -d "$PDATA/verlauf" ] && cp -a "$PDATA/verlauf" "$NEU/verlauf" 2>/dev/null
+    # Gezaehlt, nicht behauptet: eine Rettung, die nichts gerettet hat,
+    # sagt das - sonst steht in der Installationsmeldung eine Zusage, die
+    # niemand geprueft hat.
+    ANZ=$(find "$NEU" -mindepth 1 2>/dev/null | wc -l)
+    if [ "$ANZ" -gt 0 ]; then
+        rm -rf "$RETTUNG"
+        mv "$NEU" "$RETTUNG" 2>/dev/null
+        echo "<INFO> $ANZ Eintrag/Eintraege aus dem Datenordner gerettet"
+        echo "<INFO> (Sollmerker, Verlauf, Ladeprotokoll) - der Installateur"
+        echo "<INFO> raeumt data/plugins/$PFOLDER/ beim Upgrade vollstaendig ab."
+    else
+        rm -rf "$NEU"
+        if [ -d "$RETTUNG" ]; then
+            echo "<INFO> Im Datenordner lag nichts - die Rettung eines"
+            echo "<INFO> frueheren, abgebrochenen Laufs bleibt unberuehrt."
+        else
+            echo "<INFO> Im Datenordner lag nichts, was zu retten waere."
+        fi
+    fi
+elif [ -d "$RETTUNG" ]; then
+    echo "<INFO> Kein Datenordner - die Rettung eines frueheren,"
+    echo "<INFO> abgebrochenen Laufs bleibt unberuehrt."
 fi
 
 CFGDIR="$BASE/config/plugins/$PFOLDER"

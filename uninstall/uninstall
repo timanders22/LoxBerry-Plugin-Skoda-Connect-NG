@@ -51,8 +51,11 @@
 #      Der Dienst sendet mit publish, nicht mit retain. Im Broker bleibt
 #      deshalb nichts stehen." Das ist FALSCH, seit es den Haken
 #      mqtt_retain gibt (0.9.13, bin/skoda.py). Ist er gesetzt, sendet
-#      der Dienst mit "retain", und dann bleiben bis zu 49 Themen je
-#      Anlage stehen - 9 Zustandsthemen und 40 je Fahrzeug. Darunter
+#      der Dienst mit "retain", und dann bleiben 9 Zustandsthemen
+#      und 40 JE FAHRZEUG stehen - bei einem Wagen also 49, bei zweien 89.
+#      Die 49 stand hier bis 0.9.14 als Summe je Anlage; die Rechnung im
+#      selben Satz war richtig, die Summe nicht. Abschnitt 1b unten
+#      multipliziert laengst korrekt. Darunter
 #      sind breite, laenge, adresse und kennzeichen: Standort und
 #      Kennzeichen des Wagens, die im Broker liegen bleiben, bis ihn
 #      jemand von Hand leert.
@@ -72,6 +75,19 @@ BASE="${5:-$LBHOMEDIR}"
 # Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+fi
+
+# Und danach wird nachgesehen, ob dabei wirklich ein LoxBerry herausgekommen
+# ist. Ein Loeschskript, das sich im Pfad irrt, ist schlimmer als eines, das
+# nicht laeuft: bis 0.9.14 arbeitete dieses hier gegen "/config/plugins" und
+# "/data/plugins/skodaconnect", fand nichts, loeschte nichts - und meldete am
+# Ende trotzdem, die Zugangsdaten seien entfernt.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen. Es wurde NICHTS entfernt."
+    echo "<WARNING> Von Hand nachsehen: <loxberry>/config/plugins/$PDIR.backup.*"
+    echo "<WARNING> und ein etwaiger Vorgang zu <loxberry>/bin/plugins/$PDIR/skoda.py."
+    exit 1
 fi
 
 PDATA="$BASE/data/plugins/$PDIR"
@@ -307,7 +323,26 @@ for f in skoda.json zugang.json; do
         rm -f "$BK" && echo "<OK> Sicherung ueberschrieben und entfernt: $PDIR.backup.$f"
     fi
 done
-echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfernt."
+# Nachgezaehlt, nicht behauptet.
+#
+# Bis 0.9.14 stand hier eine unbedingte Zeile: sie erschien auch, wenn das
+# "rm -f" scheiterte oder die Dateien gar nicht gefunden wurden. "Alles
+# entfernt" nach einem fehlgeschlagenen rm ist die schlechteste Zeile einer
+# Deinstallation - und der Kopf dieser Datei verspricht seit jeher einen
+# Rueckgabewert 1 fuer den Warnfall, den es im Skript nie gab.
+RC=0
+UEBRIG=0
+for f in skoda.json zugang.json; do
+    [ -e "$PCONFIG/$PDIR.backup.$f" ] && UEBRIG=$((UEBRIG+1))
+done
+if [ "$UEBRIG" -eq 0 ]; then
+    echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfernt."
+else
+    echo "<WARNING> $UEBRIG Zweitschrift(en) liegen noch:"
+    echo "<WARNING> $PCONFIG/$PDIR.backup.* - bitte von Hand entfernen."
+    echo "<WARNING> In .backup.zugang.json stehen Benutzername und Passwort."
+    RC=1
+fi
 
 # ---------------------------------------------------------------
 # 3. Hinweis auf das, was LoxBerry selbst wegraeumt
@@ -322,4 +357,10 @@ echo "<INFO> dem bin-Ordner des Plugins entfernt - dafuer ist nichts zu tun."
 # der Merker waere liegen geblieben, und rm haette KEINEN Fehler gemeldet.
 rm -f "$BASE/config/plugins/$PDIR.lief_vorher"
 
-exit 0
+# Und die Rettung, die preupgrade.sh neben den Datenordner legt. Sie liegt
+# ausserhalb von data/plugins/<ordner>/ und wird deshalb von LoxBerry nicht
+# mitgenommen. Darin stehen keine Zugangsdaten, aber Bewegungsdaten:
+# Verlauf und Ladeprotokoll.
+rm -rf "$BASE/data/plugins/$PDIR.rettung"
+
+exit "$RC"
