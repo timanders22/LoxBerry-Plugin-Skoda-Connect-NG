@@ -92,8 +92,9 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 # ---------- Was preupgrade.sh vor dem Upgrade gerettet hat ----------
 #
 # Der Installateur raeumt data/plugins/<ordner>/ beim Upgrade vollstaendig ab
-# (sbin/plugininstall.pl: &purge_installation im Upgrade-Zweig, :885, Rumpf
-# ab :1626 mit "rm -rfv .../data/plugins/$pfolder/"). preupgrade.sh legt
+# (sbin/plugininstall.pl: &purge_installation im Upgrade-Zweig, :886, Rumpf
+# ab :1626 mit "rm -rfv .../data/plugins/$pfolder/"; Stand mit 2054 Zeilen).
+# preupgrade.sh legt
 # deshalb Sollmerker, Verlauf und Ladeprotokoll NEBEN den Ordner; hier kommen
 # sie zurueck.
 #
@@ -340,7 +341,8 @@ chmod 600 "$PCONFIG/zugang.json"
 # ueberlebe das Upgrade "(gemessen an sbin/plugininstall.pl)" und der
 # Cron-Waechter hole den Dienst ohnehin binnen einer Minute zurueck. Beides
 # war falsch, und das Wort "gemessen" war das Schlimmste daran: die Funktion
-# purge_installation hat ZWEI Aufrufstellen, und die zweite (:885) steht im
+# purge_installation hat ZWEI Aufrufstellen, und die zweite (:886, Stand mit
+# 2054 Zeilen) steht im
 # Upgrade-Zweig. data/plugins/<ordner>/ ist zwischen preupgrade.sh und dieser
 # Zeile vollstaendig abgeraeumt, der Sollmerker mit ihm.
 #

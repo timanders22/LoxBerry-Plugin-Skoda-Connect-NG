@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.15 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.16 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,48 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.16 ändert
+
+**Nur Text — und zwar fünf Zahlen, die nicht hielten.** Am Verhalten des
+Plugins ändert diese Fassung nichts; kein Skript, keine Oberfläche, keine
+Sprachdatei ist angefasst. Wer 0.9.15 laufen hat, gewinnt nichts als
+Richtigkeit in den Kommentaren — und verliert nichts.
+
+Der Abschnitt über `purge_installation` in `preupgrade.sh`, `postinstall.sh`
+und in diesem README nannte die zweite Aufrufstelle **`:885`**. Gemessen ist
+**`:886`**. Um eins daneben — und das ausgerechnet in dem Absatz, der einen
+Satz zurücknimmt, *weil* er eine Zahl nannte, die nicht hielt.
+
+Aufgefallen ist es erst **nach** der Veröffentlichung von 0.9.15, beim Lesen
+der eigenen Release-Seite. Nachgemessen an derselben Datei, die am 31.08.2026
+geholt wurde und am 01.09.2026 byte-gleich noch auf `master` lag (2054 Zeilen,
+65 120 Byte):
+
+```
+grep -n purge_installation
+  233:  &purge_installation("all");
+  886:  &purge_installation;            <- die Zeile, um die es geht
+  1542: sub purge_installation {
+
+ 858:  if ($isupgrade) {
+1625:  # 7. Delete plugin folders
+1626:  if ($pfolder) {                  <- ohne Prüfung auf $option eq "all"
+1629-1632:  rm -rfv .../config/plugins/  bin/  data/  templates/
+```
+
+Die übrigen Zahlen (`:233`, `:858`, `:1626`) stimmten.
+
+**Getauscht wurde nicht nur die Ziffer.** Jedes Zitat nennt jetzt den Stand,
+für den es gilt, und die suchbare Zeile statt bloß der Nummer. Eine Zahl aus
+einer *fremden* Datei ist nur mit ihrem Bezug überprüfbar — die Datei bewegt
+sich, und dann bewegt sich die Zahl mit. Genau daran ist der Satz gescheitert,
+den 0.9.15 zurückgenommen hat.
+
+**Und der Vollständigkeit halber:** eine Fassung, deren einzige Änderung ein
+Kommentar ist, wäre normalerweise keine. Sie entsteht hier, weil eine falsche
+Zahl in einem Text steht, dessen ganzer Zweck es ist, eine falsche Zahl zu
+berichtigen.
 
 ## Was 0.9.15 ändert
 
@@ -30,12 +72,17 @@ In `preupgrade.sh` und `postinstall.sh` stand seit 0.9.6, `purge_installation`
 laufe „ausschließlich im Deinstallations-Zweig", der Sollmerker überlebe das
 Upgrade und der Cron-Wächter hole den Dienst ohnehin binnen einer Minute
 zurück. Nachgemessen am 31.08.2026 an der Primärquelle — `sbin/plugininstall.pl`
-aus dem Zweig `master`, 2054 Zeilen, `grep -n purge_installation`:
+aus dem Zweig `master`, `grep -n purge_installation`:
 
     :233   &purge_installation("all")   Deinstallation
-    :885   &purge_installation          IM UPGRADE-ZWEIG
-    :1626ff  rm -rfv .../config/plugins/$pfolder/  bin/  data/  templates/
-             unter "if ($pfolder)" und OHNE Prüfung auf $option eq "all"
+    :886   &purge_installation          IM UPGRADE-ZWEIG
+    :1626  if ($pfolder) {              OHNE Prüfung auf $option eq "all"
+    :1629ff  rm -rfv .../config/plugins/$pfolder/  bin/  data/  templates/
+
+Die Zeilennummern gelten für den Stand mit **2054 Zeilen / 65 120 Byte**
+(geholt am 31.08.2026, am 01.09.2026 byte-gleich nachgeprüft). Eine Zahl aus
+einer fremden Datei ist nur mit ihrem Bezug überprüfbar — die Datei bewegt
+sich, und dann bewegt sich die Zahl mit.
 
 Es gibt **zwei** Aufrufstellen, und die zweite steht im Upgrade-Zweig.
 `data/plugins/<ordner>/` wird also bei **jeder** Aktualisierung vollständig
@@ -593,7 +640,7 @@ Vorgang wirklich lief, und in jedem Fall wieder entfernt.
 > Hier stand, `purge_installation` laufe „ausschließlich beim Deinstallieren
 > (`:233`)", der Sollmerker überlebe das Upgrade und der Cron-Wächter hole den
 > Dienst ohnehin zurück. Die Funktion hat **zwei** Aufrufstellen; die zweite
-> (`:885`) steht im Upgrade-Zweig, und ihr Rumpf `rm -rf`t auch
+> (`:886`) steht im Upgrade-Zweig, und ihr Rumpf `rm -rf`t auch
 > `data/plugins/<ordner>/`. Der Sollmerker überlebt also **nicht**, und der
 > Wächter startet ohne ihn nichts. Damals wurde eine Aufrufstelle gefunden und
 > daraus „es gibt nur eine" gemacht — schlimmer noch: mit dieser Begründung

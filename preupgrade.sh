@@ -55,16 +55,23 @@ fi
 # Aufrufstellen, und die zweite steht im Upgrade-Zweig.
 #
 # Nachgemessen an der Primaerquelle, nicht aus zweiter Hand -
-# sbin/plugininstall.pl, Zweig master, 2054 Zeilen:
+# sbin/plugininstall.pl, Zweig master. Die Zeilennummern gelten fuer den
+# Stand mit 2054 Zeilen / 65120 Byte (geholt 31.08.2026, am 01.09.2026
+# byte-gleich nachgeprueft). Eine Zahl aus einer FREMDEN Datei ist nur mit
+# ihrem Bezug ueberpruefbar; deshalb steht die suchbare Zeile daneben.
 #
 #   :858   if ($isupgrade) {
 #   :859ff   darin zuerst die preupgrade*-Skripte
-#   :885     &purge_installation;                  <- hier
-#   :1626ff  rm -rfv config/plugins/$pfolder/ bin/ data/ templates/
-#            und beide webfrontend/ - unter "if ($pfolder)" und OHNE
-#            Pruefung auf $option eq "all"
+#   :886     &purge_installation;                  <- hier
+#   :1626    if ($pfolder) {   - OHNE Pruefung auf $option eq "all"
+#   :1629ff  rm -rfv config/plugins/$pfolder/ bin/ data/ templates/
+#            und beide webfrontend/
 #   :233   &purge_installation("all") im Deinstallations-Zweig; das "all"
 #          schaltet nur ZUSAETZLICH Crontab und uninstall frei
+#
+# BERICHTIGT am 01.09.2026: hier stand :885. Um eins daneben - und das in
+# dem Absatz, der einen Satz zuruecknimmt, WEIL er eine Zahl nannte, die
+# nicht hielt. Aufgefallen erst nach dem Veroeffentlichen von 0.9.15.
 #
 # Was daraus folgt: zwischen diesem Skript und postinstall.sh wird
 # data/plugins/<ordner>/ VOLLSTAENDIG abgeraeumt. Es ueberlebt nichts -
