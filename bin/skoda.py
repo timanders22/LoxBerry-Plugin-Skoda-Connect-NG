@@ -661,6 +661,10 @@ def mqtt_zustand() -> dict:
         "udpport": udp,
         "broker": str(m.get("Brokerhost", m.get("brokerhost", ""))),
         "brokerport": str(m.get("Brokerport", m.get("brokerport", ""))),
+        # Die Zugangsdaten des Brokers. Sie standen hier nie, und deshalb
+        # konnte der Horcher sie auch nicht setzen.
+        "brokeruser": str(m.get("Brokeruser", m.get("brokeruser", ""))),
+        "brokerpass": str(m.get("Brokerpass", m.get("brokerpass", ""))),
     }
 
 
@@ -1239,6 +1243,22 @@ class Horcher:
             port = 1883
         try:
             k = mq.Client()
+            # ANMELDEN, nicht nur verbinden.
+            #
+            # Am Broker dieser Anlage am 06.09.2026 gemessen: eine anonyme
+            # Verbindung wird mit CONNACK 5 ("nicht autorisiert") abgewiesen.
+            # Der Rueckruf unten wertet diesen Code seit 0.9.14 richtig aus
+            # und meldete also zuverlaessig, dass der Horcher nicht
+            # hereinkam - nur meldete ihn niemand an. Ladeempfehlung und
+            # Vorklimatisierung waren damit tot, und die Meldung im Protokoll
+            # sah nach einem Fehler des Brokers aus.
+            #
+            # Ist kein Benutzer hinterlegt, bleibt es beim anonymen Versuch:
+            # ein Broker ohne Anmeldung nimmt ihn an, und ein leerer Benutzer
+            # waere dort eine Abweisung, wo es vorher ging.
+            benutzer = z.get("brokeruser") or ""
+            if benutzer:
+                k.username_pw_set(benutzer, z.get("brokerpass") or None)
 
             def merken(_c, _u, m):
                 self.werte[m.topic] = m.payload.decode("utf-8", "replace").strip()
