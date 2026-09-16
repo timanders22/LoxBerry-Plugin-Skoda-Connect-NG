@@ -151,6 +151,13 @@ $sk_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
  *     gespeichert" - "ich weiss es nicht" sah aus wie "es ist
  *     schiefgegangen". */
 $sk_warnungen = array();   // weder Erfolg noch Beanstandung
+/* DIE VIERTE ART, seit 0.9.21 (Regeln/04). Ein Knopf, dessen Vorgang
+ * scheitert - Dienst starten, eine Aktion im Reiter Test, der Selbsttest,
+ * die Sicherung -, hat nichts zu speichern versucht. Bis 0.9.20 stand sein
+ * Fehler unter "Es wurde nichts gespeichert. Bitte diese Punkte
+ * berichtigen" - am Geraet etwa "Zugangsdaten fehlen" nach "Dienst starten".
+ * Die Ueberschrift beschrieb einen anderen Vorgang als den, der misslang. */
+$sk_stoerungen = array();
 $sk_testausgabe = '';
 $sk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -473,7 +480,9 @@ if ($sk_post && isset($_POST['dienst'])) {
     if ($sk_ok) {
         $sk_meldungen[] = sk_t('EINST.DIENST_' . strtoupper($sk_befehl)) . ' ' . sk_e($sk_ausgabe);
     } else {
-        $sk_fehler[] = sk_e($sk_ausgabe);
+        /* Mehrzeilig seit 0.9.21: dienst.sh zitiert im Fehlerfall die letzten
+         * Protokollzeilen, und die sollen als Zeilen lesbar bleiben. */
+        $sk_stoerungen[] = nl2br(sk_e($sk_ausgabe));
     }
     $sk_tab = 'tab-settings';
 }
@@ -538,7 +547,7 @@ if ($sk_post && isset($_POST['test'])) {
     } elseif ($sk_stand === 2) {
         $sk_warnungen[] = sk_e($sk_text);
     } else {
-        $sk_fehler[] = sk_e($sk_text);
+        $sk_stoerungen[] = sk_e($sk_text);
     }
     $sk_tab = 'tab-test';
 }
@@ -552,7 +561,7 @@ if ($sk_post && isset($_POST['selbsttest'])) {
      * Seite lud neu und sah unveraendert aus: kein Text, keine Meldung, kein
      * Fehler. Der Bediener drueckt dann noch einmal. */
     if (trim($sk_testausgabe) === '') {
-        $sk_fehler[] = sk_t('TEST.SELBSTTEST_LEER');
+        $sk_stoerungen[] = sk_t('TEST.SELBSTTEST_LEER');
     }
     $sk_tab = 'tab-test';
 }
@@ -596,7 +605,7 @@ if ($sk_post && isset($_POST['sk_sichern'])) {
         echo $sk_js;
         exit;
     }
-    $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
+    $sk_stoerungen[] = sk_t('EINST.SICH_SCHREIBFEHLER');
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -800,6 +809,12 @@ if ($sk_rahmen) {
                                                       : 'ALLG.BEANSTANDUNG')) ?></b>
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($sk_fehler as $sk_f) { ?><li><?= $sk_f ?></li><?php } ?>
+</ul></div>
+<?php } ?>
+<?php if ($sk_stoerungen) { ?>
+<div class="sm-fehler"><b><?= sk_e(sk_t('ALLG.VORGANG_FEHLER')) ?></b>
+<ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($sk_stoerungen as $sk_stoer) { ?><li><?= $sk_stoer ?></li><?php } ?>
 </ul></div>
 <?php } ?>
 
@@ -1257,10 +1272,11 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <h2><?= sk_e(sk_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th><?= sk_e(sk_t('MQTT.T_THEMA')) ?></th><th><?= sk_e(sk_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<tr><th><?= sk_e(sk_t('MQTT.T_THEMA')) ?></th><th><?= sk_e(sk_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= sk_e(sk_t('MQTT.T_RETAIN_SPALTE')) ?></th></tr>
 <?php foreach (sk_mqtt_themen() as $sk_thema => $sk_schluessel) { ?>
 <tr><td><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic'] . '/' . $sk_thema) ?></span></td>
-    <td><?= sk_t($sk_schluessel) ?></td></tr>
+    <td><?= sk_t($sk_schluessel) ?></td>
+    <td><?= sk_e(sk_t(sk_mqtt_behalten($sk_thema) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= sk_t('MQTT.PLATZHALTER') ?></p>

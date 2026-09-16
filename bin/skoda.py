@@ -138,6 +138,9 @@ DATEI_ZUGANG_ZWEIT = LBHOME / "config" / "plugins" / (PNAME + ".backup.zugang.js
 DATEI_CACHE = PDATA / "cache.json"
 DATEI_LOXONE = PDATA / "loxone.json"
 DATEI_ZUSTAND = PDATA / "zustand.json"
+# Legt der Dauerlaeufer an, sobald die Bibliotheken geladen sind. bin/dienst.sh
+# wartet beim Start darauf - siehe dort, starten().
+DATEI_BEREIT = PDATA / "dienst.bereit"
 DATEI_MARKE = PDATA / "sitzung.json"          # zwischengespeicherter Refresh-Token
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
@@ -180,7 +183,10 @@ VORGABEN = {
     "takt_wartung": 24,
     "mqtt_ein": 0,
     "mqtt_topic": "skoda",
-    "mqtt_retain": 0,
+    # Seit 0.9.21 ab Werk EIN - Hausstandard (Regeln/07): Zustaende werden
+    # behalten. Welche Themen trotzdem fluechtig bleiben, entscheidet
+    # MQTT_OHNE_RETAIN je Thema, nicht dieser Schalter.
+    "mqtt_retain": 1,
     "steuerung_ein": 0,
     "temp_min": 16,
     "temp_max": 29,
@@ -668,6 +674,47 @@ def mqtt_zustand() -> dict:
     }
 
 
+# Themen, die NIE behalten werden - entschieden ueber den Teil hinter dem
+# letzten Schraegstrich, damit dieselbe Liste fuer status/..., die alten
+# Themen oben und fahrzeugN/... gilt. Alles andere ist ein Zustand und geht
+# bei eingeschaltetem Haken mit 'retain' hinaus. Muss zu sk_mqtt_ohne_retain()
+# in webfrontend/html/sk_lib.php passen; der Reiter Test vergleicht beide.
+#
+# Hausstandard seit 03.09.2026 (Regeln/07), Einteilung wie VolkswagenID 0.9.20:
+MQTT_OHNE_RETAIN = frozenset((
+    # Lebenszeichen - nie. status/ok und das alte Thema ok sagen "der letzte
+    # Durchgang hat gemessen", status/ts und status/zaehler wann und dass es
+    # weitergeht, status/dienst kommt vom Minutencron.
+    "ok", "ts", "zaehler", "dienst",
+    # Messwerte mit Zeitbezug: Leistung, Tempo, Restzeit, Temperatur
+    "ladeleistung_kw", "ladetempo_kmh", "restzeit_min", "aussentemperatur",
+    # Aus einem mitgehoerten Preis oder Ueberschuss gerechnet - ein
+    # behaltenes "1" empfaehle nach einem Ausfall mit dem Preis von gestern.
+    "empfehlung",
+))
+
+
+# Rueckgabecodes einer abgewiesenen MQTT-Verbindung. 1-5 aus MQTT 3.1.1,
+# 132-136 die gleichbedeutenden Reason Codes aus MQTT 5.
+CONNACK_KLARTEXT = {
+    1: "der Broker kennt diese Protokollfassung nicht",
+    2: "die Client-Kennung wurde abgelehnt",
+    3: "der Broker steht gerade nicht zur Verfuegung",
+    4: "Benutzername oder Passwort sind falsch - sie stehen unter System -> MQTT Gateway",
+    5: "nicht berechtigt - Benutzer und Passwort unter System -> MQTT Gateway pruefen",
+    132: "der Broker kennt diese Protokollfassung nicht",
+    133: "die Client-Kennung wurde abgelehnt",
+    134: "Benutzername oder Passwort sind falsch - sie stehen unter System -> MQTT Gateway",
+    135: "nicht berechtigt - Benutzer und Passwort unter System -> MQTT Gateway pruefen",
+    136: "der Broker steht gerade nicht zur Verfuegung",
+}
+
+
+def mqtt_ohne_retain(schluessel: str) -> bool:
+    """Gehoert dieses Thema zu denen, die NICHT behalten werden?"""
+    return str(schluessel).rsplit("/", 1)[-1] in MQTT_OHNE_RETAIN
+
+
 def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
     """Veroeffentlicht die Paare ueber den UDP-Eingang des Gateways.
 
@@ -676,11 +723,16 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
     Oberflaeche beantwortet dagegen die Frage, ob ueberhaupt etwas hinausgeht,
     auch dann, wenn das Gateway gar nicht eingerichtet ist.
 
-    'retain' laesst das Gateway die Werte behalten. Es ist AB WERK AUS: das
-    Befehlswort ist im Bestand dieses Hauses dreifach belegt (Gardena,
-    Intercom, WOLF ISM NG), an einem laufenden Gateway aber nie nachgemessen
-    worden. Kennt ein Gateway das Wort nicht, verwirft es die Zeile - dann
-    kaeme gar nichts mehr an. Der Kasten am Haken sagt das.
+    'retain' laesst das Gateway die Werte behalten. BERICHTIGT IN 0.9.21.
+    Bis 0.9.20 stand hier, das Befehlswort sei an einem laufenden Gateway nie
+    nachgemessen, und der Schalter galt fuer JEDES Thema - das Lebenszeichen
+    eingeschlossen. Beides stimmt nicht mehr: der UDP-Eingang des Gateways V1
+    nimmt 'retain' an (am Geraet dieses Hauses gemessen 13./14.09.2026,
+    Regeln/07), und der Hausstandard verlangt die Entscheidung JE THEMA:
+    Zustaende behalten, Messwerte mit Zeitbezug nicht, das Lebenszeichen nie.
+    Ein behaltenes status/ts zeigte nach einem Ausfall "lebt", und eine
+    behaltene Ladeleistung einen Ladevorgang, der laengst vorbei ist. Welche
+    Themen fluechtig bleiben, steht in MQTT_OHNE_RETAIN.
     """
     z = mqtt_zustand()
     if not z["udpport"]:
@@ -698,7 +750,6 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
     except OSError as err:
         melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
         return (0, 0)
-    befehl = "retain" if retain else "publish"
     praefix = thema_saeubern(praefix)
     versucht = 0
     schlecht = 0
@@ -713,6 +764,9 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
             if text == "":
                 continue
             versucht += 1
+            # Je Thema entschieden, nicht je Aufruf: derselbe Aufruf traegt
+            # Lebenszeichen und Zustand. Ist der Haken aus, geht alles ohne.
+            befehl = "retain" if (retain and not mqtt_ohne_retain(k)) else "publish"
             try:
                 s.sendto(f"{befehl} {praefix}/{k} {text}".encode("utf-8"),
                          ("127.0.0.1", z["udpport"]))
@@ -1275,13 +1329,24 @@ class Horcher:
                 # war auf nichts abonniert.
                 #
                 # "Laeuft" ist nicht "erreichbar", und "erreichbar" ist nicht
-                # "angemeldet". Am Broker dieser Anlage ist das NICHT
-                # nachgemessen; gemessen ist nur, dass der Code den Wert
-                # bisher verwarf.
+                # "angemeldet". NACHGEMESSEN am 17.09.2026 am Broker dieser
+                # Anlage mit paho-mqtt 2.1.0 aus der Umgebung des Plugins: mit
+                # erfundenem Benutzer kommt hier _rc = 5 an, mit den
+                # Zugangsdaten des Gateways 0 - danach abonniert, einen
+                # gesendeten Wert empfangen, Empfehlung gerechnet.
+                #
+                # SEIT 0.9.21 MIT KLARTEXT. Bis 0.9.20 stand in der Meldung nur
+                # die Zahl. Regeln/07 verlangt den Grund in Worten, fuer die
+                # Codes von MQTT 3.1.1 (1-5) wie fuer MQTT 5 (132-136).
                 if _rc:
                     self.verbunden = False
+                    try:
+                        code = int(getattr(_rc, "value", _rc))
+                    except (TypeError, ValueError):
+                        code = -1
                     self.grund = (f"Der Broker {broker}:{port} hat die Anmeldung "
-                                  f"abgewiesen (CONNACK {_rc}).")
+                                  f"abgewiesen: {CONNACK_KLARTEXT.get(code, 'unbekannter Grund')} "
+                                  f"(CONNACK {_rc}).")
                     melde_gebremst("horcher_connack", self.grund, 1800)
                     return
                 # ABONNIERT WIRD HIER, NICHT NACH connect(). Behoben
@@ -2247,6 +2312,21 @@ async def dienst(einmal: bool = False) -> int:
     cfg = config()
     z = zugang()
 
+    # Kam das Beendigungssignal schon waehrend des Ladens, wird nicht erst
+    # "Dienst startet" gemeldet - SEIT 0.9.21. Das Laden dauert auf dem Pi kalt
+    # 6 bis 12 Sekunden; ein "Dienst anhalten" in dieser Zeit ergab bis dahin
+    # ein Protokoll, in dem "startet" NACH "haelt an" stand.
+    if not _LAUF:
+        _LOG.info("Beendigungssignal schon beim Laden erhalten - Dienst startet nicht.")
+        return 0
+    # Fuer bin/dienst.sh: die Bibliotheken sind geladen. Scheitert das
+    # Schreiben, meldet dienst.sh "noch beim Laden" - kein Grund zum Abbruch.
+    if not einmal:
+        try:
+            DATEI_BEREIT.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError as err:
+            _LOG.warning("Startmerker %s liess sich nicht anlegen: %s", DATEI_BEREIT, err)
+
     _LOG.info("Dienst startet (Takt %s s, Steuerung %s).",
               cfg["intervall"], "ein" if cfg.get("steuerung_ein") else "aus")
 
@@ -2593,6 +2673,8 @@ def wachzeichen() -> int:
     if not cfg.get("mqtt_ein"):
         return 0
     laeuft = dienst_laeuft()
+    # status/dienst ist Lebenszeichen und steht in MQTT_OHNE_RETAIN - der
+    # Schalter wird trotzdem durchgereicht, entschieden wird je Thema.
     mqtt_senden({"status/dienst": laeuft},
                 thema_saeubern(cfg.get("mqtt_topic")),
                 1 if cfg.get("mqtt_retain") else 0)
@@ -2710,7 +2792,8 @@ def selbsttest() -> int:
     if c.get("mqtt_ein"):
         zeilen.append(f"[OK]   Dieses Plugin sendet ueber MQTT, Themenpraefix "
                       f"'{c.get('mqtt_topic')}'"
-                      + (", Werte werden behalten (retain)" if c.get("mqtt_retain")
+                      + (", Zustaende werden behalten (retain), Lebenszeichen und "
+                         "Messwerte mit Zeitbezug nicht" if c.get("mqtt_retain")
                          else ", ohne retain"))
     else:
         zeilen.append("[INFO] Dieses Plugin sendet NICHT ueber MQTT - der Haken im Reiter "
@@ -2777,7 +2860,9 @@ def selbsttest() -> int:
     zeilen.append("  - ob die Anmeldung an der Skoda-Cloud gelingt")
     zeilen.append("  - ob dieses Fahrzeug die abgefragten Endpunkte ueberhaupt beantwortet")
     zeilen.append("  - ob die schreibenden Befehle am Fahrzeug die erwartete Wirkung haben")
-    zeilen.append("  - ob Ladeempfehlung und Abfahrtszeit am Broker wirklich ankommen")
+    zeilen.append("  - ob die Vorklimatisierung zur Abfahrtszeit am Fahrzeug wirkt")
+    zeilen.append("Am Broker eines LoxBerry gemessen (17.09.2026, paho-mqtt 2.1.0): das Mithoeren")
+    zeilen.append("  fremder Themen meldet sich an, abonniert und empfaengt Werte.")
     print("\n".join(zeilen))
     return 1 if fehler else 0
 

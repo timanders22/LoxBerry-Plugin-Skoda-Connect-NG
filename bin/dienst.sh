@@ -50,6 +50,9 @@ PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
+# Legt bin/skoda.py an, sobald die Bibliotheken geladen sind - SEIT 0.9.21.
+# Siehe starten(): erst dieser Merker beantwortet "ist er wirklich angelaufen".
+BEREIT="$PDATA/dienst.bereit"
 LOGDATEI="$PLOG/skoda.log"
 # Eigene Datei fuer alles, was NEBEN dem Protokoll anfaellt: Meldungen des
 # Starts und alles, was das Programm nach stderr schreibt, bevor sein
@@ -98,33 +101,109 @@ laeuft() {
     return 0
 }
 
+# Stehen Benutzername UND Passwort in der Zugangsdatei? NEU IN 0.9.21.
+#
+# Bis 0.9.20 fragte starten() nur, ob die Datei EXISTIERT. postinstall.sh
+# legt sie bei jeder Neuinstallation als "{}" an - die Pruefung war damit
+# immer erfuellt. Am Geraet gemessen (17.09.2026, 0.9.20 frisch installiert,
+# zugang.json = "{}"): "dienst.sh start" gab 0 zurueck, setzte den
+# Sollmerker, und der Dienst wartete mit "Zugangsdaten fehlen". Regeln/03:
+# der Sollmerker wird erst nach erfolgreicher Pruefung gesetzt.
+#
+# Gelesen wird mit dem Python der eigenen Umgebung, nicht mit grep: eine
+# Zeichenkettensuche hielte {"email": "", "passwort": ""} fuer vollstaendig.
+# Ist die Datei beschaedigt, gilt die Zweitschrift - so haelt es auch
+# bin/skoda.py (_mit_zweitschrift). Ausgegeben wird nichts aus der Datei.
+zugang_vollstaendig() {
+    "$PY" -c 'import json, sys
+def lesen(pfad):
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            z = json.load(f)
+    except Exception:
+        return None
+    return z if isinstance(z, dict) else None
+z = lesen(sys.argv[1])
+if z is None:
+    z = lesen(sys.argv[2]) or {}
+ok = str(z.get("email") or "").strip() != "" and str(z.get("passwort") or "") != ""
+sys.exit(0 if ok else 1)' "$PCONFIG/zugang.json" "$LBHOMEDIR/config/plugins/$PNAME.backup.zugang.json" 2>/dev/null
+}
+
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
     fi
     if [ ! -x "$PY" ]; then
+        rm -f "$SOLL"
         echo "FEHLER: virtuelle Python-Umgebung fehlt ($PY). Plugin neu installieren."
         return 1
     fi
-    if [ ! -f "$PCONFIG/zugang.json" ]; then
-        echo "FEHLER: Zugangsdaten fehlen ($PCONFIG/zugang.json). Erst in der Oberflaeche eintragen."
+    if ! zugang_vollstaendig; then
+        rm -f "$SOLL"
+        echo "FEHLER: Es sind keine vollstaendigen Zugangsdaten hinterlegt ($PCONFIG/zugang.json)."
+        echo "        Erst im Reiter Einstellungen Benutzername und Passwort des MySkoda-Kontos"
+        echo "        eintragen und speichern. Der Dienst bleibt angehalten; der Waechter holt ihn nicht zurueck."
         return 1
     fi
     touch "$SOLL"
+    rm -f "$BEREIT"
     # Die Ausgabe des Dienstes geht in die Startdatei, NICHT in das Protokoll:
     # dort schreibt allein der Handler des Programms. Beim Start gekappt, damit
     # sie nur die Ausgabe EINES Laufes sammelt und nicht unbegrenzt waechst.
-    : > "$STARTLOG"
+    # Der Waechter kappt selbst, bevor er seine Fehlerausgabe hineinlenkt,
+    # und setzt STARTLOG_KAPPEN=0 - sonst ginge hier verloren, was er
+    # vorher schon hineingeschrieben hat.
+    [ "${STARTLOG_KAPPEN:-1}" = 0 ] || : > "$STARTLOG"
     nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 &
     echo $! > "$PID"
-    sleep 1
+    # HINSEHEN, BIS ER WIRKLICH ANGELAUFEN IST - BERICHTIGT IN 0.9.21.
+    #
+    # Bis 0.9.20 stand hier ein einzelnes "sleep 1". Im Sandkasten am Geraet
+    # gemessen (17.09.2026, drei Laeufe je Fall): mit einer Bibliothek, die
+    # erst nach dem Laden von aiohttp und cryptography abbricht, meldete
+    # dienst.sh "gestartet" mit Rueckgabewert 0, und der Prozess war kurz
+    # danach tot. Die drei Sekunden aus Regeln/03 reichen hier nicht: ein
+    # gesunder Start braucht auf dem Pi kalt 6 bis 12 Sekunden, bis die
+    # Bibliotheken geladen sind - ein Abbruch am Ende dieses Weges faellt in
+    # die Zeit danach.
+    #
+    # Deshalb wartet diese Stelle auf den Merker, den bin/skoda.py nach dem
+    # Laden anlegt: mindestens drei Sekunden, hoechstens dreissig. Stirbt der
+    # Prozess vorher, ist der Start gescheitert. Laeuft er nach dreissig
+    # Sekunden noch ohne Merker, wird das gesagt - geraten wird nicht.
+    i=0
+    while [ "$i" -lt 30 ]; do
+        sleep 1
+        i=$((i + 1))
+        laeuft || break
+        [ "$i" -ge 3 ] && [ -f "$BEREIT" ] && break
+    done
     if laeuft; then
-        echo "gestartet (PID $(cat "$PID"))"
+        if [ -f "$BEREIT" ]; then
+            echo "gestartet (PID $(cat "$PID"))"
+        else
+            echo "gestartet (PID $(cat "$PID")) - nach $i Sekunden noch beim Laden der Bibliotheken."
+        fi
         return 0
     fi
-    echo "FEHLER: Start fehlgeschlagen - siehe $STARTLOG und $LOGDATEI"
-    rm -f "$PID"
+    # Stirbt er gleich nach dem Start, hilft ein Neustart je Minute nicht:
+    # Sollmerker fort, und die letzten Zeilen gehoeren in die Meldung
+    # (Regeln/03), nicht nur ein Verweis auf zwei Dateien. Gemessen am Geraet
+    # (17.09.2026): mit liegendem Sollmerker startete der Waechter den toten
+    # Dienst bei jedem Lauf neu, jedes Mal mit einer Zeile im Protokoll.
+    rm -f "$PID" "$SOLL" "$BEREIT"
+    echo "FEHLER: Der Dienst hat sich nach $i Sekunden wieder beendet."
+    echo "        Der Waechter holt ihn nicht zurueck, bis er von Hand gestartet wird."
+    if [ -s "$LOGDATEI" ]; then
+        echo "Letzte Zeilen aus $LOGDATEI:"
+        tail -n 3 "$LOGDATEI" | sed 's/^/    /'
+    fi
+    if [ -s "$STARTLOG" ]; then
+        echo "Ausgabe des Starts ($STARTLOG):"
+        tail -n 5 "$STARTLOG" | sed 's/^/    /'
+    fi
     return 1
 }
 
@@ -158,7 +237,18 @@ anhalten() {
         kill -9 "$P" 2>/dev/null
         sleep 1
     fi
-    rm -f "$PID"
+    # NACHSEHEN, ob er wirklich weg ist - SEIT 0.9.21, uebernommen aus
+    # AudiConnect 0.9.12. Bis 0.9.20 folgte hier ohne Pruefung "rm -f $PID"
+    # und "angehalten". Gehoert der Vorgang einem anderen Benutzer, scheitert
+    # das kill mit EPERM, das rm gelingt aber, weil das Verzeichnis loxberry
+    # gehoert. Danach meldet "laeuft" false, und ein anschliessendes "start"
+    # legt ein ZWEITES Exemplar an.
+    if laeuft; then
+        echo "FEHLER: Vorgang $P ist noch da - die PID-Datei bleibt stehen."
+        echo "        Gehoert er einem anderen Benutzer? ps -o user= -p $P"
+        return 1
+    fi
+    rm -f "$PID" "$BEREIT"
     echo "angehalten"
     return 0
 }
@@ -185,9 +275,38 @@ case "$1" in
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
+        #
+        # SEIT 0.9.21, uebernommen aus AudiConnect 0.9.15/0.9.16: ohne
+        # Zugangsdaten gar nicht erst anlaufen, sondern den Sollmerker
+        # zuruecknehmen und es EINMAL sagen. Und scheitert der Neustart, sagt
+        # das Protokoll es, statt nur die Startdatei.
         if [ -f "$SOLL" ] && ! laeuft; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-            starten >> "$STARTLOG" 2>&1
+            # Die Fehlerausgabe DIESES Skripts geht, sobald der Waechter etwas
+            # tut, in die Startdatei. cron/cron.01min ruft mit
+            # ">/dev/null 2>&1" auf, und damit verschwand bis 0.9.20 jede
+            # Meldung der Schale (Regeln/03: der Cron verschluckt seine
+            # Fehlerausgabe nicht). Die Umlenkung steht HIER und nicht in der
+            # Cron-Datei, damit sie auch fuer einen Aufruf von Hand gilt.
+            # Erst kappen, dann umlenken; starten() kappt deshalb hier nicht
+            # noch einmal.
+            : > "$STARTLOG"
+            exec 2>>"$STARTLOG"
+            jetzt=$(date '+%Y-%m-%d %H:%M:%S')
+            if [ -x "$PY" ] && ! zugang_vollstaendig; then
+                rm -f "$SOLL"
+                echo "[$jetzt] Waechter: keine Zugangsdaten - Dienst bleibt angehalten, Sollmerker entfernt." >> "$LOGDATEI"
+                exit 0
+            fi
+            echo "[$jetzt] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
+            # Gesammelt und danach angehaengt: starten() zitiert im Fehlerfall
+            # aus der Startdatei, eine Umleitung in dieselbe Datei liefe im
+            # Kreis.
+            if ausgabe=$(STARTLOG_KAPPEN=0 starten 2>&1); then
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+            else
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Neustart gescheitert - Sollmerker entfernt, Einzelheiten in $STARTLOG." >> "$LOGDATEI"
+            fi
         fi
         ;;
     *)

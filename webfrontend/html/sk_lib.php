@@ -134,7 +134,9 @@ function sk_vorgaben()
         'takt_wartung'   => 24,
         'mqtt_ein'       => 0,
         'mqtt_topic'     => 'skoda',
-        'mqtt_retain'    => 0,
+        /* Seit 0.9.21 ab Werk ein (Regeln/07). Welche Themen trotzdem
+         * fluechtig bleiben, sagt sk_mqtt_ohne_retain(). */
+        'mqtt_retain'    => 1,
         'steuerung_ein'  => 0,
         'temp_min'       => 16,
         'temp_max'       => 29,
@@ -1473,6 +1475,28 @@ function sk_abo_kasten()
     return '<div class="' . $klasse . '">' . sk_abo_text() . '</div>';
 }
 
+
+/**
+ * Themen, die NIE behalten werden - der Teil hinter dem letzten
+ * Schraegstrich. Muss zu MQTT_OHNE_RETAIN in bin/skoda.py passen; der Reiter
+ * Test vergleicht beide. Hausstandard seit 03.09.2026 (Regeln/07): Zustaende
+ * behalten, Messwerte mit Zeitbezug nicht, das Lebenszeichen nie.
+ */
+function sk_mqtt_ohne_retain()
+{
+    return array(
+        'ok', 'ts', 'zaehler', 'dienst',                                   // Lebenszeichen
+        'ladeleistung_kw', 'ladetempo_kmh', 'restzeit_min', 'aussentemperatur', // Zeitbezug
+        'empfehlung',                                                      // aus fremdem Messwert
+    );
+}
+
+/** Wird dieses Thema bei eingeschaltetem Haken behalten? */
+function sk_mqtt_behalten($thema)
+{
+    $teile = explode('/', (string) $thema);
+    return !in_array(end($teile), sk_mqtt_ohne_retain(), true);
+}
 
 /** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung. */
 function sk_mqtt_themen()

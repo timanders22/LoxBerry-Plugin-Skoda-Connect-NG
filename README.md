@@ -6,16 +6,106 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.20 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.21 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
-> erwartete Wirkung haben, ist es **nicht**. Ebensowenig `retain` an einem
-> laufenden MQTT-Gateway und das Mithören fremder Themen — dafür gibt es hier
-> keinen Broker. Deshalb 0.9.x und nicht 1.0.0,
+> erwartete Wirkung haben, ist es **nicht**. Am LoxBerry gemessen sind
+> Installation, Oberfläche, Endpunkt, Dienststart und das Mithören fremder
+> Themen am Broker. Deshalb 0.9.x und nicht 1.0.0,
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.21 ändert
+
+Gemessen am LoxBerry dieses Hauses (17.09.2026) an der frisch installierten
+0.9.20: über SSH, im Sandkasten neben dem installierten Plugin und in der
+Oberfläche über den Browser. Ein Skoda-Konto und ein Fahrzeug gibt es weiterhin
+nicht.
+
+### Der Dienst ließ sich ohne Zugangsdaten starten — und kam danach jede Minute wieder
+
+`postinstall.sh` legt `zugang.json` als `{}` an, und `dienst.sh start` fragte
+nur, ob die Datei **da** ist. Am Gerät: Rückgabewert 0, Sollmerker gesetzt,
+Dienst wartet mit „Zugangsdaten fehlen". Jetzt liest `dienst.sh` den **Inhalt**
+mit dem Python der eigenen Umgebung (bei beschädigter Datei die Zweitschrift)
+und setzt den Sollmerker erst, wenn Benutzername und Passwort dastehen
+(`Regeln/03`).
+
+Im Sandkasten mit einer Bibliothek, die erst nach dem Laden von `aiohttp` und
+`cryptography` abbricht, dreimal gemessen: `dienst.sh` meldete „gestartet"
+mit Rückgabewert 0, der Prozess war kurz danach tot, der Sollmerker blieb
+liegen — und der Wächter startete ihn bei **jedem** Lauf neu, mit je einer
+Zeile im Protokoll. Die drei Sekunden aus `Regeln/03` reichen bei Skoda nicht:
+ein gesunder Start braucht auf dem Pi kalt 6 bis 12 Sekunden, bis die
+Bibliotheken geladen sind. `skoda.py` legt deshalb nach dem Laden
+`data/plugins/<ordner>/dienst.bereit` an, und `dienst.sh` wartet darauf —
+mindestens drei, höchstens dreißig Sekunden. Stirbt der Dienst vorher, sind
+Sollmerker und PID-Datei weg, und die Meldung zitiert die letzten Zeilen aus
+Protokoll und Startausgabe.
+
+Außerdem: der Wächter lenkt seine Fehlerausgabe in `skoda_start.log` (der
+Cron-Eintrag verschluckt sie mit `>/dev/null 2>&1`), nimmt ohne Zugangsdaten
+den Sollmerker zurück und schreibt einen gescheiterten Neustart ins Protokoll.
+`dienst.sh stop` sieht nach, ob der Vorgang wirklich weg ist, statt es zu
+behaupten. Und ein „Dienst anhalten" während des Ladens ergibt kein
+„Dienst startet" mehr **nach** „Beendigungssignal erhalten".
+
+### Die Themenliste im Reiter *Test* schlug falsch an
+
+Am Gerät rot: „Die Tabelle nennt Themen, die der Dienst nicht sendet:
+heim_entfernung_m, ladetempo_kmh, reichweite_batterie_km, zuhause". Der Dienst
+sendet alle vier. Der reguläre Ausdruck las `MQTT_FELDER` nur bis zur ersten
+schließenden Klammer — und die stand in einem Kommentar `(TEMPO, REICHWBAT)`.
+Nachgestellt: der alte Ausdruck fand 30 Felder, der neue 34. Die lokale
+Prüfkette blieb grün, weil `skoda_pruefen.py` die Liste mit einem eigenen
+Ausdruck liest, der richtig bis zur Klammer am Zeilenanfang geht — die Zeile
+im Reiter *Test* selbst hat erst der Blick auf das Gerät gelesen.
+
+### `retain` je Thema, und ab Werk ein
+
+Bis 0.9.20 galt der Haken für **jedes** Thema, das Lebenszeichen
+eingeschlossen — ein behaltenes `status/ts` zeigte nach einem Ausfall „lebt".
+Jetzt wie in VolkswagenID 0.9.20 und nach dem Hausstandard (`Regeln/07`):
+Zustände werden behalten, das Lebenszeichen (`status/ok`, `status/ts`,
+`status/zaehler`, `status/dienst`, `ok`) und Messwerte mit Zeitbezug
+(`ladeleistung_kw`, `ladetempo_kmh`, `restzeit_min`, `aussentemperatur`,
+`empfehlung`) nie. Die Themenliste im Reiter *MQTT* hat eine Spalte
+*Behalten*, und eine neue Zeile im Reiter *Test* vergleicht die Liste der
+Oberfläche mit der des Dienstes.
+
+Der Haken ist **ab Werk ein**. Dass der UDP-Eingang des Gateways V1 `retain`
+annimmt, ist an diesem LoxBerry mit anderen Plugins gemessen (13./14.09.2026).
+Eine bestehende Konfiguration behält ihren Wert — wer schon gespeichert hat,
+hat dort eine 0 stehen und setzt den Haken selbst.
+
+### Das Mithören fremder Themen ist gemessen — und der Text dazu war falsch
+
+Im Reiter *MQTT* stand: „Verbunden wird … ohne Anmeldung — verlangt Ihr Broker
+Zugangsdaten, funktioniert das Mithören nicht." Der Code meldet sich seit 0.9.18
+mit Benutzer und Passwort aus den Gateway-Einstellungen an. Am Broker dieses
+LoxBerry gemessen, ohne die Zugangsdaten auszugeben: mit ihnen verbunden,
+abonniert, einen gesendeten Wert empfangen, Empfehlung gerechnet; mit
+erfundenem Benutzer kommt in paho-mqtt 2.1.0 `CONNACK 5` an. Diese Zahl stand
+bisher allein in der Meldung — jetzt mit dem Grund in Worten, für die Codes
+1–5 und 132–136 (`Regeln/07`).
+
+### Kleineres
+
+* **Gescheiterte Knöpfe** — Dienst starten, eine Aktion im Reiter *Test*, der
+  Selbsttest, die Sicherung — stehen unter „Der Vorgang ist nicht gelungen",
+  nicht mehr unter „Es wurde nichts gespeichert. Bitte diese Punkte
+  berichtigen" (`Regeln/04`).
+* **`preupgrade.sh`** fragt `dienst.sh status` und hält über `dienst.sh stop`
+  an (`Regeln/06`). Bis 0.9.20 kam nach zwei Sekunden `kill -9` — der Dienst
+  braucht bis zu 70. Der Sollmerker wird **vor** dem Anhalten gelesen, sonst
+  hätte `stop` ihn weggenommen, bevor die Rettung ihn findet.
+* **`postinstall.sh`** zitiert die letzten Zeilen, wenn `myskoda` sich nicht
+  laden lässt, statt nur „lässt sich nicht laden" zu sagen.
+* **`uninstall`** rechnet bei fehlendem Schlüssel mit der neuen Vorgabe.
+* Der Hinweis „Was ungeprüft ist" im Reiter *Test* und am Kopf dieser Datei
+  nennt, was inzwischen am Gerät gemessen ist.
 
 ## Neu in 0.9.17
 
@@ -945,7 +1035,7 @@ Editor, in dem `skoda.py` offen ist, oder ein zweites Exemplar des Plugins).
 `bin/dienst.sh` prüft seit 0.9.1 auf demselben Weg.
 
 Im MQTT-Broker bleibt nur dann nichts stehen, wenn der Haken *Werte behalten
-(retain)* aus ist — das ist die Werkseinstellung. Ist er gesetzt, räumt
+(retain)* aus ist — seit 0.9.21 ist er ab Werk gesetzt. Ist er gesetzt, räumt
 `uninstall` die behaltenen Themen ab, indem es je Thema eine leere Nutzlast
 mit `retain` schickt. Ohne das blieben bis zu 49 Themen dauerhaft im Gateway
 stehen, darunter Standort und Kennzeichen des Fahrzeugs.

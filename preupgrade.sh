@@ -115,14 +115,56 @@ ist_unser_dienst() {
     return 0
 }
 
-if [ -f "$PID" ]; then
+# DER SOLLMERKER WIRD VOR DEM ANHALTEN GELESEN - seit 0.9.21. "dienst.sh stop"
+# nimmt ihn weg (so soll es sein: ein angehaltener Dienst soll nicht
+# zurueckkommen). Die Rettung weiter unten faende danach nichts mehr, und ein
+# Dienst, der nach dem Upgrade von selbst wieder anlaufen sollte, bliebe stehen.
+SOLL_VORHER=0
+[ -e "$PDATA/soll_laufen" ] && SOLL_VORHER=1
+
+# ANGEHALTEN WIRD UEBER dienst.sh - seit 0.9.21 (Regeln/06, Hausmuster).
+#
+# Bis 0.9.20 stand hier "kill", zwei Sekunden Pause und "kill -9". Der Dienst
+# braucht zum geordneten Ende bis zu 70 Sekunden (bin/dienst.sh, anhalten():
+# ein haengender Abruf 30 s, ein Schreibbefehl bis 60 s) - nach zwei Sekunden
+# traf ihn also regelmaessig das harte Toeten, mitten in der Warteschlange.
+# Und die PID-Datei ist kein Beleg (Regeln/06): gefragt wird "dienst.sh status",
+# der den Vorgang argumentweise gegen den vollen Pfad prueft.
+#
+# Aufgerufen wird das dienst.sh der INSTALLIERTEN, also der alten Fassung - die
+# neue ist noch nicht ausgepackt. Fehlt es, bleibt der Weg ueber die Nummer.
+DIENSTSH="$PBIN/dienst.sh"
+#
+# "stop" wird in JEDEM Fall gerufen, auch wenn nichts laeuft: es raeumt den
+# Sollmerker und eine verwaiste PID-Datei mit ab. Gesagt wird "angehalten"
+# aber nur, wenn vorher etwas lief.
+if [ -x "$DIENSTSH" ]; then
+    LIEF=0
+    "$DIENSTSH" status >/dev/null 2>&1 && LIEF=1
+    [ "$LIEF" = 1 ] && : > "$MERKER"
+    AUSGABE=$("$DIENSTSH" stop 2>&1)
+    if "$DIENSTSH" status >/dev/null 2>&1; then
+        echo "<WARNING> Der Dienst liess sich nicht anhalten: $AUSGABE"
+    elif [ "$LIEF" = 1 ]; then
+        echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
+        echo "<INFO> Laufender Dienst ueber dienst.sh angehalten."
+    else
+        echo "<INFO> Es lief kein Dienst."
+    fi
+    rm -f "$PID"
+elif [ -f "$PID" ]; then
     PNUM=$(cat "$PID" 2>/dev/null)
     if [ -n "$PNUM" ] && ist_unser_dienst "$PNUM"; then
         : > "$MERKER"
         echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
+        echo "<INFO> $DIENSTSH fehlt - angehalten wird ueber die Prozessnummer."
         kill "$PNUM" 2>/dev/null || true
-        sleep 2
-        kill -9 "$PNUM" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 70 ] && ist_unser_dienst "$PNUM"; do
+            sleep 1
+            i=$((i + 1))
+        done
+        ist_unser_dienst "$PNUM" && kill -9 "$PNUM" 2>/dev/null
         echo "<INFO> Laufender Dienst angehalten."
     else
         # Kein Wort von "angehalten": es lief nichts. Bis 0.9.14 stand die
@@ -151,9 +193,11 @@ NEU="$BASE/data/plugins/$PFOLDER.rettung.neu"
 rm -rf "$NEU"
 if [ -d "$PDATA" ]; then
     mkdir -p "$NEU" 2>/dev/null
-    for f in soll_laufen zustand.json ladungen.csv; do
+    for f in zustand.json ladungen.csv; do
         [ -e "$PDATA/$f" ] && cp -p "$PDATA/$f" "$NEU/$f" 2>/dev/null
     done
+    # Der Sollmerker nach dem Stand VOR dem Anhalten (siehe oben).
+    [ "$SOLL_VORHER" = 1 ] && : > "$NEU/soll_laufen"
     [ -d "$PDATA/verlauf" ] && cp -a "$PDATA/verlauf" "$NEU/verlauf" 2>/dev/null
     # Gezaehlt, nicht behauptet: eine Rettung, die nichts gerettet hat,
     # sagt das - sonst steht in der Installationsmeldung eine Zusage, die

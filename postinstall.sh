@@ -280,8 +280,13 @@ fi
 
 # Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob sich die
 # Bibliothek auch laden laesst.
-if ! "$VENV/bin/python3" -c 'from myskoda import MySkoda' 2>/dev/null; then
-    echo "<FAIL> myskoda ist installiert, laesst sich aber nicht laden."
+#
+# Der GRUND wird zitiert - seit 0.9.21. Bis 0.9.20 ging die Fehlerausgabe
+# nach /dev/null, und im Installationsprotokoll stand nur "laesst sich nicht
+# laden". Welche Abhaengigkeit fehlt, stand nirgends.
+if ! LADEFEHLER=$("$VENV/bin/python3" -c 'from myskoda import MySkoda' 2>&1); then
+    echo "<FAIL> myskoda ist installiert, laesst sich aber nicht laden. Letzte Zeilen:"
+    printf '%s\n' "$LADEFEHLER" | tail -n 5 | sed 's/^/<FAIL>     /'
     exit 1
 fi
 IST=$("$VENV/bin/python3" -c 'import importlib.metadata as m; print(m.version("myskoda"))' 2>/dev/null || echo "unbekannt")

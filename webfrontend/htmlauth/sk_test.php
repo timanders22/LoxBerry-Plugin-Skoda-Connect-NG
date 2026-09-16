@@ -305,6 +305,25 @@ function sk_pruefungen()
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_THEMEN'), implode(' ', $teile));
     }
 
+    /* ---- Welche Themen fluechtig bleiben: Oberflaeche gegen Dienst ----
+     *
+     * ERGAENZT 0.9.21. Die Spalte Retain im Reiter MQTT kommt aus
+     * sk_mqtt_ohne_retain(), gesendet wird nach MQTT_OHNE_RETAIN im Dienst.
+     * Laufen beide auseinander, steht in der Anleitung "behalten" fuer ein
+     * Thema, das fluechtig hinausgeht - oder umgekehrt. */
+    $r = sk_retain_vergleich();
+    if ($r === null) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_RETAIN_LISTE'), sk_t('TEST.A_RETAIN_LISTE_UNKLAR'));
+    } elseif (!$r['nur_php'] && !$r['nur_py']) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_RETAIN_LISTE'),
+            sprintf(sk_t('TEST.A_RETAIN_LISTE_OK'), $r['gezaehlt']));
+    } else {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_RETAIN_LISTE'),
+            sprintf(sk_t('TEST.A_RETAIN_LISTE_ABWEICHUNG'),
+                    sk_e(implode(', ', $r['nur_php']) ?: '-'),
+                    sk_e(implode(', ', $r['nur_py']) ?: '-')));
+    }
+
     /* ---- Sind die Vorlagen wohlgeformt? ----
      *
      * ERGAENZT 31.08.2026. Eine kaputte Importdatei merkt der Anwender sonst
@@ -513,6 +532,56 @@ function sk_formulare_lesen()
  * Rueckgabe: array('gezaehlt','fehlend','ueberzaehlig') oder null, wenn der
  * Dienst nicht lesbar ist - "nicht messbar" ist kein Haken.
  */
+/**
+ * Die Zeichenketten eines Tupels NAME = ( ... ) aus bin/skoda.py, oder null.
+ *
+ * BERICHTIGT IN 0.9.21. Bis 0.9.20 suchte diese Stelle mit NAME\s*=\s*\((.*?)\)
+ * das Tupel bis zur ERSTEN schliessenden Klammer. In MQTT_FELDER steht aber
+ * ein Kommentar "(TEMPO, REICHWBAT)" - dort brach der Ausdruck ab, und die
+ * vier Felder dahinter galten als nicht gesendet. Am Geraet gesehen
+ * (17.09.2026, 0.9.20): rotes Kreuz "Die Tabelle nennt Themen, die der Dienst
+ * nicht sendet: heim_entfernung_m, ladetempo_kmh, reichweite_batterie_km,
+ * zuhause" - obwohl der Dienst alle vier sendet.
+ *
+ * Jetzt: Kommentare zeilenweise weg, dann bis zur Klammer am ZEILENANFANG,
+ * mit der das Tupel in dieser Datei immer schliesst. Eine Zeichenkette mit
+ * einer Raute darin gibt es in diesen Tupeln nicht.
+ */
+function sk_py_tupel($quelle, $name)
+{
+    if (!preg_match('/^' . preg_quote($name, '/') . '\s*=\s*(?:frozenset\()?\((.*?)^\)/ms', $quelle, $m)) {
+        return null;
+    }
+    $rumpf = preg_replace('/#[^\n]*/', '', $m[1]);
+    if (!preg_match_all('/"([a-z0-9_]+)"/', $rumpf, $t)) {
+        return array();
+    }
+    return $t[1];
+}
+
+/**
+ * Die Liste der fluechtigen Themen in PHP gegen die in bin/skoda.py.
+ * Rueckgabe: array('nur_php', 'nur_py', 'gezaehlt') oder null.
+ */
+function sk_retain_vergleich()
+{
+    $quelle = sk_paths()['bindir'] . '/skoda.py';
+    $q = is_file($quelle) ? @file_get_contents($quelle) : false;
+    if ($q === false) {
+        return null;
+    }
+    $py = sk_py_tupel($q, 'MQTT_OHNE_RETAIN');
+    if (!$py) {
+        return null;
+    }
+    $php = sk_mqtt_ohne_retain();
+    return array(
+        'gezaehlt' => count(array_unique($py)),
+        'nur_php'  => array_values(array_diff($php, $py)),
+        'nur_py'   => array_values(array_diff($py, $php)),
+    );
+}
+
 function sk_themen_vergleich()
 {
     $p = sk_paths();
@@ -525,16 +594,14 @@ function sk_themen_vergleich()
         return null;
     }
     /* Die beiden Listen des Dienstes: MQTT_FELDER traegt Zahlen- und
-     * Schaltwerte, MQTT_TEXTFELDER die Texte. Beide werden als Tupel von
-     * Zeichenketten geschrieben. */
+     * Schaltwerte, MQTT_TEXTFELDER die Texte. */
     $dienst = array();
     foreach (array('MQTT_FELDER', 'MQTT_TEXTFELDER') as $name) {
-        if (!preg_match('/' . $name . '\s*=\s*\((.*?)\)/s', $q, $m)) {
+        $t = sk_py_tupel($q, $name);
+        if ($t === null) {
             return null;
         }
-        if (preg_match_all('/"([a-z0-9_]+)"/', $m[1], $t)) {
-            $dienst = array_merge($dienst, $t[1]);
-        }
+        $dienst = array_merge($dienst, $t);
     }
     if (!$dienst) {
         return null;
