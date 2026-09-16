@@ -1017,11 +1017,11 @@ if ($sk_rahmen) {
 <div class="sm-hinweis"><?= sk_t('EINST.HEIM_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="heim_breite"><?= sk_e(sk_t('EINST.L_HEIM_BREITE')) ?></label>
-  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= sk_e($sk_cfg['heim_breite']) ?>" placeholder="48.137154">
+  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= sk_e($sk_cfg['heim_breite']) ?>" placeholder="51.318339">
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= sk_e(sk_t('EINST.L_HEIM_LAENGE')) ?></label>
-  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= sk_e($sk_cfg['heim_laenge']) ?>" placeholder="11.576124">
+  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= sk_e($sk_cfg['heim_laenge']) ?>" placeholder="9.489601">
   <div class="sm-hilfe"><?= sk_t('EINST.H_HEIM_KOORD') ?></div>
 </div>
 <div class="sm-feld">
