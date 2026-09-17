@@ -1,7 +1,7 @@
 #!/bin/sh
 # Skoda Connect - Waechter, minuetlich.
 # Startet den Dienst neu, wenn er laufen soll, aber nicht laeuft.
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins ersetzt.
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
 "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
 
 # Das vierte Lebenszeichen. Es gehoert HIERHER und nicht in den Dienst: ob der
