@@ -20,6 +20,33 @@ function sk_pruefungen()
     $z = sk_zugang();
     $zeilen = array();
 
+    /* ---- Liegt eine Upgrade-Marke, und wie alt ist sie? ----
+     *
+     * ERGAENZT 0.9.23. Zu jeder Regel gehoert das Werkzeug, das sie findet
+     * (CLAUDE.md, Abschnitt 6). Die Marke sperrt Dienststart und
+     * Oberflaeche; wer sie nicht sehen kann, sucht die Ursache woanders.
+     * Im Regelfall liegt sie nicht - das ist deshalb die gruene Antwort.
+     * Eine liegengebliebene Marke aus einer abgebrochenen Installation
+     * faellt hier auf, bevor jemand eine Stunde lang raet. */
+    $sk_marke = sk_upgrade_marke();
+    if (!is_file($sk_marke)) {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_UPGRADE_MARKE'),
+            sk_t('TEST.A_MARKE_KEINE'));
+    } else {
+        $sk_roh = trim((string) @file_get_contents($sk_marke));
+        if (!preg_match('/^[0-9]{1,12}$/', $sk_roh)) {
+            $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_UPGRADE_MARKE'),
+                sprintf(sk_t('TEST.A_MARKE_UNLESBAR'), sk_e($sk_marke)));
+        } else {
+            $sk_alter = time() - (int) $sk_roh;
+            $zeilen[] = sk_pruefzeile(sk_upgrade_laeuft() ? 0 : -1,
+                sk_t('TEST.F_UPGRADE_MARKE'),
+                sprintf(sk_upgrade_laeuft()
+                        ? sk_t('TEST.A_MARKE_GILT') : sk_t('TEST.A_MARKE_ALT'),
+                        $sk_alter, sk_e($sk_marke)));
+        }
+    }
+
     $venv = $p['bindir'] . '/venv/bin/python3';
     $zeilen[] = sk_pruefzeile(is_file($venv) ? 1 : 0, sk_t('TEST.F_VENV'),
         is_file($venv) ? $venv : sk_t('TEST.A_VENV_FEHLT'));

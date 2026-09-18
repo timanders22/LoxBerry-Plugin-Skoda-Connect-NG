@@ -74,6 +74,42 @@ if (preg_match($sk_muster, sk_post('activetab'))) {
  * Konfigordner an und spielte die Zweitschrift samt altem Aktionstoken
  * zurueck. Der Bediener ist hier angemeldet, und er sieht das Ergebnis
  * sofort auf der Seite - das ist der richtige Ort dafuer. */
+/* ZUERST ABER: laeuft gerade eine Aktualisierung dieses Plugins?
+ *
+ * Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
+ * Minute (Regeln/06). In dieser Zeit ist config/plugins/<ordner>/ geloescht,
+ * die Seite aber erreichbar. Am 18.09.2026 in WSL gemessen
+ * (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 5): das Formular
+ * des Reiters Einstellungen, in der Luecke unveraendert abgesendet, schrieb
+ * zugang.json mit leerem Benutzernamen und leerem Passwort neu.
+ * postinstall.sh haelt eine gefuellte Datei fuer gewollt und spielt die
+ * Zweitschrift nicht zurueck - das Passwort war danach weg.
+ *
+ * Solange die Marke aus preupgrade.sh gilt, zeigt die Seite deshalb nur
+ * einen Hinweis: sie heilt nichts, sie erzeugt kein Aktionstoken, und sie
+ * nimmt kein Formular an - auch keines, das vor der Aktualisierung
+ * ausgeliefert wurde. Die Entscheidung zu sperren ist eine Messung, keine
+ * Regel (Regeln/06; Sprachsteuerung 0.11.7 sperrt aus demselben Grund
+ * NICHT: dort ging in der Luecke nichts verloren). */
+$sk_upgrade = sk_upgrade_laeuft();
+if ($sk_upgrade) {
+    if (class_exists('LBWeb', false)) {
+        LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
+    }
+    echo '<div class="sm-wrap" style="max-width:980px;margin:0 auto;'
+       . 'font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;color:#333;">' . "\n"
+       . '<h1>Skoda Connect</h1>' . "\n"
+       . '<div style="border:1px solid #e0c060;border-left:4px solid #e0a020;'
+       . 'background:#fdf8e8;border-radius:6px;padding:12px 14px;margin:12px 0;">'
+       . '<b>' . sk_e(sk_t('HINWEIS.UPGRADE_LAEUFT')) . '</b> '
+       . sk_e(sk_t('HINWEIS.UPGRADE_LAEUFT_TEXT')) . '</div>' . "\n"
+       . '</div>' . "\n";
+    if (class_exists('LBWeb', false)) {
+        LBWeb::lbfooter();
+    }
+    exit;
+}
+
 sk_config_heilen();
 
 /* Und danach die Vervollstaendigung: fehlende Schluessel werden EINMAL in die

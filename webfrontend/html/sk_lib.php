@@ -308,6 +308,65 @@ function sk_json_lesen($pfad)
     return $d;
 }
 
+/* ==================================================================
+ * Die Marke "Aktualisierung laeuft"
+ *
+ * preupgrade.sh legt data/plugins/<ordner>.upgrade_laeuft als Erstes an,
+ * postupgrade.sh raeumt sie weg, uninstall ebenfalls. Sie liegt NEBEN dem
+ * Datenordner, weil purge_installation den Ordner selbst loescht
+ * (Regeln/06).
+ *
+ * WARUM DIE OBERFLAECHE SIE BEACHTET - gemessen, nicht angenommen.
+ * Am 18.09.2026 in WSL (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh,
+ * Fall 5) den Ablauf des Installers nachgestellt und in der Luecke das
+ * Formular des Reiters Einstellungen unveraendert abgesendet - so, wie die
+ * Seite es dort ausliefert: mit leeren Feldern, denn
+ * config/plugins/<ordner>/ ist gerade geloescht. Ergebnis:
+ * zugang.json entstand neu mit {"email":"","passwort":""}. postinstall.sh
+ * spielt die Zweitschrift nur zurueck, wenn die Datei fehlt, leer oder "{}"
+ * ist - diese hier ist gefuellt. Das Passwort war nach der Aktualisierung
+ * weg, der Dienst lief nicht mehr an, und im Protokoll stand nichts.
+ *
+ * Deshalb sperrt diese Linie, solange die Marke gilt (wie Intercom 2.2.11;
+ * Sprachsteuerung 0.11.7 sperrt nicht, weil dort nichts verlorenging - es
+ * ist je Linie eine Messung, keine Regel).
+ *
+ * Aelter als 3600 s oder unlesbar: die Marke gilt nicht. Eine abgebrochene
+ * Installation darf die Seite nicht fuer immer stilllegen. Ein paar Minuten
+ * "Zukunft" sind eine nachgestellte Uhr, keine Luege.
+ * ================================================================== */
+
+function sk_upgrade_marke()
+{
+    $p = sk_paths();
+    return dirname($p['datadir']) . '/' . basename($p['datadir']) . '.upgrade_laeuft';
+}
+
+function sk_upgrade_laeuft()
+{
+    $f = sk_upgrade_marke();
+    clearstatcache(true, $f);
+    if (!is_file($f)) {
+        return false;
+    }
+    $roh = @file_get_contents($f);
+    if ($roh === false) {
+        return false;
+    }
+    $roh = trim((string) $roh);
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) {
+        return false;
+    }
+    /* Dieselbe Rechnung wie in bin/dienst.sh, Funktion upgrade_laeuft():
+     * aus der Zukunft gilt sie NICHT, aelter als eine Stunde auch nicht.
+     * Zwei verschiedene Regeln fuer dieselbe Marke waeren ein Befund - die
+     * Seite spraeche dann von einer Aktualisierung, waehrend der Dienst
+     * anlaeuft. Gemessen: Fall K10g (Marke zwei Stunden in der Zukunft ->
+     * die Seite zeigt wieder den Reiter Test). */
+    $alter = time() - (int) $roh;
+    return $alter >= 0 && $alter < 3600;
+}
+
 /**
  * Wie sk_json_lesen(), sagt aber, WARUM nichts herauskam.
  *
@@ -1055,9 +1114,16 @@ function sk_dienst_pid()
      * Die zweite braucht es, weil "nano /pfad/skoda.py" ebenfalls den vollen
      * Pfad als zweites Argument fuehrt. Der Dienst wird immer als
      * "<venv>/bin/python3 <pfad>/skoda.py" gestartet. */
-    if (isset($argv[0], $argv[1])
-        && $argv[1] === $skript
-        && preg_match('#(^|/)python[0-9.]*$#', $argv[0])) {
+    /* Dritte Bedingung seit 0.9.23: GENAU ZWEI Argumente. Dieselbe Datei
+     * laeuft auch als Einmallauf - "skoda.py --wachzeichen" aus
+     * cron/cron.01min jede Minute, "skoda.py --selbsttest" aus dem Reiter
+     * Test. Beide tragen dasselbe argv[0] und argv[1]; ein Einmallauf ist
+     * kein Dienst. cmdline endet auf ein Nullbyte, die leere letzte Zeile
+     * zaehlt nicht mit. */
+    $echte = array_values(array_filter($argv, function ($a) { return $a !== ''; }));
+    if (count($echte) === 2
+        && $echte[1] === $skript
+        && preg_match('#(^|/)python[0-9.]*$#', $echte[0])) {
         return $pid;
     }
     return 0;

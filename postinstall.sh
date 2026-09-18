@@ -366,10 +366,15 @@ if [ "$LIEF_VORHER" -eq 1 ]; then
         # Als loxberry und nicht als root: der Dienst schreibt in data/
         # und log/. Was root dort anlegt, kann die Oberflaeche danach
         # nicht mehr ueberschreiben.
+        # SK_START_TROTZ_MARKE=1: HIER soll der Dienst anlaufen, auch wenn
+        # die Upgrade-Marke aus preupgrade.sh noch liegt. Sie faellt erst in
+        # postupgrade.sh, dem letzten Hakenskript dieser Linie - faellt sie
+        # vorher, kann der Minutentakt genau zwischen ihrem Wegfall und
+        # diesem Start einen ZWEITEN Dienst anlegen.
         if [ "$(id -u)" = "0" ]; then
-            AUSGABE=$(su -s /bin/bash -c "$PBIN/dienst.sh start" loxberry 2>&1)
+            AUSGABE=$(su -s /bin/bash -c "SK_START_TROTZ_MARKE=1 $PBIN/dienst.sh start" loxberry 2>&1)
         else
-            AUSGABE=$("$PBIN/dienst.sh" start 2>&1)
+            AUSGABE=$(SK_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start 2>&1)
         fi
         case "$AUSGABE" in
             *gestartet*|*laeuft*)

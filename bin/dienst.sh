@@ -95,10 +95,69 @@ laeuft() {
     # Argument muss deshalb ein Python sein - der Dienst wird immer als
     #   "$PY" "$SKRIPT"
     # gestartet. So haelt es bin/skoda.py in dienst_laeuft() bereits.
+    #
+    # DRITTE BEDINGUNG SEIT 0.9.23: der Dauerlaeufer hat GENAU ZWEI
+    # Argumente. Dieselbe Datei wird auch als Einmallauf gestartet -
+    # "$PY $SKRIPT --wachzeichen" aus cron/cron.01min jede Minute und
+    # "$PY $SKRIPT --selbsttest" aus der Oberflaeche. Beide tragen argv[0]
+    # Python und argv[1] genau diesen Pfad und waren damit von einem Dienst
+    # nicht zu unterscheiden. Am 18.09.2026 in WSL gemessen
+    # (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 8): die
+    # Deinstallation beendete einen laufenden "--wachzeichen"-Lauf als
+    # waere er der Dienst.
     ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
     [ "$(echo "$ARGS" | sed -n '2p')" = "$SKRIPT" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
+    [ "$(echo "$ARGS" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
     return 0
+}
+
+# ---------- Laeuft gerade eine Aktualisierung dieses Plugins? ----------
+#
+# preupgrade.sh legt data/plugins/<ordner>.upgrade_laeuft als Erstes an,
+# postupgrade.sh raeumt die Marke weg, uninstall ebenfalls. Sie liegt NEBEN
+# dem Datenordner, weil purge_installation den Ordner selbst loescht
+# (Regeln/06).
+#
+# Warum ueberhaupt: postinstall.sh legt den Sollmerker und die Zugangsdaten
+# zurueck (Z. 105-141) und holt den Dienst erst Minuten spaeter zurueck
+# (Z. 363) - dazwischen laedt pip die Bibliothek myskoda. Der Minutentakt
+# fand in dieser Zeit einen Sollmerker ohne laufenden Dienst und startete
+# ihn gegen die halb eingerichtete Umgebung. Am 18.09.2026 in WSL gemessen
+# (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 3: ein Dienst,
+# erwartet null).
+#
+# Aelter als 3600 s, aus der Zukunft oder unlesbar: die Marke gilt NICHT -
+# eine abgebrochene Installation darf den Dienst nicht fuer immer
+# stilllegen. OHNE LESBARE UHR faellt die Pruefung GESCHLOSSEN aus: wer die
+# Zeit nicht messen kann, kann das Alter nicht beurteilen und startet
+# deshalb nicht (Fall 7f).
+#
+# SK_START_TROTZ_MARKE=1 ist die Ausnahme fuer postinstall.sh: dort SOLL der
+# Dienst wieder anlaufen, obwohl die Marke noch liegt - postupgrade.sh
+# raeumt sie erst danach weg.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
+
+upgrade_laeuft() {
+    [ -f "$MARKE" ] || return 1
+    [ -n "${SK_START_TROTZ_MARKE:-}" ] && return 1
+    sk_dann=$(cat "$MARKE" 2>/dev/null)
+    case "$sk_dann" in ''|*[!0-9]*) return 1 ;; esac
+    # Die Uhr wird gemessen, nicht angenommen: liefert "date" nichts - unter
+    # Last kann ein fork scheitern -, rechnete die Schale mit einer leeren
+    # Zeichenkette, das Alter fiele negativ aus, und der Dienst liefe mitten
+    # in der Aktualisierung an. Ohne lesbare Uhr GILT die Marke.
+    # Aufbau wortgleich mit Chromecast4lox 1.3.11 (daemon/daemon:93-100) -
+    # dort ist er gemessen, und das Werkzeug der Bestandsaufnahme erkennt
+    # genau diese Form wieder.
+    sk_jetzt=$(date +%s 2>/dev/null)
+    case "$sk_jetzt" in ''|*[!0-9]*) sk_jetzt="" ;; esac
+    if [ -z "$sk_jetzt" ]; then
+        return 0
+    fi
+    [ "$sk_dann" -gt "$sk_jetzt" ] && return 1
+    [ $((sk_jetzt - sk_dann)) -lt 3600 ]
 }
 
 # Stehen Benutzername UND Passwort in der Zugangsdatei? NEU IN 0.9.21.
@@ -131,6 +190,16 @@ sys.exit(0 if ok else 1)' "$PCONFIG/zugang.json" "$LBHOMEDIR/config/plugins/$PNA
 }
 
 starten() {
+    # Die Marke steht VOR allem anderen: solange sie gilt, wird nichts
+    # gestartet und nichts angelegt. Kein Fehler - der Minutentakt soll sich
+    # nicht beschweren, und postinstall.sh startet gleich selbst (mit
+    # SK_START_TROTZ_MARKE=1). Die Pruefung sitzt hier und nicht im
+    # case-Verteiler, damit sie fuer 'start', 'restart' UND den Zweig
+    # 'waechter' gilt - alle drei fuehren hierher.
+    if upgrade_laeuft; then
+        echo "Eine Aktualisierung dieses Plugins laeuft - es wird nichts gestartet."
+        return 0
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
@@ -280,7 +349,12 @@ case "$1" in
         # Zugangsdaten gar nicht erst anlaufen, sondern den Sollmerker
         # zuruecknehmen und es EINMAL sagen. Und scheitert der Neustart, sagt
         # das Protokoll es, statt nur die Startdatei.
-        if [ -f "$SOLL" ] && ! laeuft; then
+        # Die Marke wird HIER schon gefragt und nicht erst in starten():
+        # sonst kappte der Waechter die Startdatei und schriebe eine Zeile
+        # "Dienst lief nicht, wird neu gestartet" ins Protokoll, obwohl
+        # gleich darauf nichts gestartet wird. Eine Meldung, die etwas
+        # anderes sagt als der Vorgang tut, ist schlimmer als keine.
+        if [ -f "$SOLL" ] && ! laeuft && ! upgrade_laeuft; then
             # Die Fehlerausgabe DIESES Skripts geht, sobald der Waechter etwas
             # tut, in die Startdatei. cron/cron.01min ruft mit
             # ">/dev/null 2>&1" auf, und damit verschwand bis 0.9.20 jede

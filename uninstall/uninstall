@@ -117,11 +117,23 @@ PCONFIG="$BASE/config/plugins"
 # Der volle Pfad statt nur des Dateinamens, damit die Deinstallation des
 # einen Exemplars nicht den Dienst eines zweiten abschiesst (LoxBerry
 # haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an).
+#
+# DRITTE BEDINGUNG SEIT 0.9.23: GENAU ZWEI Argumente. Dieselbe Datei wird
+# auch als Einmallauf gestartet - "$PY skoda.py --wachzeichen" aus
+# cron/cron.01min jede Minute und "$PY skoda.py --selbsttest" aus der
+# Oberflaeche. Beide tragen argv[0] Python und argv[1] genau diesen Pfad.
+# Der zweite Durchgang unten geht ALLE Vorgaenge durch, und damit traf er
+# sie: am 18.09.2026 in WSL gemessen
+# (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 8) beendete die
+# Deinstallation einen laufenden "--wachzeichen"-Lauf als waere er der
+# Dienst. Ein Einmallauf ist kein Dienst.
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
     ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
     [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
+    [ "$(echo "$ARGS" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
     return 0
 }
 
@@ -132,6 +144,14 @@ beenden() {
         kill -0 "$P" 2>/dev/null || return 0
         sleep 1
     done
+    # VOR DEM HARTEN SIGNAL NOCH EINMAL NACHSEHEN - SEIT 0.9.23.
+    #
+    # Zwischen SIGTERM und dieser Zeile liegen bis zu zehn Sekunden. Endet
+    # der Dienst darin und vergibt der Kern seine Nummer neu, dann sagt
+    # "kill -0" weiterhin ja - und SIGKILL traefe einen Unbeteiligten, der
+    # sich nicht wehren kann. Genau dagegen ist ist_unser_dienst() gebaut;
+    # es gehoert vor JEDES Signal, nicht nur vor das erste.
+    ist_unser_dienst "$P" || return 0
     kill -9 "$P" 2>/dev/null
     sleep 1
     return 0
@@ -369,5 +389,11 @@ rm -f "$BASE/config/plugins/$PDIR.lief_vorher"
 # mitgenommen. Darin stehen keine Zugangsdaten, aber Bewegungsdaten:
 # Verlauf und Ladeprotokoll.
 rm -rf "$BASE/data/plugins/$PDIR.rettung"
+
+# Und die Upgrade-Marke, die ebenfalls NEBEN dem Datenordner liegt. Bliebe
+# sie liegen, haette eine spaetere Neuinstallation eine fremde Marke vor
+# sich - sie gilt zwar nur eine Stunde, aber eine Stunde ohne Dienst und
+# ohne Oberflaeche ist eine Stunde zu viel.
+rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft"
 
 exit "$RC"

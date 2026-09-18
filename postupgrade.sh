@@ -52,5 +52,30 @@ if [ -d "$PBIN/__pycache__" ]; then
     echo "<OK> Alte Python-Zwischendateien entfernt."
 fi
 
+# ---------- Die Upgrade-Marke aus preupgrade.sh wegraeumen ----------
+#
+# Dies ist das LETZTE Hakenskript dieser Linie - ein postroot.sh gibt es
+# nicht (Reihenfolge nach Regeln/06: preroot, preinstall, preupgrade,
+# postinstall, postupgrade, postroot).
+#
+# Die Marke faellt HIER und nicht frueher: postinstall.sh hat den Dienst
+# oben mit SK_START_TROTZ_MARKE=1 bereits gestartet, und faellt die Marke
+# vor diesem Start, kann der Minutentakt genau dazwischen einen ZWEITEN
+# Dienst anlegen.
+#
+# Bleibt sie liegen - abgebrochene Installation -, gilt sie nach 3600 s
+# ohnehin nicht mehr; bin/dienst.sh und die Oberflaeche rechnen das nach.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    rm -f "$MARKE"
+    # Die Wirkung pruefen, nicht den Rueckgabewert (Kernschicht 2).
+    if [ -f "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen; der Dienst"
+        echo "<WARNING> startet erst wieder, wenn sie aelter als eine Stunde ist."
+    else
+        echo "<OK> Aktualisierung abgemeldet."
+    fi
+fi
+
 echo "<OK> postupgrade abgeschlossen."
 exit 0

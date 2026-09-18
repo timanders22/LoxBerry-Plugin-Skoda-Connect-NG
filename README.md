@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.22 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.23 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,80 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.23 ändert
+
+Ein einziges Thema: **die Lücke, die jede Aktualisierung aufreißt.** Zwischen
+dem Kopieren der neuen Dateien und `postinstall.sh` liegt auf einem Raspberry
+Pi fast eine Minute (am Gerät gemessen, Regeln/06: Cron-Datei neu angelegt
+03:31:32, `postinstall` erst 03:32:24). In dieser Zeit sind
+`config/plugins/<ordner>/` und `data/plugins/<ordner>/` gelöscht — der
+Minutentakt läuft trotzdem, und die Bedienoberfläche ist erreichbar.
+
+Gemessen wurde das am 18.09.2026 in einer WSL-Nachbildung, nicht am Gerät: der
+Ablauf `preupgrade.sh` → Abräumen → neue Dateien → Minutentakt →
+`postinstall.sh` → `postupgrade.sh` mit den echten Skripten dieses Plugins und
+einer Attrappe an der Stelle von `bin/skoda.py`. Zwei Befunde:
+
+### Die Oberfläche, in der Lücke geöffnet, löschte das Passwort
+
+Wer in dieser Minute den Reiter *Einstellungen* öffnet, sieht leere Felder —
+`zugang.json` ist ja gerade weg. Ein Druck auf **Speichern** schrieb die Datei
+dann neu, mit leerem Benutzernamen und leerem Passwort. `postinstall.sh` spielt
+die Zweitschrift nur zurück, wenn die Datei fehlt, leer oder `{}` ist; diese
+hier war gefüllt. Ergebnis: Das Passwort war nach der Aktualisierung weg, der
+Dienst lief nicht mehr an, und im Protokoll stand darüber nichts.
+
+### Der Minutentakt startete den Dienst mitten in der Installation
+
+`postinstall.sh` legt Sollmerker und Zugangsdaten früh zurück und holt den
+Dienst erst am Ende zurück — dazwischen lädt `pip` die Bibliothek `myskoda`,
+auf einem Pi minutenlang. Der Wächter fand in dieser Zeit einen Sollmerker ohne
+laufenden Dienst und startete ihn gegen die halb eingerichtete Umgebung.
+
+### Die Abhilfe: eine Marke
+
+`preupgrade.sh` legt als **Erstes** `data/plugins/<ordner>.upgrade_laeuft` mit
+der Unixzeit an — **neben** dem Datenordner, denn den Ordner selbst räumt der
+Installateur ab. Solange die Marke gilt, startet `bin/dienst.sh` nichts und die
+Oberfläche zeigt nur einen Hinweis: sie heilt nichts, würfelt kein
+Aktionstoken und nimmt kein Formular an. `postupgrade.sh` — das letzte
+Hakenskript dieser Linie — entfernt die Marke, `uninstall` ebenfalls.
+
+Vier Eigenschaften, jede einzeln gemessen:
+
+* **Älter als 3600 Sekunden, aus der Zukunft oder unlesbar: die Marke gilt
+  nicht.** Eine abgebrochene Installation darf Dienst und Oberfläche nicht für
+  immer stilllegen.
+* **Ohne lesbare Uhr fällt die Prüfung geschlossen aus.** Wer die Zeit nicht
+  messen kann, kann das Alter nicht beurteilen und startet deshalb nicht.
+* **`postinstall.sh` darf trotzdem starten** (`SK_START_TROTZ_MARKE=1`), denn
+  es ist der Einzige, der einen vorher laufenden Dienst zurückholt. Die Marke
+  fällt erst danach, in `postupgrade.sh`: fiele sie vorher, könnte der
+  Minutentakt genau dazwischen einen zweiten Dienst anlegen.
+* Der Reiter **Test** nennt die Marke mit ihrem Alter. Eine liegengebliebene
+  Marke fällt damit auf, bevor jemand eine Stunde lang rät.
+
+Ob eine Linie ihre Oberfläche sperrt, ist eine Messung und keine Regel: hier
+ging in der Lücke etwas verloren, deshalb sperrt sie.
+
+### Ein Einmallauf ist kein Dienst
+
+`bin/skoda.py` läuft auch als Einmallauf — `--wachzeichen` aus
+`cron/cron.01min` jede Minute und `--selbsttest` aus dem Reiter *Test*. Beide
+tragen dasselbe erste Argument (ein Python) und dasselbe zweite (den
+Dienstpfad) wie der Dauerläufer und waren damit von ihm nicht zu
+unterscheiden. Gemessen: die **Deinstallation beendete einen laufenden
+`--wachzeichen`-Lauf**, als wäre er der Dienst. Alle vier Stellen, die einen
+eigenen Dienst erkennen (`bin/dienst.sh`, `preupgrade.sh`,
+`uninstall/uninstall`, `sk_lib.php`) und `bin/skoda.py` selbst verlangen jetzt
+zusätzlich, dass es **kein drittes Argument** gibt.
+
+Dazu eine Kleinigkeit derselben Klasse: `uninstall/uninstall` schickte das
+harte Signal nach bis zu zehn Sekunden Wartezeit, ohne die Befehlszeile noch
+einmal anzusehen. Endet der Dienst in dieser Zeit und wird seine Nummer neu
+vergeben, träfe `kill -9` einen Unbeteiligten. Geprüft wird jetzt vor **jedem**
+Signal. Dieser Rennfall ist nicht nachstellbar und deshalb auch nicht gemessen.
 
 ## Was 0.9.21 ändert
 

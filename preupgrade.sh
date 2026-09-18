@@ -45,6 +45,44 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     exit 1
 fi
 
+# ---------- Die Upgrade-Marke, als ERSTES ----------
+#
+# Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
+# Minute (Regeln/06, am Geraet gemessen: Cron-Datei neu angelegt 03:31:32,
+# postinstall erst 03:32:24). In dieser Zeit laeuft der Minutentakt, und die
+# Oberflaeche ist erreichbar, obwohl config/plugins/<ordner>/ und
+# data/plugins/<ordner>/ gerade geloescht sind.
+#
+# Fuer DIESE Linie am 18.09.2026 in WSL gemessen
+# (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh):
+#   Fall 5  Oberflaeche in der Luecke, Formular unveraendert abgesendet:
+#           zugang.json wurde mit {"email":"","passwort":""} neu geschrieben.
+#           postinstall.sh haelt eine solche Datei fuer gefuellt und spielt
+#           die Zweitschrift NICHT zurueck - das Passwort war nach der
+#           Aktualisierung weg, ohne eine Zeile im Protokoll.
+#   Fall 3  Der Minutentakt im postinstall-Fenster (Sollmerker und
+#           Zugangsdaten sind zurueckgelegt, die Bibliothek wird noch
+#           geladen) startete den Dienst mitten in der Installation.
+#
+# Die Marke liegt NEBEN dem Datenordner - purge_installation loescht
+# data/plugins/<ordner>/, den Nachbarn mit dem Punkt trifft es nicht. Sie
+# traegt die Unixzeit; bin/dienst.sh und die Oberflaeche achten sie, solange
+# sie juenger als 3600 s ist. postupgrade.sh raeumt sie weg (das letzte
+# Hakenskript dieser Linie), uninstall ebenfalls.
+#
+# Als ERSTES in dieser Datei, damit zwischen Marke und Luecke kein Takt liegt.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+if date +%s > "$MARKE" 2>/dev/null && [ -s "$MARKE" ]; then
+    echo "<OK> Aktualisierung angemeldet - Minutentakt und Oberflaeche halten still."
+else
+    # Die Wirkung pruefen, nicht den Rueckgabewert (Kernschicht 2). Ohne
+    # Marke laeuft die Aktualisierung weiter, nur eben mit dem alten Risiko.
+    rm -f "$MARKE" 2>/dev/null
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen; der Minutentakt"
+    echo "<WARNING> koennte den Dienst mitten in der Aktualisierung starten."
+fi
+
 # Der Merker sagt dem postinstall, dass der Dienst LIEF.
 #
 # ZURUECKGENOMMEN am 31.08.2026, und das ist die zweite Berichtigung an
@@ -107,11 +145,17 @@ PID="$PDATA/dienst.pid"
 # nicht den Dienst eines zweiten abschiesst (LoxBerry haengt bei
 # Namenskonflikt 01, 02 ... an den Ordnernamen an). Wortgleich mit
 # uninstall/uninstall und bin/dienst.sh.
+# DRITTE BEDINGUNG SEIT 0.9.23: GENAU ZWEI Argumente. bin/skoda.py laeuft
+# auch als Einmallauf ("--wachzeichen" aus dem Minutentakt, "--selbsttest"
+# aus der Oberflaeche); beide tragen dasselbe argv[0] und argv[1]. Ein
+# Einmallauf ist kein Dienst.
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
     ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
     [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
+    [ "$(echo "$ARGS" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
     return 0
 }
 

@@ -2661,11 +2661,15 @@ def dienst_laeuft() -> int:
             "utf-8", "replace").split("\0")
     except OSError:
         return 0
-    # Zwei Bedingungen, nicht eine: argv[1] ist genau unser Skript UND argv[0]
-    # ist ein Python. Sonst gilt auch ein Editor mit geoeffneter skoda.py als
-    # laufender Dienst.
-    return 1 if (len(argv) > 1 and argv[1] == str(SELF / "skoda.py")
-                 and re.search(r"(^|/)python[0-9.]*$", argv[0])) else 0
+    # Drei Bedingungen, nicht eine: argv[1] ist genau unser Skript, argv[0]
+    # ist ein Python, und es gibt kein drittes Argument. Sonst gilt auch ein
+    # Editor mit geoeffneter skoda.py als laufender Dienst - und, seit 0.9.23
+    # ausdruecklich, ein Einmallauf derselben Datei ("--wachzeichen" aus dem
+    # Minutentakt, "--selbsttest" aus der Oberflaeche). cmdline endet auf ein
+    # Nullbyte; die leere letzte Zeile zaehlt nicht mit.
+    echte = [a for a in argv if a != ""]
+    return 1 if (len(echte) == 2 and echte[1] == str(SELF / "skoda.py")
+                 and re.search(r"(^|/)python[0-9.]*$", echte[0])) else 0
 
 
 def wachzeichen() -> int:
