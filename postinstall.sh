@@ -163,7 +163,18 @@ for f in skoda.json zugang.json; do
     if [ -f "$BK" ]; then
         INHALT=$(cat "$CF" 2>/dev/null)
         if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+            # Nur eine Zweitschrift MIT Inhalt. Bis 0.9.25 wurde auch "{}"
+            # oder ein leeres Konto ({"email":"","passwort":""}) kopiert und
+            # als "wiederhergestellt" gemeldet (gemessen 24.09.2026,
+            # Pruefung-Skoda-Connect-NG-0.9.26, Fall c). Inhalt heisst hier:
+            # mindestens ein nicht leerer Textwert. Python ist an dieser
+            # Stelle noch nicht gesucht - deshalb grep; ein Aktionstoken,
+            # eine E-Mail oder ein Passwort ist immer ein Text.
+            if ! grep -q '"[^"]*" *: *"[^"]' "$BK" 2>/dev/null; then
+                echo "<INFO> $f: Sicherung ohne Einstellungen - nichts zurueckgespielt."
+            else
+                cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+            fi
         fi
     fi
 done
@@ -414,7 +425,34 @@ if [ "$LIEF_VORHER" -eq 1 ]; then
     fi
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des MySkoda-Kontos"
-echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."
+# ---------- Abschluss: Erstanleitung nur ohne Zugangsdaten ----------
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade. Bis
+# 0.9.25 stand die Aufforderung, die Zugangsdaten einzutragen, deshalb auch
+# nach jedem gelungenen Upgrade da, obwohl sie eben zurueckgespielt waren
+# (gemessen 24.09.2026 in WSL, Pruefung-Skoda-Connect-NG-0.9.26, Fall b).
+#
+# Entschieden wird nach dem INHALT, nicht nach der Upgrade-Marke. Eine
+# Inhaltspruefung fuer zugang.json hat diese Linie sonst nicht (das
+# Zurueckspielen oben fragt nur "leer oder {}"); genommen wird deshalb das
+# einfachste belastbare Merkmal: E-Mail UND Passwort als nicht leerer Text -
+# genau die beiden Felder, die sk_zugang_speichern() in
+# webfrontend/html/sk_lib.php schreibt und ohne die der Dienst sich nicht
+# anmelden kann. Ein leeres Konto ({"email":"","passwort":""}, siehe
+# preupgrade.sh) zaehlt als nicht eingerichtet. "$PY" ist hier sicher
+# bestimmt (Abbruch weiter oben, wenn nicht).
+if "$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+ok=lambda k: isinstance(d.get(k),str) and d.get(k).strip()!=""
+sys.exit(0 if isinstance(d,dict) and ok("email") and ok("passwort") else 1)' \
+        "$PCONFIG/zugang.json" >/dev/null 2>&1; then
+    if [ "$LIEF_VORHER" -eq 0 ]; then
+        echo "<INFO> Der Dienst lief vor dem Update nicht und bleibt angehalten;"
+        echo "<INFO> gestartet wird er im Reiter Einstellungen."
+    fi
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des MySkoda-Kontos"
+    echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."
+fi
 exit 0

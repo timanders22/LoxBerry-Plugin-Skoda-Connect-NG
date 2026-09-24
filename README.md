@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.25 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.26 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,19 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.26 ändert
+
+Die Aufforderung am Ende der Installation, die Zugangsdaten des MySkoda-Kontos
+einzutragen, erscheint nur noch, wenn `zugang.json` nach dem Zurückspielen keine
+E-Mail oder kein Passwort trägt – also bei der Erstinstallation oder wenn die
+Rückholung gescheitert ist; nach einem gelungenen Update steht stattdessen
+`<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen.` und, wenn der Dienst
+vorher angehalten war, dass er angehalten bleibt (gemessen in WSL,
+`Pruefung-Skoda-Connect-NG-0.9.26/postinstall_hinweis.md`). Eine Zweitschrift
+ohne Einstellungen (`{}` oder ein leeres Konto) wird nicht mehr kopiert und als
+„wiederhergestellt“ gemeldet, sondern mit „Sicherung ohne Einstellungen - nichts
+zurueckgespielt“.
 
 ## Was 0.9.25 ändert
 
