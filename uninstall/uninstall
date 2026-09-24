@@ -68,16 +68,42 @@
 
 PDIR=$3                      # Installationsordner des Plugins
 [ -n "$PDIR" ] || PDIR="skodaconnect"
-BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
+# Ablageort, und geprueft wurde danach nur auf config/plugins UND
+# data/plugins. Ein Baum, der wie eine Wurzel aussieht, es aber nicht ist,
+# wurde damit zur Wurzel - in WSL gemessen (24.09.2026,
+# Pruefung-Skoda-Connect-NG-0.9.24, messe_haken.sh, Faelle Ha1 bis Ha4).
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# der Raumklima-Vorfall). Ohne Wurzel: <WARNING>, nichts anlegen, nichts
+# entfernen, Rueckgabe != 0.
+sk_wurzel_suchen() {
+    sk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    sk_i=0
+    while [ -n "$sk_v" ] && [ "$sk_v" != "/" ] && [ "$sk_i" -lt 8 ]; do
+        if [ -d "$sk_v/config/plugins" ] && [ -d "$sk_v/data/plugins" ] \
+           && [ -f "$sk_v/config/system/general.json" ]; then
+            echo "$sk_v"
+            return 0
+        fi
+        sk_v=$(dirname "$sk_v")
+        sk_i=$((sk_i + 1))
+    done
+    return 1
+}
 # Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
 # ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
+# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026); die
+# Suche greift nur, wenn beides fehlt.
+BASE="${5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(sk_wurzel_suchen) || BASE=""
+    fi
 fi
 
 # Und danach wird nachgesehen, ob dabei wirklich ein LoxBerry herausgekommen

@@ -32,13 +32,41 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
+# Ablageort, und geprueft wurde danach nur auf config/plugins UND
+# data/plugins. Ein Baum, der wie eine Wurzel aussieht, es aber nicht ist,
+# wurde damit zur Wurzel - in WSL gemessen (24.09.2026,
+# Pruefung-Skoda-Connect-NG-0.9.24, messe_haken.sh, Faelle Ha1 bis Ha4).
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# der Raumklima-Vorfall). Ohne Wurzel: <WARNING>, nichts anlegen, nichts
+# entfernen, Rueckgabe != 0.
+sk_wurzel_suchen() {
+    sk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    sk_i=0
+    while [ -n "$sk_v" ] && [ "$sk_v" != "/" ] && [ "$sk_i" -lt 8 ]; do
+        if [ -d "$sk_v/config/plugins" ] && [ -d "$sk_v/data/plugins" ] \
+           && [ -f "$sk_v/config/system/general.json" ]; then
+            echo "$sk_v"
+            return 0
+        fi
+        sk_v=$(dirname "$sk_v")
+        sk_i=$((sk_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    # Ableitung aus dem eigenen Ablageort - LoxBerry::System taugt hier nicht,
-    # weil es den Pluginordner aus dem Aufrufort ableitet und aus
-    # postinstall.sh heraus ueberall Leerstring liefert.
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        # LoxBerry::System taugt hier nicht, weil es den Pluginordner aus dem
+        # Aufrufort ableitet und aus postinstall.sh heraus ueberall
+        # Leerstring liefert.
+        BASE=$(sk_wurzel_suchen) || BASE=""
+    fi
 fi
 
 # Und danach wird nachgesehen, ob dabei wirklich ein LoxBerry herausgekommen

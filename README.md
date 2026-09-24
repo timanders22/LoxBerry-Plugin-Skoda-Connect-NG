@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.23 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.24 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,96 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.24 ändert
+
+Ein einziges Thema: **das Plugin liest, wo sein LoxBerry liegt, statt es zu
+raten.** Bis 0.9.23 rechneten `bin/dienst.sh`, `bin/skoda.py`, die
+Bedienoberfläche und alle vier Hakenskripte die Wurzel aus dem eigenen
+Ablageort — feste Ebenen darüber, in der Oberfläche zusätzlich der feste Pfad
+`/home/loxberry/loxberry`. Ein gesetztes `$LBHOMEDIR` wurde dabei übergangen.
+
+Gemessen wurde das am 24.09.2026 in WSL (`Pruefung-Skoda-Connect-NG-0.9.24`,
+drei Prüfstände, 93 Fälle; vorher 46 rot, nachher 0, jede der 17 Korrekturen
+einzeln zurückgebaut und geeicht). Was vorher geschah:
+
+* `dienst.sh start` in einem fremden Baum legte dort Daten- und
+  Protokollordner an und startete einen Dienst; `stop` nahm demselben Baum
+  sein `soll_laufen` weg; `status` meldete „gestoppt", statt abzusagen.
+* `dienst.sh status` aus einem Prüfarchiv unter
+  `<Wurzel>/pruefung/skodaconnect/bin` legte in der **laufenden** Installation
+  `data/plugins/bin` und `log/plugins/bin` an — der Ordnername kam aus dem
+  Ablageort und hieß deshalb „bin". Nach einem `purge_installation` legte
+  schon eine bloße Auskunft den Datenordner wieder an.
+* `skoda.py --selbsttest` aus demselben Prüfarchiv ebenso.
+* Die Bibliothek der Oberfläche las aus einem ausgepackten Archiv heraus die
+  Konfiguration eines fremden Baums, **schrieb** dort aus dessen Zweitschrift
+  eine `skoda.json` und lud dessen Sprachdatei.
+* `preupgrade.sh` legte in einem fremden Baum Marke und Sicherung ab,
+  `postinstall.sh` richtete sich dort ein, `uninstall` löschte dort die
+  Zweitschriften mit dem Aktionstoken, und `postupgrade.sh` räumte dort die
+  Upgrade-Marke weg — es war das einzige der vier, das **überhaupt nicht**
+  nachsah, und meldete mit leerer Wurzel trotzdem „`<OK>` postupgrade
+  abgeschlossen".
+
+So ist es jetzt, in allen sieben Dateien gleich:
+
+1. `$LBHOMEDIR` (bzw. das fünfte Argument des Installers), wenn es
+   `config/plugins` **und** `data/plugins` trägt;
+2. sonst aufwärts suchen, bis ein Verzeichnis `config/plugins`,
+   `data/plugins` **und** `config/system/general.json` trägt. Die dritte
+   Bedingung ist die entscheidende: die beiden Ordner entstehen auf jedem
+   Rechner, auf dem einmal ein Prüfstand ohne `$LBHOMEDIR` gelaufen ist — eine
+   `general.json` hat nur eine Anlage;
+3. **eine dritte Stufe gibt es nicht.** Ohne Wurzel wird gemeldet und
+   abgebrochen: nichts angelegt, nichts gestartet, nichts angehalten, nichts
+   gelöscht. `dienst.sh status` antwortet mit 4 („Zustand unbekannt"), alles
+   andere mit 1; die Hakenskripte mit einer `<WARNING>`-Zeile und 1.
+
+Dazu:
+
+* **Der Ordnername kommt aus `$LBPPLUGINDIR`**, sonst aus dem Ablageort. Hängt
+  LoxBerry bei einer Zweitinstallation einen Zähler an (`skodaconnect_01`),
+  zeigten erschlossene Pfade sonst auf die erste Installation.
+* **Angelegt wird nur beim Start.** Das `mkdir` stand auf oberster Ebene von
+  `dienst.sh` und lief bei jedem Aufruf. Jetzt liegt es in `starten()` und im
+  Wächter — dort vor dem Umlenken der Fehlerausgabe, weil `log/plugins` eine
+  RAM-Scheibe ist und nach einem Neustart fehlen kann.
+* **Eine Gegenprobe vor allem, was schreibt:** liegt `dienst.sh` nicht im
+  `bin`-Ordner der Anlage und ist `<ordner>` dort auch kein eingerichtetes
+  Plugin, sagt der Aufruf ab. Aus einem ausgepackten Archiv heraus wird nichts
+  gestartet und nichts angehalten. Dasselbe in `bin/skoda.py`: der
+  Protokollordner entsteht nur in der Anlage.
+* **Der feste Pfad `/home/loxberry/loxberry` ist ersatzlos fort** (`sk_paths()`
+  und `sk_t()` fragen jetzt beide `sk_lbhome()`).
+* **Die Upgrade-Marke darf 300 s vorausgehen.** Bis 0.9.23 galt jede Sekunde
+  „Zukunft" als ungültig. Springt die Uhr zurück, nachdem `preupgrade.sh` die
+  Marke gesetzt hat, gab die Oberfläche das Formular mitten im Upgrade wieder
+  frei — genau der Weg, auf dem ein unverändert abgesendetes Formular in
+  0.9.23 das Passwort leer schrieb. `bin/dienst.sh` und `sk_upgrade_laeuft()`
+  rechnen jetzt gleich; weiter als 300 s voraus gilt die Marke weiterhin nicht,
+  und ohne lesbare Uhr fällt die Prüfung nach wie vor geschlossen aus.
+
+Und ein zweites, kleines Thema: **Aussagen des Dienstes über sich selbst
+gehen nie mehr behalten hinaus** (Regeln/07, Entscheidungen vom 18./19.09.2026).
+`status/ok`, `status/ts`, `status/zaehler` und `ok` waren es schon;
+`status/fehler_folge` und `status/fehlertext` gingen bei „Werte behalten“
+(ab Werk an) bis 0.9.23 mit `retain` hinaus — auch im Störungszweig. Stirbt
+der Dienst nach der Erholung, stünden „0“ und „-“ für immer im Broker und
+sähen aus wie ein gesunder Dienst. Jetzt gehen beide flüchtig hinaus.
+
+Der alte, behaltene Wert wird **einmal je Themenpräfix** abgeräumt: eine
+leere Nutzlast mit `retain`, im nächsten Datagramm der gültige Wert. Das
+geschieht auch bei ausgeschaltetem „Werte behalten“ — der Altwert stammt aus
+der Zeit, als der Schalter an war, und ein flüchtiges `publish` ersetzt ihn
+nicht. Ob es geschehen ist, merkt sich der Dienst in `zustand.json`
+(Präfix und Themenliste); der Merker wird nur gesetzt, wenn jedes
+Lösch-Datagramm ohne Fehler hinausging. UDP bestätigt nichts: verwirft das
+Gateway ein Datagramm, bleibt der Altwert trotz Merker stehen und ist dann
+im Broker von Hand zu löschen. `fahrzeugN/erreichbar` bleibt behalten — das
+meldet die Skoda-Cloud über das Fahrzeug, nicht der Dienst über sich.
+Gemessen am empfangenen Datagramm (22 Zeilen, vorher 13 rot, nachher 0,
+9 Rückbauten geeicht).
 
 ## Was 0.9.23 ändert
 

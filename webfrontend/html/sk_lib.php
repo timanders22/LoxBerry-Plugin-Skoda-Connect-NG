@@ -28,11 +28,19 @@ if (!function_exists('sk_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json enthaelt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * DIE DRITTE BEDINGUNG SEIT 0.9.24. Ein Rest frueherer Pruefstaende traegt
+ * config/plugins und webfrontend, eine LoxBerry-Wurzel traegt immer auch
+ * general.json (Regeln/06, der Raumklima-Vorfall: auf dem Arbeitsrechner
+ * traf die Suche das Laufwerk selbst). In WSL gemessen (24.09.2026,
+ * Pruefung-Skoda-Connect-NG-0.9.24, messe_h2.sh, Faelle C1 bis C4): aus einem
+ * Archiv unter einem solchen Rest las die Bibliothek dessen Konfiguration und
+ * schrieb dort aus der Zweitschrift eine skoda.json.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -42,7 +50,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -53,21 +62,39 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel der Oberflaeche - an EINER Stelle, wie sk_paths() und sk_t() sie
+ * beide brauchen.
+ *
+ * Bis 0.9.23 stand in beiden Funktionen
+ *     foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k)
+ * und ein gesetztes, aber unbrauchbares $LBHOMEDIR blieb stehen, solange es
+ * nur ein Verzeichnis war. Unter /home/loxberry/loxberry liegt auf einem
+ * LoxBerry keine Wurzel (Regeln/06, Wurzel und ihr Verweis) - der feste Pfad
+ * traf also nie die eigene Anlage, nur nichts oder einen fremden Baum. In WSL
+ * gemessen (24.09.2026, Pruefung-Skoda-Connect-NG-0.9.24, messe_h2.sh, Faelle
+ * B1 bis B5): aus einem ausgepackten Archiv ohne LBHOMEDIR las die Bibliothek
+ * die Konfiguration eines Baums unter /home/loxberry/loxberry, schrieb dort
+ * aus dessen Zweitschrift eine skoda.json und lud dessen Sprachdatei.
+ *
+ * Findet auch die Suche nichts, gibt es KEINE Wurzel - der Aufrufer faellt in
+ * den Archivmodus (sk_paths()) und legt nichts an. Geraten wird nicht.
+ */
+function sk_lbhome()
+{
+    $home = getenv('LBHOMEDIR');
+    if ($home && is_dir($home . '/config/plugins') && is_dir($home . '/data/plugins')) {
+        return $home;
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function sk_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
-    }
+    $home = sk_lbhome();
     // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
@@ -331,9 +358,14 @@ function sk_json_lesen($pfad)
  * Sprachsteuerung 0.11.7 sperrt nicht, weil dort nichts verlorenging - es
  * ist je Linie eine Messung, keine Regel).
  *
- * Aelter als 3600 s oder unlesbar: die Marke gilt nicht. Eine abgebrochene
- * Installation darf die Seite nicht fuer immer stilllegen. Ein paar Minuten
- * "Zukunft" sind eine nachgestellte Uhr, keine Luege.
+ * Aelter als 3600 s, mehr als 300 s aus der Zukunft oder unlesbar: die
+ * Marke gilt nicht. Eine abgebrochene Installation darf die Seite nicht fuer
+ * immer stilllegen. Bis 300 s "Zukunft" sind eine zurueckgesprungene Uhr,
+ * keine Luege: die Uhr kann ein Stueck zurueckspringen, nachdem preupgrade.sh
+ * sie gesetzt hat, und die Seite gaebe das Formular dann mitten im Upgrade
+ * wieder frei (Welle 1, 18.09.2026: "ein unveraendert abgesendetes Formular
+ * schrieb das Passwort leer"). Hier gemessen
+ * (Pruefung-Skoda-Connect-NG-0.9.24, Faelle P1/P2).
  * ================================================================== */
 
 function sk_upgrade_marke()
@@ -358,13 +390,14 @@ function sk_upgrade_laeuft()
         return false;
     }
     /* Dieselbe Rechnung wie in bin/dienst.sh, Funktion upgrade_laeuft():
-     * aus der Zukunft gilt sie NICHT, aelter als eine Stunde auch nicht.
-     * Zwei verschiedene Regeln fuer dieselbe Marke waeren ein Befund - die
-     * Seite spraeche dann von einer Aktualisierung, waehrend der Dienst
-     * anlaeuft. Gemessen: Fall K10g (Marke zwei Stunden in der Zukunft ->
-     * die Seite zeigt wieder den Reiter Test). */
+     * mehr als 300 s aus der Zukunft gilt sie NICHT, aelter als eine Stunde
+     * auch nicht. Zwei verschiedene Regeln fuer dieselbe Marke waeren ein
+     * Befund - die Seite spraeche dann von einer Aktualisierung, waehrend der
+     * Dienst anlaeuft. Gemessen: Fall P3 (400 s voraus -> gilt nicht); der
+     * alte Fall K10g (120 s voraus -> Seite normal) gilt seit 0.9.24 nicht
+     * mehr, die Seite bleibt dort gesperrt. */
     $alter = time() - (int) $roh;
-    return $alter >= 0 && $alter < 3600;
+    return $alter >= -300 && $alter < 3600;
 }
 
 /**
@@ -1559,6 +1592,9 @@ function sk_mqtt_ohne_retain()
         'ok', 'ts', 'zaehler', 'dienst',                                   // Lebenszeichen
         'ladeleistung_kw', 'ladetempo_kmh', 'restzeit_min', 'aussentemperatur', // Zeitbezug
         'empfehlung',                                                      // aus fremdem Messwert
+        /* Aussagen des Dienstes ueber sich selbst - nie (Regeln/07 Abschnitt
+         * 3, Entscheidungen 18./19.09.2026; seit 0.9.24, messe_retain.sh R9) */
+        'fehler_folge', 'fehlertext',
     );
 }
 
@@ -2074,15 +2110,8 @@ function sk_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
-        }
+        // Wie in sk_paths() (siehe sk_lbhome(); Faelle B4 und C4).
+        $home = sk_lbhome();
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
         if (!is_dir($pfad)) {

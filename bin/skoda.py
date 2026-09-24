@@ -42,14 +42,19 @@ from pathlib import Path
 def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
-    Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    Vom eigenen (aufgeloesten) Ablageort aufwaerts, bis ein Verzeichnis
+    gefunden ist, das config/plugins, data/plugins UND
+    config/system/general.json enthaelt - dieselbe Suche wie in bin/dienst.sh.
+    Bis 0.9.23 genuegten config/plugins und webfrontend; das trifft auf einem
+    Pruefrechner auch Reste frueherer Pruefstaende (Regeln/06, der
+    Raumklima-Vorfall: dort traf die Suche das Laufwerk selbst). Ein LoxBerry
+    hat immer config/system/general.json.
     """
-    d = os.path.dirname(os.path.abspath(__file__))
+    d = os.path.dirname(os.path.realpath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "data", "plugins")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
@@ -83,7 +88,24 @@ def mqtt_wert_saeubern(wert):
 # trotzdem Erfolg meldet.
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
-PNAME = SELF.name
+
+
+def _pname_ermitteln() -> str:
+    """Der Ordnername: $LBPPLUGINDIR, sonst der Ablageort.
+
+    Bis 0.9.23 stand hier "PNAME = SELF.name" - aus einem Pruefarchiv unter
+    <Wurzel>/pruefung/skodaconnect/bin heraus hiess der Ordner damit "bin",
+    und PDATA zeigte auf data/plugins/bin der laufenden Anlage (in WSL
+    gemessen, Pruefung-Skoda-Connect-NG-0.9.24, Fall Y3).
+    Am Geraet steht $LBPPLUGINDIR in keiner Cron-Schale (Regeln/03); dann
+    traegt der Ablageort, und bei einer regulaeren Installation ist das
+    richtig. Dieselbe Abstufung wie in bin/dienst.sh.
+    """
+    p = (os.environ.get("LBPPLUGINDIR") or "").rstrip("/").rsplit("/", 1)[-1]
+    return p or SELF.name
+
+
+PNAME = _pname_ermitteln()
 
 
 def _lb_wurzel():
@@ -104,26 +126,53 @@ def _lb_wurzel():
     werkelt und trotzdem Erfolg meldet", vor dem der Kommentar darueber warnt.
     Und lb_wurzel_ermitteln(), die Funktion, die wirklich nachsieht, wurde
     dabei nie erreicht.
+
+    GELESEN, NICHT GERATEN - berichtigt 24.09.2026 (0.9.24).
+
+    Bis 0.9.23 stand der Ablageort (SELF.parents[2]) VOR der Umgebung: sah
+    das Verzeichnis drei Ebenen hoeher wie eine Wurzel aus, wurde ein
+    gesetztes $LBHOMEDIR uebergangen. Aus einem Pruefarchiv unter
+    <Wurzel>/pruefung/skodaconnect/bin traf das die LAUFENDE Installation,
+    zusammen mit PNAME = "bin"; "skoda.py --selbsttest" legte dort
+    log/plugins/bin an (in WSL gemessen, Pruefung-Skoda-Connect-NG-0.9.24,
+    Faelle Y1 und Y3; Bauart H1 aus Bestand-2026-09-18/klasse-H).
+
+    Zwei Stufen, wie in bin/dienst.sh (Regeln/03, Stufe 1 ist die Umgebung):
+      1. $LBHOMEDIR, wenn es config/plugins und data/plugins traegt,
+      2. aufwaerts suchen (lb_wurzel_ermitteln(), drei Bedingungen).
+    EINE DRITTE STUFE GIBT ES NICHT: der alte Rueckfall auf drei Ebenen ueber
+    dem Ablageort machte in einem fremden Baum wieder eine Wurzel aus dem, was
+    die Suche eben abgelehnt hatte (Stand-Protokolle/2026-09-18_Welle1, "Neue
+    Lehre fuer alle H1-Linien"). Ohne Wurzel wird gemeldet und abgebrochen.
     """
-    kandidat = SELF.parents[2] if len(SELF.parents) >= 3 else None
-    if kandidat is not None and (kandidat / "config" / "plugins").is_dir() \
-            and (kandidat / "webfrontend").is_dir():
-        return kandidat
     umgebung = os.environ.get("LBHOMEDIR") or ""
-    if umgebung and os.path.isdir(os.path.join(umgebung, "config", "plugins")):
-        return Path(umgebung)
+    if umgebung and os.path.isdir(os.path.join(umgebung, "config", "plugins")) \
+            and os.path.isdir(os.path.join(umgebung, "data", "plugins")):
+        # aufgeloest wie SELF, sonst stuenden fuer dieselbe Datei zwei
+        # Schreibweisen nebeneinander (Wurzel als Verweis)
+        return Path(umgebung).resolve()
     gesucht = lb_wurzel_ermitteln()
     if gesucht:
         return Path(gesucht)
-    # Nichts davon hat getragen. Geraten wird nicht - main() bricht mit einer
-    # Meldung ab. Der Rueckfall haelt nur den Modulimport am Leben, den die
-    # Pruefstaende brauchen.
-    return kandidat if kandidat is not None else SELF
+    sys.stderr.write(
+        "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden. "
+        "LBHOMEDIR bezeichnet keines, und oberhalb von %s traegt kein "
+        "Verzeichnis config/plugins, data/plugins und "
+        "config/system/general.json. Es wurde nichts angelegt.\n" % SELF)
+    raise SystemExit(1)
 
 
 LBHOME = _lb_wurzel()
-LBHOME_ECHT = ((LBHOME / "config" / "plugins").is_dir()
-               and (LBHOME / "webfrontend").is_dir())
+# Liegt diese Datei im bin-Ordner der Anlage - oder ist <PNAME> dort
+# wenigstens ein eingerichtetes Plugin? Sonst ist es ein Pruefaufruf aus einem
+# ausgepackten Archiv oder einem Pruefordner, und angelegt wird nichts
+# (log_einrichten()). Dieselbe Gegenprobe wie in bin/dienst.sh.
+#
+# Bis 0.9.23 stand hier LBHOME_ECHT - eine Groesse, die KEINE Zeile dieser
+# Datei je gelesen hat, obwohl der Kommentar darueber versprach, main() breche
+# damit ab. Gelesen 24.09.2026.
+INSTALLIERT = (SELF == (LBHOME / "bin" / "plugins" / PNAME).resolve()
+               or (LBHOME / "config" / "plugins" / PNAME).is_dir())
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME
@@ -345,8 +394,13 @@ def log_einrichten(dauerlaeufer: bool = False) -> None:
 
     Wer nur anhaengt, kann nichts verlieren. Die Oberflaeche haelt es
     genauso: sk_log_zeile() kappt seit 0.9.15 IN DER DATEI statt umzubenennen.
+
+    Angelegt wird der Protokollordner nur in der Anlage (INSTALLIERT). Aus
+    einem Pruefarchiv heraus fehlt er dann, der FileHandler scheitert, und
+    geschrieben wird nach stderr (Faelle Y1, Y2, Y4a).
     """
-    PLOG.mkdir(parents=True, exist_ok=True)
+    if INSTALLIERT:
+        PLOG.mkdir(parents=True, exist_ok=True)
     _LOG.setLevel(logging.INFO)
     try:
         h = (WachsameRotation(DATEI_LOG, maxBytes=512000, backupCount=1,
@@ -691,7 +745,24 @@ MQTT_OHNE_RETAIN = frozenset((
     # Aus einem mitgehoerten Preis oder Ueberschuss gerechnet - ein
     # behaltenes "1" empfaehle nach einem Ausfall mit dem Preis von gestern.
     "empfehlung",
+    # Aussagen des Dienstes ueber sich selbst - nie (Regeln/07 Abschnitt 3,
+    # Entscheidungen des Hausherrn 18./19.09.2026). Bis 0.9.23 gingen
+    # status/fehler_folge und status/fehlertext bei "Werte behalten" retained
+    # hinaus, auch im Stoerungszweig: stirbt der Dienst nach der Erholung,
+    # stehen "0" und "-" fuer immer im Broker. Gemessen 24.09.2026,
+    # Pruefung-Skoda-Connect-NG-0.9.24, messe_retain.sh, R1a/R1b/R4b. Der
+    # Altwert wird einmal abgeraeumt - MQTT_ALTWERTE_ABRAEUMEN.
+    "fehler_folge", "fehlertext",
 ))
+
+# Themen, die bis 0.9.23 retained hinausgingen und seit 0.9.24 fluechtig
+# sind. Ein fluechtiges publish ersetzt einen behaltenen Wert im Broker nicht;
+# fort ist er erst, wenn eine LEERE Nutzlast mit retain auf dasselbe Thema
+# faellt (Regeln/07, mqttgateway.pl sub udpin). Das geschieht EINMAL je
+# Praefix in lebenszeichen_senden(), der gueltige Wert folgt im naechsten
+# Datagramm. uninstall leitet seine Loeschliste aus dem lebenszeichen-Block
+# ab und traegt beide Themen damit ohnehin.
+MQTT_ALTWERTE_ABRAEUMEN = ("status/fehler_folge", "status/fehlertext")
 
 
 # Rueckgabecodes einer abgewiesenen MQTT-Verbindung. 1-5 aus MQTT 3.1.1,
@@ -715,7 +786,8 @@ def mqtt_ohne_retain(schluessel: str) -> bool:
     return str(schluessel).rsplit("/", 1)[-1] in MQTT_OHNE_RETAIN
 
 
-def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
+def mqtt_senden(paare: dict, praefix: str, retain: int = 0,
+                abraeumen=(), geraeumt=None) -> tuple[int, int]:
     """Veroeffentlicht die Paare ueber den UDP-Eingang des Gateways.
 
     Rueckgabe: (versucht, misslungen). Bis 0.9.12 gab die Funktion nichts
@@ -764,6 +836,20 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
             if text == "":
                 continue
             versucht += 1
+            if k in abraeumen:
+                # Einmal je Praefix (lebenszeichen_senden()): leere Nutzlast
+                # mit retain loescht den Altwert im Broker, und das NAECHSTE
+                # Datagramm ist der gueltige Wert. Sonst reichte das Gateway
+                # die Leere als leeren Wert an den Miniserver weiter und es
+                # stuende dort, bis der naechste Durchgang kommt (Regeln/07,
+                # am Geraet gemessen 06.09.2026).
+                try:
+                    s.sendto(f"retain {praefix}/{k} ".encode("utf-8"),
+                             ("127.0.0.1", z["udpport"]))
+                    if geraeumt is not None:
+                        geraeumt.append(k)
+                except OSError:
+                    pass
             # Je Thema entschieden, nicht je Aufruf: derselbe Aufruf traegt
             # Lebenszeichen und Zustand. Ist der Haken aus, geht alles ohne.
             befehl = "retain" if (retain and not mqtt_ohne_retain(k)) else "publish"
@@ -2063,6 +2149,41 @@ def entfernung_m(b1, l1, b2, l2):
         return None
 
 
+def lebenszeichen_senden(paare: dict, praefix: str, retain: int) -> tuple[int, int]:
+    """mqtt_senden() mit dem einmaligen Abraeumen der Altwerte.
+
+    Der Merker retain_geraeumt steht in zustand.json - preupgrade.sh rettet
+    die Datei ueber jedes Upgrade, postinstall.sh legt sie zurueck. Er traegt
+    Praefix UND Themenliste: wer das Praefix umstellt, liesse sonst den Altwert
+    unter dem neuen Stamm stehen (Fall R3), und kommt ein Thema dazu, gilt der
+    alte Merker nicht mehr. Kein Vorlaeufer schrieb diesen Schluessel; ein
+    zustand.json aus 0.9.23 taeuscht deshalb nichts vor (Fall R5).
+
+    Abgeraeumt wird AUCH bei "Werte behalten" aus (Fall R7): der Altwert
+    stammt aus der Zeit, als der Schalter an war - ab Werk ist er an -, und
+    ein fluechtiges publish ersetzt ihn nicht. Liegt keiner, ist die leere
+    Nutzlast folgenlos.
+
+    Geschrieben wird der Merker nur, wenn JEDES Loesch-Datagramm ohne Fehler
+    hinausging (Fall R6: ohne UDP-Port geht nichts hinaus, und das Abraeumen
+    bleibt fuer den naechsten Durchgang offen). UDP bestaetigt nichts:
+    verwirft das Gateway ein Datagramm, bleibt der Altwert trotz Merker im
+    Broker - dieselbe Grenze wie beim Beschattungswaechter 0.9.19; dann hilft
+    nur die Deinstallation oder der Broker von Hand.
+    """
+    kennung = praefix + "|" + ",".join(MQTT_ALTWERTE_ABRAEUMEN)
+    if json_lesen(DATEI_ZUSTAND).get("retain_geraeumt") == kennung:
+        offen = ()
+    else:
+        offen = tuple(k for k in MQTT_ALTWERTE_ABRAEUMEN if k in paare)
+    geraeumt = []
+    versucht, schlecht = mqtt_senden(paare, praefix, retain,
+                                     abraeumen=offen, geraeumt=geraeumt)
+    if offen and all(k in geraeumt for k in offen):
+        zustand_schreiben(retain_geraeumt=kennung)
+    return versucht, schlecht
+
+
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
                      fehler_folge: int = 0, zaehler: int = 0, empfehlung=None) -> dict:
     """Schreibt den Zwischenspeicher.
@@ -2140,7 +2261,7 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
         # Bei einer Stoerung nur das Lebenszeichen senden. Die alten Messwerte
         # erneut zu veroeffentlichen liesse sie frisch aussehen.
         if cfg.get("mqtt_ein"):
-            versucht, schlecht = mqtt_senden(lebenszeichen, praefix, retain)
+            versucht, schlecht = lebenszeichen_senden(lebenszeichen, praefix, retain)
             lox["mqtt_versucht"], lox["mqtt_schlecht"] = versucht, schlecht
             json_schreiben(DATEI_LOXONE, lox)
         return lox
@@ -2170,7 +2291,7 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
                 w = f.get(feld)
                 if w is not None and str(w).strip() != "":
                     paare[f"fahrzeug{nummer}/{feld}"] = w
-        versucht, schlecht = mqtt_senden(paare, praefix, retain)
+        versucht, schlecht = lebenszeichen_senden(paare, praefix, retain)
         lox["mqtt_versucht"], lox["mqtt_schlecht"] = versucht, schlecht
         json_schreiben(DATEI_LOXONE, lox)
 

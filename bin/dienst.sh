@@ -43,8 +43,97 @@ if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
 fi
 
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugins/<ordner>
-PNAME=$(basename "$SELF")
-LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+
+# ---------- Wurzel und Ordnername: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.23 stand hier
+#     PNAME=$(basename "$SELF")
+#     LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+# und weiter unten ein 'mkdir -p' auf oberster Ebene. Ein gesetztes
+# $LBHOMEDIR wurde damit UEBERSCHRIEBEN, der Ordnername kam allein aus dem
+# Ablageort, und der geratene Pfad wurde bei JEDEM Aufruf angelegt - auch bei
+# 'status'. In WSL gemessen (24.09.2026, Pruefung-Skoda-Connect-NG-0.9.24,
+# messe_h1.sh, Faelle F1 bis H10; Bauart H1 aus Bestand-2026-09-18/klasse-H):
+# 'dienst.sh status' aus einem Pruefarchiv unter
+# <Wurzel>/pruefung/skodaconnect/bin legte in der LAUFENDEN Installation
+# data/plugins/bin und log/plugins/bin an, und nach einem purge_installation
+# legte schon ein 'status' den Datenordner wieder an.
+#
+# Zwei Stufen (Regeln/03, Regeln/06; Vorbild Govee 0.9.20):
+#   1. $LBHOMEDIR aus der Umgebung, wenn es config/plugins und data/plugins
+#      traegt - am Geraet steht es in /etc/environment, der Cron liest es
+#      ueber pam_env;
+#   2. aufwaerts suchen, bis ein Verzeichnis config/plugins, data/plugins UND
+#      config/system/general.json traegt (die dritte Bedingung seit dem
+#      Raumklima-Vorfall, Regeln/06).
+# EINE DRITTE STUFE GIBT ES NICHT. Bis 0.9.23 stand am Ende "drei Ebenen
+# ueber dem Ablageort", und genau dieser Rueckfall machte in einem fremden
+# Baum ohne general.json wieder eine Wurzel aus dem, was die Suche eben
+# abgelehnt hatte (Faelle F1-F4: 'start' legte dort an und startete, 'stop'
+# nahm dem fremden Baum den Dienst weg). Ohne Wurzel wird gemeldet und
+# abgebrochen - nichts angelegt, nichts gestartet, nichts angehalten.
+# 'pwd -P': ist die Wurzel ein Verweis auf ein anderes Verzeichnis, zaehlt der
+# aufgeloeste Pfad. So steht er in der Befehlszeile des Dienstes, denn SELF ist
+# ueber readlink -f ebenfalls aufgeloest (Faelle G4 und G7).
+sk_wurzel_suchen() {
+    sk_v="$SELF"
+    sk_i=0
+    while [ -n "$sk_v" ] && [ "$sk_v" != "/" ] && [ "$sk_i" -lt 8 ]; do
+        if [ -d "$sk_v/config/plugins" ] && [ -d "$sk_v/data/plugins" ] \
+           && [ -f "$sk_v/config/system/general.json" ]; then
+            echo "$sk_v"
+            return 0
+        fi
+        sk_v=$(dirname "$sk_v")
+        sk_i=$((sk_i + 1))
+    done
+    return 1
+}
+if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+   && [ -d "$LBHOMEDIR/data/plugins" ]; then
+    LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
+else
+    LBHOMEDIR=$(sk_wurzel_suchen) || LBHOMEDIR=""
+fi
+# Ohne Wurzel: nichts anlegen, nichts starten, nichts anhalten. "status"
+# antwortet mit 4 ("Zustand unbekannt"), damit es sich von 1 ("gestoppt")
+# unterscheidet; alles andere mit 1. Die Meldung geht nur auf die Ausgabe -
+# ohne Wurzel gibt es keine Protokolldatei, und der Cron-Waechter leitet
+# seine Ausgabe nach /dev/null (Fall F4).
+if [ -z "$LBHOMEDIR" ]; then
+    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
+    echo "FEHLER: \$LBHOMEDIR ist nicht gesetzt, und oberhalb von $SELF traegt"
+    echo "FEHLER: kein Verzeichnis config/plugins, data/plugins und config/system/general.json."
+    echo "FEHLER: Es wurde nichts angelegt, nichts gestartet und nichts angehalten."
+    [ "${1:-}" = "status" ] && exit 4
+    exit 1
+fi
+# Der Ordnername kommt aus $LBPPLUGINDIR, sonst aus dem Ablageort. Am Geraet
+# steht $LBPPLUGINDIR in keiner Cron-Schale (Regeln/03, 43 Linien) - dann
+# traegt der Ablageort, und bei einer regulaeren Installation ist das richtig.
+PNAME="${LBPPLUGINDIR:-}"
+PNAME="${PNAME%/}"
+PNAME="${PNAME##*/}"
+[ -n "$PNAME" ] || PNAME=$(basename "$SELF")
+PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
+
+# Die Gegenprobe steht VOR allem, was schreibt (Vorbild Dashboard 0.9.22):
+# liegt dieses Skript nicht im bin-Ordner der Anlage, und ist <ordner> dort
+# auch kein eingerichtetes Plugin, dann kommt der Aufruf aus einem
+# ausgepackten Archiv oder einem Pruefordner - es wird nichts angelegt und
+# nichts angefasst (Faelle H1, H4, H5, H8, H10 - auch 'stop' mit nur gesetztem
+# LBHOMEDIR sagt ab, statt "laeuft nicht" zu melden).
+if [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] \
+   && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin,"
+    echo "        und $SELF ist nicht dessen bin-Ordner."
+    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
+    echo "        einem Pruefordner. Es wurde nichts angelegt."
+    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
+    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen."
+    exit 1
+fi
+
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
@@ -67,10 +156,24 @@ LOGDATEI="$PLOG/skoda.log"
 # (06.09.2026): sieben Dienste hielten so eine geloeschte Protokolldatei offen.
 # Regel: genau einer schreibt in eine Protokolldatei.
 STARTLOG="$PLOG/skoda_start.log"
-PY="$SELF/venv/bin/python3"
-SKRIPT="$SELF/skoda.py"
+# Python und Dienstskript DER ANLAGE, nicht die neben dieser Datei. Sonst
+# verwaltete ein dienst.sh aus einem ausgepackten Archiv den Dienst des
+# Archivs, waehrend der Aufrufer mit LBHOMEDIR/LBPPLUGINDIR die Anlage meinte:
+# 'status' meldete "gestoppt", obwohl ihr Dienst lief, und 'stop' nahm ihr
+# soll_laufen weg, ohne den Dienst zu beenden (Faelle H2, H3). Installiert
+# ist PBIN derselbe Ordner wie SELF (Gegenprobe oben).
+PY="$PBIN/venv/bin/python3"
+SKRIPT="$PBIN/skoda.py"
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+# Angelegt wird erst beim START - in starten() und im Waechter, bevor er in
+# die Startdatei umlenkt -, nicht bei jedem Aufruf. Bis 0.9.23 stand dieses
+# mkdir auf oberster Ebene (siehe den Kopf dieser Datei, Faelle H4, H6, H7).
+# Der Waechter braucht es trotzdem: log/plugins ist eine Ramdisk. Fehlt der
+# Ordner nach einem Neustart, scheitert ': > "$STARTLOG"', und das folgende
+# 'exec 2>>' beendet die Schale (Fall G8).
+ordner_anlegen() {
+    mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+}
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -128,8 +231,8 @@ laeuft() {
 # (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 3: ein Dienst,
 # erwartet null).
 #
-# Aelter als 3600 s, aus der Zukunft oder unlesbar: die Marke gilt NICHT -
-# eine abgebrochene Installation darf den Dienst nicht fuer immer
+# Aelter als 3600 s, mehr als 300 s aus der Zukunft oder unlesbar: die Marke
+# gilt NICHT - eine abgebrochene Installation darf den Dienst nicht fuer immer
 # stilllegen. OHNE LESBARE UHR faellt die Pruefung GESCHLOSSEN aus: wer die
 # Zeit nicht messen kann, kann das Alter nicht beurteilen und startet
 # deshalb nicht (Fall 7f).
@@ -156,7 +259,14 @@ upgrade_laeuft() {
     if [ -z "$sk_jetzt" ]; then
         return 0
     fi
-    [ "$sk_dann" -gt "$sk_jetzt" ] && return 1
+    # Bis 300 s "aus der Zukunft" gilt die Marke noch: die Uhr kann ein Stueck
+    # zurueckspringen, nachdem preupgrade.sh sie gesetzt hat. Bis 0.9.23 galt
+    # "jede Sekunde Zukunft gilt nicht". In WSL gemessen (24.09.2026,
+    # Pruefung-Skoda-Connect-NG-0.9.24, Faelle V1/V2): eine Marke 2 s bzw.
+    # 120 s voraus liess den Start zu - ein Dienst, wo null erwartet war.
+    # Dieselbe Grenze steht in sk_upgrade_laeuft()
+    # (webfrontend/html/sk_lib.php). Weiter voraus: sie gilt nicht (Fall V3).
+    [ "$sk_dann" -gt $((sk_jetzt + 300)) ] && return 1
     [ $((sk_jetzt - sk_dann)) -lt 3600 ]
 }
 
@@ -216,6 +326,7 @@ starten() {
         echo "        eintragen und speichern. Der Dienst bleibt angehalten; der Waechter holt ihn nicht zurueck."
         return 1
     fi
+    ordner_anlegen
     touch "$SOLL"
     rm -f "$BEREIT"
     # Die Ausgabe des Dienstes geht in die Startdatei, NICHT in das Protokoll:
@@ -363,6 +474,7 @@ case "$1" in
             # Cron-Datei, damit sie auch fuer einen Aufruf von Hand gilt.
             # Erst kappen, dann umlenken; starten() kappt deshalb hier nicht
             # noch einmal.
+            ordner_anlegen
             : > "$STARTLOG"
             exec 2>>"$STARTLOG"
             jetzt=$(date '+%Y-%m-%d %H:%M:%S')

@@ -35,10 +35,55 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
+# Ablageort, und geprueft wurde danach nur auf config/plugins UND
+# data/plugins. Ein Baum, der wie eine Wurzel aussieht, es aber nicht ist,
+# wurde damit zur Wurzel - in WSL gemessen (24.09.2026,
+# Pruefung-Skoda-Connect-NG-0.9.24, messe_haken.sh, Faelle Ha1 bis Ha4).
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# der Raumklima-Vorfall). Ohne Wurzel: <WARNING>, nichts anlegen, nichts
+# entfernen, Rueckgabe != 0.
+sk_wurzel_suchen() {
+    sk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    sk_i=0
+    while [ -n "$sk_v" ] && [ "$sk_v" != "/" ] && [ "$sk_i" -lt 8 ]; do
+        if [ -d "$sk_v/config/plugins" ] && [ -d "$sk_v/data/plugins" ] \
+           && [ -f "$sk_v/config/system/general.json" ]; then
+            echo "$sk_v"
+            return 0
+        fi
+        sk_v=$(dirname "$sk_v")
+        sk_i=$((sk_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(sk_wurzel_suchen) || BASE=""
+    fi
+fi
+
+# NACHGESEHEN WIRD SEIT 0.9.24. Bis 0.9.23 pruefte dieses Skript als einziges
+# der vier ueberhaupt nicht nach: mit leerem BASE raeumte es gegen
+# "/data/plugins/<ordner>.upgrade_laeuft" ab und loeschte
+# "/bin/plugins/<ordner>/__pycache__" - und meldete danach "<OK> postupgrade
+# abgeschlossen". In WSL gemessen (24.09.2026,
+# Pruefung-Skoda-Connect-NG-0.9.24, messe_haken.sh, Fall Ha3: im fremden Baum
+# war die Marke weg, der Rueckgabewert 0).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
+    echo "<WARNING> die Suche oberhalb des eigenen Ablageorts fuehrten auf einen"
+    echo "<WARNING> Ordner mit config/plugins, data/plugins und"
+    echo "<WARNING> config/system/general.json."
+    echo "<WARNING> Es wurde nichts entfernt und keine Upgrade-Marke abgeraeumt."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
