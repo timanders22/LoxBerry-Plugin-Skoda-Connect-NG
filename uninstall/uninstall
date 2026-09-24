@@ -60,11 +60,11 @@
 #      Kennzeichen des Wagens, die im Broker liegen bleiben, bis ihn
 #      jemand von Hand leert.
 #
-#      Abschnitt 1b loescht sie: je Thema eine LEERE Nutzlast mit
-#      "retain" ueber den UDP-Eingang des Gateways - genau der Weg, den
-#      bin/skoda.py in mqtt_senden() beschreibt. Geht davon etwas nicht,
-#      ist das KEIN Abbruch der Deinstallation, sondern eine
-#      <INFO>-Zeile.
+#      Abschnitt 1b loescht sie am Broker und misst nach
+#      (skoda.py --mqtt-leeren); nur wenn das nicht moeglich ist, ueber den
+#      UDP-Eingang des Gateways. Geht davon etwas nicht, ist das KEIN
+#      Abbruch der Deinstallation, sondern eine <INFO>- bzw.
+#      <WARNING>-Zeile.
 
 PDIR=$3                      # Installationsordner des Plugins
 [ -n "$PDIR" ] || PDIR="skodaconnect"
@@ -214,144 +214,51 @@ rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 # Erst hier, NACH dem Anhalten des Dienstes: ein noch laufender Dienst
 # schriebe die eben geloeschten Themen im naechsten Takt wieder hin.
 #
-# Gelesen wird alles aus dem Bestand - der UDP-Port aus
-# config/system/general.json, Praefix und Haken aus der Plugin-
-# Konfiguration, die Themennamen aus bin/plugins/<ordner>/skoda.py. Eine
-# zweite, hier abgetippte Themenliste liefe mit dem Dienst auseinander,
-# und was in ihr fehlte, bliebe im Broker stehen.
+# AM BROKER, NACHGEMESSEN. Bis 0.9.24 ging je Thema ein leeres "retain" an
+# den UDP-Eingang des Gateways, und die Zeile danach meldete "<OK> ...
+# Loeschbefehle geschickt". Der Eingang verwirft aber in Stoessen 17-70 %
+# der Datagramme (Regeln/07, Nachtrag 19.09.2026, am Geraet gemessen), und
+# bei "Werte behalten" = 0 brach der Block ganz ab, obwohl Altwerte aus der
+# Zeit mit gesetztem Haken stehen koennen. In WSL gemessen 24.09.2026
+# (Pruefung-Skoda-Connect-NG-0.9.25, messe_nachlese.sh, Faelle U2 und U3:
+# danach standen noch eigene Themen im Broker).
+#
+# Jetzt meldet sich skoda.py --mqtt-leeren mit den Zugangsdaten aus
+# general.json am Broker an, loescht nur, was dieser Dienst sendet und
+# WIRKLICH behalten liegt, und misst nach. Nur wenn das nicht moeglich ist
+# (paho fehlt, Broker nicht erreichbar), geht es wie bisher ueber den
+# UDP-Eingang - und die Ausgabe sagt, dass das nichts bestaetigt. Die
+# Themenliste kommt aus skoda.py selbst (MQTT_OBEN, MQTT_FELDER,
+# MQTT_TEXTFELDER), nicht mehr aus einer Textsuche ueber dessen Quelltext.
+#
+# Die virtuelle Umgebung ist hier noch da: der Installer loescht
+# bin/plugins/<ordner> erst nach diesem Skript (plugininstall.pl,
+# purge_installation; am Geraet nachgesehen 17.09.2026, festgehalten in
+# LoxBerry-Plugin-VolkswagenID-0.9.24/uninstall/uninstall). Als loxberry,
+# nicht als root: gebraucht wird nur Lesezugriff auf die Konfiguration und
+# auf general.json.
 mqtt_behaltene_themen_loeschen() {
-    PYBIN=""
+    if [ ! -f "$PBIN/skoda.py" ]; then
+        echo "<INFO> $PBIN/skoda.py fehlt - behaltene MQTT-Themen wurden nicht"
+        echo "<INFO> geloescht. Die Deinstallation laeuft weiter."
+        return 0
+    fi
     if [ -x "$PBIN/venv/bin/python3" ]; then
         PYBIN="$PBIN/venv/bin/python3"
     elif command -v python3 >/dev/null 2>&1; then
-        PYBIN="python3"
+        PYBIN=$(command -v python3)
     else
         echo "<INFO> Kein python3 gefunden - behaltene MQTT-Themen wurden nicht"
         echo "<INFO> geloescht. Die Deinstallation laeuft weiter."
         return 0
     fi
-    "$PYBIN" - "$BASE" "$PDIR" <<'PYENDE'
-import json, os, re, socket, sys
-
-
-def lies(*teile):
-    try:
-        with open(os.path.join(*teile), "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
-
-
-def lauf():
-    base, pdir = sys.argv[1], sys.argv[2]
-    cfg = lies(base, "config", "plugins", pdir, "skoda.json")
-    # Seit 0.9.21 ist der Haken ab Werk EIN (bin/skoda.py, VORGABEN). Fehlt
-    # der Schluessel, gilt deshalb 1 - so rechnet auch der Dienst. Behalten
-    # werden seitdem nur noch die Zustandsthemen; eine leere Nutzlast auf ein
-    # fluechtiges Thema loescht nichts und schadet nicht.
-    if not cfg.get("mqtt_retain", 1):
-        print("<INFO> Der Haken 'Werte behalten' war nicht gesetzt - der Dienst hat")
-        print("<INFO> mit 'publish' gesendet. Im Broker steht nichts von uns.")
-        return
-
-    m = lies(base, "config", "system", "general.json")
-    m = m.get("Mqtt") or m.get("mqtt") or {}
-    try:
-        port = int(m.get("Udpinport", m.get("udpinport")))
-    except (TypeError, ValueError):
-        port = 0
-    if port < 1 or port > 65535:
-        print("<INFO> Kein UDP-Eingangsport des MQTT-Gateways in general.json")
-        print("<INFO> gefunden. Die behaltenen Themen bleiben stehen und sind im")
-        print("<INFO> Broker von Hand zu loeschen.")
-        return
-
-    # Der Praefix wird genau so gesaeubert wie im Dienst (thema_saeubern).
-    t = str(cfg.get("mqtt_topic") or "").strip().strip("/")
-    praefix = t if re.match(r"^[A-Za-z0-9_/-]{1,64}$", t) else "skoda"
-
-    try:
-        with open(os.path.join(base, "bin", "plugins", pdir, "skoda.py"),
-                  "r", encoding="utf-8") as f:
-            quelle = f.read()
-    except OSError:
-        quelle = ""
-
-    def abschnitt(muster):
-        tr = re.search(muster, quelle, re.S | re.M)
-        roh = tr.group(1) if tr else ""
-        # Kommentarzeilen weg, sonst zaehlten Beispiele als Themennamen.
-        return "\n".join(z.split("#")[0] for z in roh.splitlines())
-
-    felder = []
-    for name in ("MQTT_FELDER", "MQTT_TEXTFELDER"):
-        felder += re.findall(r'"([A-Za-z0-9_]+)"',
-                             abschnitt(name + r"\s*=\s*\((.*?)^\)"))
-    zustand = re.findall(r'"([A-Za-z0-9_/]+)"\s*:',
-                         abschnitt(r"lebenszeichen\s*=\s*\{(.*?)^    \}"))
-    zustand += re.findall(r'lebenszeichen\["([A-Za-z0-9_/]+)"\]', quelle)
-    zustand += re.findall(r'mqtt_senden\(\{"([A-Za-z0-9_/]+)"', quelle)
-    if not felder or not zustand:
-        print("<INFO> Die Themenliste liess sich nicht aus skoda.py ableiten -")
-        print("<INFO> es wird nur geloescht, was gefunden wurde.")
-
-    # Fahrzeugnummern aus dem letzten Abbild. Ein Loeschbefehl fuer ein Thema,
-    # das es nie gab, ist folgenlos - deshalb im Zweifel 1 bis 4.
-    nummern = []
-    lox = lies(base, "data", "plugins", pdir, "loxone.json")
-    for q in (lox.get("fahrzeuge"),
-              lies(base, "data", "plugins", pdir, "cache.json").get("fahrzeuge")):
-        if isinstance(q, dict):
-            for k in q:
-                if str(k) not in nummern:
-                    nummern.append(str(k))
-    if not nummern:
-        try:
-            anzahl = int(lox.get("anzahl_fahrzeuge") or 0)
-        except (TypeError, ValueError):
-            anzahl = 0
-        nummern = [str(i) for i in range(1, max(anzahl, 4) + 1)]
-
-    themen = list(dict.fromkeys(zustand))
-    for nr in nummern:
-        for feld in felder:
-            themen.append("fahrzeug%s/%s" % (nr, feld))
-
-    if not themen:
-        print("<INFO> Keine Themennamen ermittelt - es wurde nichts an das")
-        print("<INFO> Gateway geschickt.")
-        return
-
-    # Eine LEERE Nutzlast loescht mit 'retain' ein behaltenes Thema. Der Weg
-    # ist derselbe, den der Dienst geht: eine Zeile "retain <thema> <wert>"
-    # an den UDP-Eingang des Gateways.
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    geschickt = 0
-    try:
-        for th in themen:
-            try:
-                s.sendto(("retain %s/%s " % (praefix, th)).encode("utf-8"),
-                         ("127.0.0.1", port))
-                geschickt += 1
-            except OSError:
-                pass
-    finally:
-        s.close()
-    print("<OK> %d Loeschbefehle fuer behaltene MQTT-Themen unter '%s/' an den"
-          % (geschickt, praefix))
-    print("<OK> UDP-Eingang %d des Gateways geschickt (leere Nutzlast, 'retain')."
-          % port)
-    print("<INFO> UDP bestaetigt nichts. Lief das Gateway nicht mehr, bleiben die")
-    print("<INFO> Themen stehen und sind im Broker von Hand zu loeschen.")
-
-
-try:
-    lauf()
-except Exception as err:                                  # noqa: BLE001
-    print("<INFO> Das Aufraeumen der behaltenen MQTT-Themen ist gescheitert")
-    print("<INFO> (%s). Das ist kein Abbruch - die Deinstallation laeuft weiter."
-          % err)
-PYENDE
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf 'LBHOMEDIR=%q LBPPLUGINDIR=%q PYTHONDONTWRITEBYTECODE=1 timeout 60 %q %q --mqtt-leeren' \
+            "$BASE" "$PDIR" "$PYBIN" "$PBIN/skoda.py")" 2>&1 || true
+    else
+        LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" PYTHONDONTWRITEBYTECODE=1 \
+            timeout 60 "$PYBIN" "$PBIN/skoda.py" --mqtt-leeren 2>&1 || true
+    fi
     return 0
 }
 mqtt_behaltene_themen_loeschen

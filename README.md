@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.24 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.25 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,48 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.25 ändert
+
+Ein Thema: **alte, behaltene MQTT-Werte werden am Broker abgeräumt und
+nachgelesen, nicht mehr über den UDP-Eingang des Gateways.**
+
+* **Das Abräumen im Dienst.** 0.9.24 schickte für `status/fehler_folge` und
+  `status/fehlertext` einmal je Präfix ein leeres `retain` an den UDP-Eingang
+  und merkte sich „erledigt", sobald das Datagramm hinausging. Der Eingang
+  verwirft aber in Stößen 17–70 % der Datagramme; der alte Wert stand dann
+  weiter im Broker, und der Dienst versuchte es nie wieder. Jetzt meldet sich
+  der Dienst mit den Zugangsdaten aus den Gateway-Einstellungen am Broker an
+  (derselbe Weg wie das Mithören fremder Themen, `paho-mqtt`), löscht nur,
+  was wirklich behalten dort liegt, liest nach und merkt es sich **erst
+  dann**. Gelingt das nicht — Broker nicht erreichbar, Anmeldung abgewiesen,
+  `paho-mqtt` fehlt —, merkt er sich nichts und versucht es beim nächsten
+  Durchgang wieder; das Protokoll sagt es höchstens einmal je Stunde (fehlt
+  `paho-mqtt`: einmal am Tag). Der gültige Wert geht unmittelbar danach
+  hinaus. Der Merker von 0.9.24 gilt nicht als erledigt.
+* **Mehr Altlast als gedacht.** Bis 0.9.20 galt der Haken *Werte behalten*
+  für jedes Thema — auch für `status/ok`, `ok`, `status/ts`,
+  `status/zaehler`, `status/dienst`, `empfehlung` und die Messwerte mit
+  Zeitbezug. 0.9.21 stellte sie auf flüchtig, räumte aber nie ab. Wer den
+  Haken damals gesetzt hatte, hat dort möglicherweise noch ein behaltenes
+  `ok=1` stehen, das nach einem Neustart von Broker oder Gateway einen toten
+  Dienst als gesund meldet. Abgeräumt wird deshalb jedes eigene Thema, das
+  heute flüchtig ist. Fremde Themen unter demselben Präfix bleiben stehen.
+* **Die Deinstallation** räumt ebenfalls am Broker ab und misst nach
+  (`skoda.py --mqtt-leeren`): alle behaltenen Themen dieses Plugins, auch
+  wenn *Werte behalten* inzwischen aus ist — bis 0.9.24 brach sie in diesem
+  Fall ab, obwohl Altwerte aus der Zeit mit gesetztem Haken stehen können.
+  Bleibt etwas stehen, sagt sie es als `<WARNING>`. Nur wenn der Broker nicht
+  erreichbar ist oder `paho-mqtt` fehlt, schickt sie wie bisher leere
+  `retain`-Zeilen an den UDP-Eingang — und sagt dazu, dass das nichts
+  bestätigt.
+
+**Grenze:** ohne `paho-mqtt` in der Umgebung des Plugins (die Installation
+holt es, ein Fehlschlag dort ist erlaubt) räumt der Dienst nichts ab.
+Gemessen in WSL an einem eigenen kleinen Broker, der das Retain-Kennzeichen
+jedes empfangenen Pakets aufschreibt (`Pruefung-Skoda-Connect-NG-0.9.25`,
+54 Fälle, vorher 30 rot, nachher 0) — **nicht** am Gerät und nicht an
+mosquitto.
 
 ## Was 0.9.24 ändert
 
@@ -1198,11 +1240,14 @@ lautet — beide finden gar nichts) und keine Teilstringsuche (die träfe einen
 Editor, in dem `skoda.py` offen ist, oder ein zweites Exemplar des Plugins).
 `bin/dienst.sh` prüft seit 0.9.1 auf demselben Weg.
 
-Im MQTT-Broker bleibt nur dann nichts stehen, wenn der Haken *Werte behalten
-(retain)* aus ist — seit 0.9.21 ist er ab Werk gesetzt. Ist er gesetzt, räumt
-`uninstall` die behaltenen Themen ab, indem es je Thema eine leere Nutzlast
-mit `retain` schickt. Ohne das blieben bis zu 49 Themen dauerhaft im Gateway
-stehen, darunter Standort und Kennzeichen des Fahrzeugs.
+Im MQTT-Broker räumt `uninstall` die behaltenen Themen dieses Plugins ab —
+am Broker, mit den Zugangsdaten aus den Gateway-Einstellungen, und misst
+danach nach (`skoda.py --mqtt-leeren`); fremde Themen unter demselben Präfix
+bleiben stehen. Ohne das blieben bei gesetztem Haken *Werte behalten* (ab Werk
+seit 0.9.21) bis zu 49 Themen dauerhaft im Broker stehen, darunter Standort
+und Kennzeichen des Fahrzeugs. Ist der Broker nicht erreichbar oder fehlt
+`paho-mqtt`, geht je Thema eine leere `retain`-Zeile an den UDP-Eingang des
+Gateways; das bestätigt nichts, und die Ausgabe der Deinstallation sagt es.
 
 ## Was in 0.9.2 nachgemessen und geändert wurde
 

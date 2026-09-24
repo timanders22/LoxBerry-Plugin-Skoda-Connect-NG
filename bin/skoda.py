@@ -751,18 +751,37 @@ MQTT_OHNE_RETAIN = frozenset((
     # hinaus, auch im Stoerungszweig: stirbt der Dienst nach der Erholung,
     # stehen "0" und "-" fuer immer im Broker. Gemessen 24.09.2026,
     # Pruefung-Skoda-Connect-NG-0.9.24, messe_retain.sh, R1a/R1b/R4b. Der
-    # Altwert wird einmal abgeraeumt - MQTT_ALTWERTE_ABRAEUMEN.
+    # Altwert wird einmal abgeraeumt - mqtt_altlast_abraeumen().
     "fehler_folge", "fehlertext",
 ))
 
-# Themen, die bis 0.9.23 retained hinausgingen und seit 0.9.24 fluechtig
-# sind. Ein fluechtiges publish ersetzt einen behaltenen Wert im Broker nicht;
-# fort ist er erst, wenn eine LEERE Nutzlast mit retain auf dasselbe Thema
-# faellt (Regeln/07, mqttgateway.pl sub udpin). Das geschieht EINMAL je
-# Praefix in lebenszeichen_senden(), der gueltige Wert folgt im naechsten
-# Datagramm. uninstall leitet seine Loeschliste aus dem lebenszeichen-Block
-# ab und traegt beide Themen damit ohnehin.
-MQTT_ALTWERTE_ABRAEUMEN = ("status/fehler_folge", "status/fehlertext")
+# Die Themen OBERHALB von fahrzeugN/, die dieser Dienst sendet: der Block
+# 'lebenszeichen' in abbild_schreiben(), 'empfehlung' dort, 'status/dienst'
+# aus wachzeichen(). Zusammen mit fahrzeugN/<MQTT_FELDER, MQTT_TEXTFELDER>
+# ist das alles, was mqtt_eigenes_thema() als eigen erkennt - und nur das
+# raeumen der Dienst und die Deinstallation ab. Wer oben ein Thema dazunimmt,
+# traegt es hier ein; sonst bleibt es nach der Deinstallation im Broker
+# stehen (Pruefung-Skoda-Connect-NG-0.9.25, messe_nachlese.sh, Fall U1a).
+MQTT_OBEN = (
+    "status/ok", "status/ts", "status/zaehler", "status/fehler_folge",
+    "status/fehlertext", "status/dienst", "ok", "fahrzeuge", "empfehlung",
+)
+
+# Die ALTLAST: jedes eigene Thema, das mqtt_ohne_retain() heute fluechtig
+# nennt, das aber frueher behalten hinausging. Zwei Herkuenfte, beide gelesen:
+#   - bis 0.9.20 galt der Haken "Werte behalten" fuer JEDES Thema
+#     (LoxBerry-Plugin-Skoda-Connect-NG-0.9.20/bin/skoda.py:701,
+#     befehl = "retain" if retain else "publish"): status/ok, ok, status/ts,
+#     status/zaehler, status/dienst, empfehlung und die Messwerte mit
+#     Zeitbezug. 0.9.21 stellte sie auf fluechtig und raeumte nie ab.
+#   - bis 0.9.23 status/fehler_folge und status/fehlertext.
+# Ein fluechtiges publish ersetzt einen behaltenen Wert nicht; fort ist er
+# erst, wenn eine LEERE Nutzlast mit retain auf dasselbe Thema faellt.
+# Abgeraeumt wird am Broker, nicht ueber den UDP-Eingang - siehe
+# mqtt_altlast_abraeumen(). Der Merker 'retain_altlast' in zustand.json traegt
+# diese Kennung, das Praefix und die Liste der fluechtigen Namen; den Merker
+# 'retain_geraeumt' einer Vorfassung liest niemand mehr.
+RETAIN_ALTLAST_KENNUNG = "am-broker-nachgelesen"
 
 
 # Rueckgabecodes einer abgewiesenen MQTT-Verbindung. 1-5 aus MQTT 3.1.1,
@@ -786,8 +805,7 @@ def mqtt_ohne_retain(schluessel: str) -> bool:
     return str(schluessel).rsplit("/", 1)[-1] in MQTT_OHNE_RETAIN
 
 
-def mqtt_senden(paare: dict, praefix: str, retain: int = 0,
-                abraeumen=(), geraeumt=None) -> tuple[int, int]:
+def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
     """Veroeffentlicht die Paare ueber den UDP-Eingang des Gateways.
 
     Rueckgabe: (versucht, misslungen). Bis 0.9.12 gab die Funktion nichts
@@ -836,20 +854,14 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0,
             if text == "":
                 continue
             versucht += 1
-            if k in abraeumen:
-                # Einmal je Praefix (lebenszeichen_senden()): leere Nutzlast
-                # mit retain loescht den Altwert im Broker, und das NAECHSTE
-                # Datagramm ist der gueltige Wert. Sonst reichte das Gateway
-                # die Leere als leeren Wert an den Miniserver weiter und es
-                # stuende dort, bis der naechste Durchgang kommt (Regeln/07,
-                # am Geraet gemessen 06.09.2026).
-                try:
-                    s.sendto(f"retain {praefix}/{k} ".encode("utf-8"),
-                             ("127.0.0.1", z["udpport"]))
-                    if geraeumt is not None:
-                        geraeumt.append(k)
-                except OSError:
-                    pass
+            # Bis 0.9.24 ging hier fuer die Altwerte ein leeres "retain"
+            # voraus, und der Aufrufer setzte seinen Merker, sobald sendto()
+            # nicht scheiterte. Der UDP-Eingang verwirft aber in Stoessen
+            # 17-70 % der Datagramme (Regeln/07, Nachtrag 19.09.2026, am
+            # Geraet gemessen) - der Altwert blieb dann trotz Merker stehen
+            # (in WSL gemessen 24.09.2026, Pruefung-Skoda-Connect-NG-0.9.25,
+            # Fall A3). Abgeraeumt wird jetzt am Broker:
+            # mqtt_altlast_abraeumen().
             # Je Thema entschieden, nicht je Aufruf: derselbe Aufruf traegt
             # Lebenszeichen und Zustand. Ist der Haken aus, geht alles ohne.
             befehl = "retain" if (retain and not mqtt_ohne_retain(k)) else "publish"
@@ -866,6 +878,244 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0,
         melde_gebremst("mqtt_teil",
                        f"MQTT: {schlecht} von {versucht} Meldungen sind nicht hinausgegangen.")
     return (versucht, schlecht)
+
+
+def mqtt_eigenes_thema(praefix: str, thema: str) -> str:
+    """Der Schluessel hinter dem Praefix, wenn DIESER Dienst das Thema sendet.
+
+    Eigen sind MQTT_OBEN und fahrzeugN/<feld> mit <feld> aus MQTT_FELDER oder
+    MQTT_TEXTFELDER (N ein- oder zweistellig, wie nummern_zuordnen() sie
+    vergibt). Sonst "" - ein fremdes Thema unter demselben Praefix, etwa von
+    einem zweiten Plugin, bleibt unberuehrt.
+    """
+    if not thema.startswith(praefix + "/"):
+        return ""
+    rest = thema[len(praefix) + 1:]
+    if rest in MQTT_OBEN:
+        return rest
+    teile = rest.split("/")
+    if (len(teile) == 2 and re.match(r"^fahrzeug[0-9]{1,2}$", teile[0])
+            and teile[1] in MQTT_FELDER + MQTT_TEXTFELDER):
+        return rest
+    return ""
+
+
+def _broker_leeren(praefix: str, auswahl, warten: float = 3.0) -> dict:
+    """Behaltene Themen unter <praefix>/ am Broker loeschen und NACHLESEN.
+
+    Der Weg des Horchers (Klasse Horcher): paho mit Brokerhost, Brokerport,
+    Brokeruser und Brokerpass aus general.json (mqtt_zustand()); am Broker
+    dieser Anlage am 17.09.2026 mit paho-mqtt 2.1.0 gemessen. Bauart
+    VolkswagenID 0.9.24 mqtt_altlast_abraeumen():
+      1. geloescht wird nur, was WIRKLICH behalten im Broker liegt - gefunden
+         ueber ein Abonnement - und was auswahl(thema) freigibt;
+      2. danach ein zweites Abonnement: was dann noch behalten ankommt, ist
+         stehengeblieben.
+    Rueckgabe {"rc", "geleert", "rest", "grund", "ohne_paho"}: rc 0 = nichts
+    (mehr) behalten, 1 = nach dem Loeschen stand noch etwas, 2 = nicht
+    moeglich (keine Bibliothek, Broker fort, Anmeldung abgewiesen).
+    """
+    erg = {"rc": 2, "geleert": [], "rest": [], "grund": "", "ohne_paho": False}
+    if not praefix or "#" in praefix or "+" in praefix:
+        erg["grund"] = f"das Themenpraefix '{praefix}' taugt nicht fuer ein Abonnement"
+        return erg
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        erg["grund"] = "die Bibliothek paho-mqtt fehlt in der virtuellen Umgebung"
+        erg["ohne_paho"] = True
+        return erg
+    import threading
+    z = mqtt_zustand()
+    broker = z.get("broker") or "127.0.0.1"
+    try:
+        port = int(z.get("brokerport") or 1883)
+    except (TypeError, ValueError):
+        port = 1883
+    gesehen: set = set()
+    angemeldet = threading.Event()
+    code = {"wert": None}
+
+    def bei_verbindung(_k, _d, _f, *rest):
+        # paho 1.x und CallbackAPIVersion.VERSION1: rc als Zahl; VERSION2:
+        # ein ReasonCode mit .value.
+        try:
+            code["wert"] = int(getattr(rest[0], "value", rest[0]) or 0) if rest else 0
+        except (TypeError, ValueError):
+            code["wert"] = 0
+        angemeldet.set()
+
+    def bei_nachricht(_k, _d, n):
+        # Nur BEHALTENES mit Inhalt. Ein live gesendeter Wert (retain=0) ist
+        # keine Altlast, und ein leeres Thema ist schon geloescht.
+        if n.retain and n.payload and auswahl(n.topic):
+            gesehen.add(n.topic)
+
+    try:
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    except (AttributeError, TypeError):
+        k = mqtt.Client()
+    k.on_connect = bei_verbindung
+    k.on_message = bei_nachricht
+    benutzer = z.get("brokeruser") or ""
+    if benutzer:
+        k.username_pw_set(benutzer, z.get("brokerpass") or None)
+    try:
+        k.connect(broker, port, 30)
+    except Exception as err:  # noqa: BLE001
+        erg["grund"] = f"der Broker {broker}:{port} ist nicht erreichbar ({fehlertext(err)})"
+        return erg
+    k.loop_start()
+    try:
+        if not angemeldet.wait(10):
+            erg["grund"] = f"der Broker {broker}:{port} hat auf die Verbindung nicht geantwortet"
+            return erg
+        if code["wert"]:
+            erg["grund"] = (f"der Broker {broker}:{port} hat die Anmeldung abgewiesen: "
+                            f"{CONNACK_KLARTEXT.get(code['wert'], 'unbekannter Grund')} "
+                            f"(CONNACK {code['wert']})")
+            return erg
+        k.subscribe(praefix + "/#")
+        time.sleep(warten)
+        k.unsubscribe(praefix + "/#")
+        zu_leeren = sorted(gesehen)
+        for thema in zu_leeren:
+            info = k.publish(thema, b"", qos=1, retain=True)
+            try:
+                info.wait_for_publish(5)
+            except TypeError:           # paho 1.x vor 1.6 kennt kein timeout
+                info.wait_for_publish()
+        # NACHLESEN: ein neues Abonnement bekommt alles, was noch behalten ist.
+        gesehen.clear()
+        k.subscribe(praefix + "/#")
+        time.sleep(warten)
+        erg["geleert"] = zu_leeren
+        erg["rest"] = sorted(gesehen)
+        erg["rc"] = 1 if erg["rest"] else 0
+    except Exception as err:  # noqa: BLE001
+        erg["rc"] = 2
+        erg["grund"] = f"das Loeschen am Broker {broker}:{port} scheiterte ({fehlertext(err)})"
+    finally:
+        k.loop_stop()
+        try:
+            k.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    return erg
+
+
+def mqtt_altlast_abraeumen(praefix: str, warten: float = 3.0) -> int:
+    """Einmal je Praefix die zurueckbehaltenen Altwerte frueherer Fassungen
+    am Broker loeschen (RETAIN_ALTLAST_KENNUNG) - Merker ERST nach dem
+    Nachlesen.
+
+    Solange es nicht nachweislich durch ist, laeuft es beim naechsten
+    Durchgang wieder; die Meldung dazu ist gedrosselt (melde_gebremst, fehlt
+    paho: einmal am Tag). Rueckgabe 0 erledigt oder nichts zu tun, 1 es blieb
+    etwas stehen, 2 nicht moeglich. Ein Fehlschlag haelt den Durchgang nicht
+    an: der gueltige Wert geht in jedem Fall hinterher (lebenszeichen_senden()).
+    """
+    kennung = "|".join((RETAIN_ALTLAST_KENNUNG, praefix,
+                        ",".join(sorted(MQTT_OHNE_RETAIN))))
+    if json_lesen(DATEI_ZUSTAND).get("retain_altlast") == kennung:
+        return 0
+
+    def altlast(thema: str) -> bool:
+        s = mqtt_eigenes_thema(praefix, thema)
+        return bool(s) and mqtt_ohne_retain(s)
+
+    erg = _broker_leeren(praefix, altlast, warten)
+    if erg["rc"] == 2:
+        melde_gebremst("retain_altlast",
+                       f"MQTT: zurueckbehaltene Altwerte frueherer Fassungen liessen sich "
+                       f"nicht abraeumen - {erg['grund']}. Es wird bei jedem Durchgang "
+                       f"erneut versucht.", 86400 if erg["ohne_paho"] else 3600)
+        return 2
+    if erg["rc"] == 1:
+        melde_gebremst("retain_altlast",
+                       f"MQTT: {len(erg['rest'])} von {len(erg['geleert'])} "
+                       f"zurueckbehaltenen Altwerten stehen noch im Broker (zum Beispiel "
+                       f"{erg['rest'][0]}) - es wird beim naechsten Durchgang erneut versucht.")
+        return 1
+    zustand_schreiben(retain_altlast=kennung)
+    if erg["geleert"]:
+        _LOG.info("MQTT: %d zurueckbehaltene Altwerte frueherer Fassungen geloescht und "
+                  "nachgelesen (%s).", len(erg["geleert"]), ", ".join(erg["geleert"]))
+    return 0
+
+
+def _udp_leeren(praefix: str) -> int:
+    """Rueckfall der Deinstallation, wenn der Broker nicht erreichbar ist
+    oder paho fehlt: je eigenem Thema ein leeres 'retain' an den UDP-Eingang.
+    Das ist der Weg bis 0.9.24 - UDP bestaetigt nichts, und die Ausgabe sagt
+    es. Fahrzeugnummern aus dem letzten Abbild, sonst 1 bis 4 (ein
+    Loeschbefehl fuer ein Thema, das es nie gab, ist folgenlos)."""
+    z = mqtt_zustand()
+    if not z["udpport"]:
+        print("<INFO> MQTT: auch kein UDP-Eingang des Gateways in general.json - die "
+              "behaltenen Themen bleiben stehen und sind im Broker von Hand zu loeschen.")
+        return 2
+    nummern = []
+    lox = json_lesen(DATEI_LOXONE)
+    for q in (lox.get("fahrzeuge"), json_lesen(DATEI_CACHE).get("fahrzeuge")):
+        if isinstance(q, dict):
+            for n in q:
+                if re.match(r"^[0-9]{1,2}$", str(n)) and str(n) not in nummern:
+                    nummern.append(str(n))
+    if not nummern:
+        nummern = [str(i) for i in range(1, max(ganz(lox.get("anzahl_fahrzeuge"), 0), 4) + 1)]
+    themen = list(MQTT_OBEN)
+    for n in nummern:
+        themen += [f"fahrzeug{n}/{feld}" for feld in MQTT_FELDER + MQTT_TEXTFELDER]
+    geschickt = 0
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as err:
+        print(f"<INFO> MQTT: kein Socket ({err}) - die behaltenen Themen bleiben stehen.")
+        return 2
+    try:
+        for th in themen:
+            try:
+                s.sendto(f"retain {praefix}/{th} ".encode("utf-8"), ("127.0.0.1", z["udpport"]))
+                geschickt += 1
+            except OSError:
+                pass
+    finally:
+        s.close()
+    print(f"<INFO> MQTT: Rueckfall ueber den UDP-Eingang {z['udpport']} des Gateways: "
+          f"{geschickt} Loeschbefehle unter '{praefix}/' geschickt (leere Nutzlast, 'retain').")
+    print("<INFO> MQTT: UDP bestaetigt nichts. Stehen die Themen danach noch, sind sie im "
+          "Broker von Hand zu loeschen.")
+    return 2
+
+
+def mqtt_leeren(warten: float = 3.0) -> int:
+    """Fuer die Deinstallation (uninstall/uninstall, Abschnitt 1b): alle
+    behaltenen EIGENEN Themen am Broker loeschen und nachmessen.
+
+    Unabhaengig vom Haken "Werte behalten": der Altwert kann aus der Zeit
+    stammen, als er gesetzt war, und geloescht wird ohnehin nur, was
+    wirklich behalten liegt. Ausgabe im Format des Installers (<OK>,
+    <INFO>, <WARNING>). Rueckgabe 0 geleert/nichts zu leeren, 1 es blieb
+    etwas stehen, 2 nicht am Broker moeglich (dann der UDP-Rueckfall).
+    """
+    praefix = config()["mqtt_topic"]
+    erg = _broker_leeren(praefix, lambda t: bool(mqtt_eigenes_thema(praefix, t)), warten)
+    if erg["rc"] == 0:
+        if erg["geleert"]:
+            print(f"<OK> MQTT: {len(erg['geleert'])} behaltene Themen unter '{praefix}/' am "
+                  f"Broker geloescht und nachgemessen.")
+        else:
+            print(f"<INFO> MQTT: unter '{praefix}/' war am Broker nichts von diesem Plugin "
+                  f"behalten - nachgemessen, nichts zu loeschen.")
+        return 0
+    if erg["rc"] == 1:
+        print(f"<WARNING> MQTT: {len(erg['rest'])} von {len(erg['geleert'])} behaltenen "
+              f"Themen unter '{praefix}/' stehen nach dem Loeschen noch im Broker, zum "
+              f"Beispiel {erg['rest'][0]} - bitte von Hand loeschen.")
+        return 1
+    print(f"<INFO> MQTT: am Broker nicht moeglich - {erg['grund']}.")
+    return _udp_leeren(praefix)
 
 
 # ---------------------------------------------------------------------------
@@ -2152,36 +2402,27 @@ def entfernung_m(b1, l1, b2, l2):
 def lebenszeichen_senden(paare: dict, praefix: str, retain: int) -> tuple[int, int]:
     """mqtt_senden() mit dem einmaligen Abraeumen der Altwerte.
 
-    Der Merker retain_geraeumt steht in zustand.json - preupgrade.sh rettet
-    die Datei ueber jedes Upgrade, postinstall.sh legt sie zurueck. Er traegt
-    Praefix UND Themenliste: wer das Praefix umstellt, liesse sonst den Altwert
-    unter dem neuen Stamm stehen (Fall R3), und kommt ein Thema dazu, gilt der
-    alte Merker nicht mehr. Kein Vorlaeufer schrieb diesen Schluessel; ein
-    zustand.json aus 0.9.23 taeuscht deshalb nichts vor (Fall R5).
+    ERST abraeumen, DANN senden: der Broker reicht die Loeschung an das
+    Gateway weiter, das Gateway als leeren Wert an den Miniserver (Regeln/07,
+    am Geraet gemessen 06.09.2026) - der gueltige Wert muss unmittelbar
+    hinterher. Das leistet der mqtt_senden()-Aufruf im selben Durchgang.
 
-    Abgeraeumt wird AUCH bei "Werte behalten" aus (Fall R7): der Altwert
-    stammt aus der Zeit, als der Schalter an war - ab Werk ist er an -, und
-    ein fluechtiges publish ersetzt ihn nicht. Liegt keiner, ist die leere
-    Nutzlast folgenlos.
-
-    Geschrieben wird der Merker nur, wenn JEDES Loesch-Datagramm ohne Fehler
-    hinausging (Fall R6: ohne UDP-Port geht nichts hinaus, und das Abraeumen
-    bleibt fuer den naechsten Durchgang offen). UDP bestaetigt nichts:
-    verwirft das Gateway ein Datagramm, bleibt der Altwert trotz Merker im
-    Broker - dieselbe Grenze wie beim Beschattungswaechter 0.9.19; dann hilft
-    nur die Deinstallation oder der Broker von Hand.
+    Abgeraeumt wird AUCH bei "Werte behalten" aus: der Altwert stammt aus der
+    Zeit, als der Schalter an war, und ein fluechtiges publish ersetzt ihn
+    nicht. Der Merker 'retain_altlast' steht in zustand.json (preupgrade.sh
+    rettet die Datei ueber jedes Upgrade) und faellt erst, wenn das Nachlesen
+    am Broker nichts mehr findet. Bis 0.9.24 hing der Merker
+    'retain_geraeumt' am blossen sendto() eines UDP-Datagramms; verwarf das
+    Gateway es, stand der Altwert trotz Merker (in WSL gemessen 24.09.2026,
+    Pruefung-Skoda-Connect-NG-0.9.25, Faelle A3 und A4). Jener Merker
+    wird nicht gelesen (Fall A8).
     """
-    kennung = praefix + "|" + ",".join(MQTT_ALTWERTE_ABRAEUMEN)
-    if json_lesen(DATEI_ZUSTAND).get("retain_geraeumt") == kennung:
-        offen = ()
-    else:
-        offen = tuple(k for k in MQTT_ALTWERTE_ABRAEUMEN if k in paare)
-    geraeumt = []
-    versucht, schlecht = mqtt_senden(paare, praefix, retain,
-                                     abraeumen=offen, geraeumt=geraeumt)
-    if offen and all(k in geraeumt for k in offen):
-        zustand_schreiben(retain_geraeumt=kennung)
-    return versucht, schlecht
+    try:
+        mqtt_altlast_abraeumen(praefix)
+    except Exception as err:  # noqa: BLE001
+        melde_gebremst("retain_altlast",
+                       f"MQTT: Abraeumen der Altwerte uebersprungen ({fehlertext(err)}).")
+    return mqtt_senden(paare, praefix, retain)
 
 
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
@@ -2993,6 +3234,12 @@ def selbsttest() -> int:
 
 
 def main() -> int:
+    # VOR log_einrichten(): --mqtt-leeren laeuft aus der Deinstallation
+    # (uninstall/uninstall, Abschnitt 1b), und dort soll kein Protokoll mehr
+    # entstehen - LoxBerry raeumt log/plugins/<ordner> vor diesem Skript
+    # nicht wieder auf (Fall U1f).
+    if "--mqtt-leeren" in sys.argv:
+        return mqtt_leeren()
     # Der Umlauf gehoert dem Dauerlaeufer allein - siehe log_einrichten().
     # Selbsttest und Minutencron haengen nur an.
     kurzlaeufer = "--selbsttest" in sys.argv or "--wachzeichen" in sys.argv
