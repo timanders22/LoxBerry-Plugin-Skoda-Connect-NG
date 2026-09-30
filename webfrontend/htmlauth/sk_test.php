@@ -469,7 +469,7 @@ function sk_endpunkt_probe()
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
         $antwort = curl_exec($ch);
         $curlfehler = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($antwort === false) {
             $erg['text'] = $curlfehler !== '' ? $curlfehler : 'keine Antwort';
             sk_json_schreiben($marke, $erg);

@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.26 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.27 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -325,6 +325,14 @@ bisher allein in der Meldung — jetzt mit dem Grund in Worten, für die Codes
 * **`uninstall`** rechnet bei fehlendem Schlüssel mit der neuen Vorgabe.
 * Der Hinweis „Was ungeprüft ist" im Reiter *Test* und am Kopf dieser Datei
   nennt, was inzwischen am Gerät gemessen ist.
+
+## Neu in 0.9.27
+
+Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
+noch unter PHP 7 aufgerufen. Ab PHP 8.0 wirkt der Aufruf nicht mehr, und
+PHP 8.5 meldet ihn zur Laufzeit als veraltet. Bei eingeschalteter
+Fehleranzeige konnte diese Meldung vor einer Antwort an Loxone landen. Am
+LoxBerry mit PHP 7.4 ändert sich nichts.
 
 ## Neu in 0.9.17
 
