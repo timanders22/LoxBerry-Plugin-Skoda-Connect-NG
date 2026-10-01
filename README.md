@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.27 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.28 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -325,6 +325,37 @@ bisher allein in der Meldung — jetzt mit dem Grund in Worten, für die Codes
 * **`uninstall`** rechnet bei fehlendem Schlüssel mit der neuen Vorgabe.
 * Der Hinweis „Was ungeprüft ist" im Reiter *Test* und am Kopf dieser Datei
   nennt, was inzwischen am Gerät gemessen ist.
+
+## Neu in 0.9.28
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Skoda_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 5, 8, 16, 19 und 26).
+Gemessen mit Attrappen für die Škoda-Cloud (myskoda), Broker/Gateway und im Installer-Prüfstand unter PHP 7.4, 8.3 und 8.5; nicht am Gerät, nicht mit echtem Konto.
+
+* **Falsches Fahrzeug:** Ein Schaltbefehl mit `fahrzeug=N` traf bisher die N-te VIN der
+  sortierten Liste, gelesen wurde aber über die feste Nummer – kam ein zweites Auto dazu
+  oder verließ eines das Konto, schaltete `fahrzeug=1` ein anderes Auto (mit `OK=1`).
+  Jetzt schaltet jede Nummer das Auto, das sie liest; eine Nummer ohne Auto wird abgewiesen.
+* **`OK` mit Alter:** `OK` geht nach dem Dreifachen des Abruftakts auf 0 (bisher blieb es
+  auch bei totem Dienst auf 1); ein Zeitstempel aus der Zukunft gilt als ungültig. Der
+  letzte Stand übersteht einen Dienstneustart während einer Cloud-Störung.
+* **Dienst:** Startsperre gegen Doppelstart; jeder eigene Dienst wird gefunden und
+  angehalten. Ein Tippfehler im Schalter startet keinen Dauerdienst mehr.
+* **Beschädigte Konfiguration:** Endpunkt antwortet 503 `KONFIG_KAPUTT`, die Oberfläche
+  meldet die Heilung, im Reiter Test eine Pflichtzeile. Konfiguration und Zweitschrift
+  haben die Rechte 0600 (sie tragen das Aktionstoken).
+* **Speichern:** PRG; bei einer Beanstandung wird nichts gespeichert (auch nicht die
+  Zugangsdaten im selben Zug), die Eingaben kommen markiert zurück, nichts wird still
+  entfernt. „Einstellungen sichern“ warnt; ein leeres Token in einer Sicherung behält das
+  geltende.
+* **Neuinstallation:** Alte Zugangsdaten, Token und Bestand einer früheren Installation
+  werden nach `.alt` gelegt statt eingespielt; der Dienst startet nicht ungefragt.
+  `preupgrade.sh` sichert nur gültige Konfigurationen.
+* **MQTT:** `-` für Zustände ohne Aussage (Warnleuchte, Position) und für entfernte
+  Fahrzeuge; neue flüchtige Themen `fahrzeugN/ok` und `fahrzeugN/ts`; ein ausgefallenes
+  Fahrzeug sendet keine Altwerte mehr; Abräumen bei Präfixwechsel, „MQTT aus“ und
+  „Werte behalten aus“; Ladeempfehlung geht auf 0 statt zu verstummen; nur Änderungen,
+  voller Satz alle 30 Minuten, 5 ms Abstand.
+* Fehlender Pflichtparameter am Endpunkt: 400 statt 503.
 
 ## Neu in 0.9.27
 
@@ -1189,7 +1220,8 @@ wieder eingespielt. Beide Dateien werden vor dem Entfernen überschrieben.
 ## Endpunkte für Loxone
 
 Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
-Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
+Die Fahrzeugnummer ist fest je Fahrgestellnummer (lesend wie schaltend);
+statt ihrer darf überall auch die Fahrgestellnummer stehen
 (`fahrzeug=TMB…`).
 
 | Aufruf | Zweck |
@@ -1215,7 +1247,8 @@ Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
 **Ein Strich als Wert** heißt: dieser Wert liegt nicht vor. Es wird bewusst
 keine 0 gesendet — eine 0 wäre eine stille Falschaussage. Loxone behält dann
 den letzten gültigen Wert; deshalb gehören `ALTER` und `OK` immer mit
-ausgewertet.
+ausgewertet. `OK` steht auf 0, sobald `ALTER` größer ist als das Dreifache
+des Abruftakts.
 
 Schaltende Aufrufe antworten mit `SET;OK=…`: `1` angenommen, `0` abgelehnt (mit
 Grund), `2` eingereiht, aber innerhalb der Wartezeit ohne Antwort — also
@@ -1244,8 +1277,9 @@ wegräumt:
 
 * **Die beiden Sicherungsdateien** `config/plugins/<ordner>.backup.skoda.json`
   und `.backup.zugang.json`. Sie liegen absichtlich *neben* dem
-  Plugin-Konfigordner, damit Einstellungen und Zugangsdaten ein Update und
-  sogar eine Neuinstallation überstehen. Beim Deinstallieren ist genau das
+  Plugin-Konfigordner, damit Einstellungen und Zugangsdaten ein Update
+  überstehen; eine Neuinstallation legt liegengebliebene Zweitschriften nach
+  `.alt` und spielt sie nicht ein. Beim Deinstallieren ist genau das
   falsch: in `zugang.json` stehen Benutzername und Passwort des
   MySkoda-Kontos. Wer das Plugin entfernt, erwartet nicht, dass seine
   Zugangsdaten liegen bleiben.
@@ -1263,8 +1297,9 @@ Editor, in dem `skoda.py` offen ist, oder ein zweites Exemplar des Plugins).
 
 Im MQTT-Broker räumt `uninstall` die behaltenen Themen dieses Plugins ab —
 am Broker, mit den Zugangsdaten aus den Gateway-Einstellungen, und misst
-danach nach (`skoda.py --mqtt-leeren`); fremde Themen unter demselben Präfix
-bleiben stehen. Ohne das blieben bei gesetztem Haken *Werte behalten* (ab Werk
+danach nach (`skoda.py --mqtt-leeren`), auch unter früheren Präfixen, die
+zum Abräumen vorgemerkt sind; fremde Themen unter demselben Präfix bleiben
+stehen. Die `.alt`-Ablage einer Neuinstallation räumt sie ebenfalls ab. Ohne das blieben bei gesetztem Haken *Werte behalten* (ab Werk
 seit 0.9.21) bis zu 49 Themen dauerhaft im Broker stehen, darunter Standort
 und Kennzeichen des Fahrzeugs. Ist der Broker nicht erreichbar oder fehlt
 `paho-mqtt`, geht je Thema eine leere `retain`-Zeile an den UDP-Eingang des

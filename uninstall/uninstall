@@ -155,7 +155,7 @@ PCONFIG="$BASE/config/plugins"
 # Dienst. Ein Einmallauf ist kein Dienst.
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    ARGS=$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
     [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
     # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
@@ -266,8 +266,17 @@ mqtt_behaltene_themen_loeschen
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
 # ---------------------------------------------------------------
-for f in skoda.json zugang.json; do
+# Dazu die .alt-Ablage einer Neuinstallation (I1, Durchgang 01.10.2026).
+for f in skoda.json zugang.json skoda.json.alt zugang.json.alt; do
     BK="$PCONFIG/$PDIR.backup.$f"
+    # EIN VERWEIS WIRD NUR ALS VERWEIS ENTFERNT (I6, Durchgang 01.10.2026).
+    # Dieses Skript laeuft als root; bis 0.9.28 folgte dd einem Verweis an
+    # dieser Stelle und ueberschrieb dessen Ziel mit Nullbytes (gemessen,
+    # Installerbericht X2). Regeln/06: als root keinem Verweis folgen.
+    if [ -L "$BK" ]; then
+        rm -f "$BK" && echo "<WARNING> $PDIR.backup.$f war ein Verweis - nur der Verweis wurde entfernt, sein Ziel bleibt unberuehrt."
+        continue
+    fi
     if [ -f "$BK" ]; then
         # Ueberschreiben, dann entfernen: ein blosses rm traegt die Datei
         # nur aus dem Verzeichnis aus, der Inhalt bleibt auf der Karte
@@ -292,8 +301,8 @@ done
 # Rueckgabewert 1 fuer den Warnfall, den es im Skript nie gab.
 RC=0
 UEBRIG=0
-for f in skoda.json zugang.json; do
-    [ -e "$PCONFIG/$PDIR.backup.$f" ] && UEBRIG=$((UEBRIG+1))
+for f in skoda.json zugang.json skoda.json.alt zugang.json.alt; do
+    { [ -e "$PCONFIG/$PDIR.backup.$f" ] || [ -L "$PCONFIG/$PDIR.backup.$f" ]; } && UEBRIG=$((UEBRIG+1))
 done
 if [ "$UEBRIG" -eq 0 ]; then
     echo "<INFO> Die Zugangsdaten des MySkoda-Kontos sind damit vom LoxBerry entfernt."
@@ -315,13 +324,16 @@ echo "<INFO> dem bin-Ordner des Plugins entfernt - dafuer ist nichts zu tun."
 # $PDIR, nicht $PFOLDER: diese Datei nennt den Installationsordner PDIR.
 # Mit dem falschen Namen zeigte der Pfad auf ".lief_vorher" ohne Ordner -
 # der Merker waere liegen geblieben, und rm haette KEINEN Fehler gemeldet.
-rm -f "$BASE/config/plugins/$PDIR.lief_vorher"
+rm -f "$BASE/config/plugins/$PDIR.lief_vorher" "$BASE/config/plugins/$PDIR.lief_vorher.alt"
 
 # Und die Rettung, die preupgrade.sh neben den Datenordner legt. Sie liegt
 # ausserhalb von data/plugins/<ordner>/ und wird deshalb von LoxBerry nicht
 # mitgenommen. Darin stehen keine Zugangsdaten, aber Bewegungsdaten:
 # Verlauf und Ladeprotokoll.
 rm -rf "$BASE/data/plugins/$PDIR.rettung"
+# Und deren .alt (I1): eine Rettung aus einem frueheren Lauf oder einer
+# Neuinstallation. Ein Verweis wird von rm -rf nur als Verweis entfernt.
+rm -rf "$BASE/data/plugins/$PDIR.rettung.alt"
 
 # Und die Upgrade-Marke, die ebenfalls NEBEN dem Datenordner liegt. Bliebe
 # sie liegen, haette eine spaetere Neuinstallation eine fremde Marke vor

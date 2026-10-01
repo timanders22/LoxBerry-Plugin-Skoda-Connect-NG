@@ -13,7 +13,11 @@ function sk_pruefzeile($stand, $frage, $antwort)
     return array('stand' => $stand, 'frage' => $frage, 'antwort' => $antwort);
 }
 
-function sk_pruefungen()
+/* $netz (O11, Durchgang 01.10.2026): nur wenn der Reiter Test serverseitig
+ * offen ist, ruft die Pruefung den eigenen Endpunkt wirklich auf. Bis 0.9.28
+ * lief die Probe bei JEDEM Seitenaufbau, auch mit offenem Reiter
+ * Einstellungen (gemessen F11; die Kette meldete "rendern wollte ins Netz"). */
+function sk_pruefungen($netz = true)
 {
     $p = sk_paths();
     $cfg = sk_config();
@@ -68,7 +72,10 @@ function sk_pruefungen()
         $fassung !== '' ? 'myskoda ' . sk_e($fassung) : sk_t('TEST.A_LIB_FEHLT'));
 
     $pid = sk_dienst_pid();
-    $zeilen[] = sk_pruefzeile($pid > 0 ? 1 : 0, sk_t('TEST.F_DIENST'),
+    /* Ein BEWUSST angehaltener Dienst ist eine gewollte Lage: grauer Punkt,
+     * kein Kreuz (O12, Durchgang 01.10.2026; Regeln/04 "Ein rotes Kreuz, das
+     * nichts bedeutet"). Kreuz nur, wenn er laufen soll und es nicht tut. */
+    $zeilen[] = sk_pruefzeile($pid > 0 ? 1 : (sk_dienst_soll() ? 0 : -1), sk_t('TEST.F_DIENST'),
         $pid > 0 ? sk_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (sk_dienst_soll() ? sk_t('TEST.A_DIENST_SOLL_TOT') : sk_t('TEST.A_DIENST_GESTOPPT')));
 
@@ -109,7 +116,14 @@ function sk_pruefungen()
     }
 
     $alter = sk_alter();
-    if ($alter < 0) {
+    if ($pid <= 0) {
+        /* Die Frische wird nur beurteilt, wenn der Dienst laeuft (O12): ueber
+         * einen angehaltenen Dienst einen Herzschlag zu beurteilen, ergab bis
+         * 0.9.28 ein zweites Kreuz neben dem ersten. */
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_ABRUF'),
+            ($alter < 0 ? sk_t('TEST.A_NIE_ABGERUFEN') : sprintf(sk_t('TEST.A_ABRUF_ALTER'), $alter))
+            . ' &mdash; ' . sk_t('TEST.A_ABRUF_DIENST_AUS'));
+    } elseif ($alter < 0) {
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_ABRUF'), sk_t('TEST.A_NIE_ABGERUFEN'));
     } else {
         $frisch = $alter <= max(600, 3 * (int) $cfg['intervall']);
@@ -262,12 +276,33 @@ function sk_pruefungen()
                                   sk_t('TEST.F_CFG_LAGE'), implode(' ', $teile));
     }
 
+    /* ---- Ist die Konfiguration heil? (C8, Durchgang 01.10.2026) ----
+     * Pflichtzeile nach Regeln/04: ok / leer / frueher beschaedigt / kaputt.
+     * Bis 0.9.28 stand hier nur die Zeile darueber, und sie zeigte gruen
+     * "jeder Schluessel ist bekannt", waehrend eine beschaedigte Datei eben
+     * still ersetzt worden war (gemessen K1/K2). Die beiseitegelegte Fassung
+     * (.kaputt) ist der Beleg, dass es geschah. */
+    $kaputt_datei = $p['config'] . '.kaputt';
+    if ($lage['lage'] === 'kaputt') {
+        $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_CFG_HEIL'), sk_t('TEST.A_CFG_HEIL_KAPUTT'));
+    } elseif ($lage['lage'] !== 'ok') {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_CFG_HEIL'), sk_t('TEST.A_CFG_HEIL_LEER'));
+    } elseif (is_file($kaputt_datei)) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_CFG_HEIL'),
+            sprintf(sk_t('TEST.A_CFG_HEIL_ALT'), sk_e(date('d.m.Y H:i', (int) @filemtime($kaputt_datei))),
+                    sk_e(basename($kaputt_datei))));
+    } else {
+        $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_CFG_HEIL'), sk_t('TEST.A_CFG_HEIL_OK'));
+    }
+
     /* Der Wachposten. Er ist ohne Aktionstoken wirkungslos - fail closed -,
      * und dann laesst sich in dieser Oberflaeche gar nichts mehr absenden.
      * Das ist ein Zustand, den man sehen muss, nicht einen, den man erraet. */
     /* ---- Antwortet der eigene Endpunkt? ---- */
-    $ep = sk_endpunkt_probe();
-    if ($ep['stand'] === 1) {
+    $ep = $netz ? sk_endpunkt_probe() : sk_endpunkt_probe_gespeichert();
+    if ($ep['stand'] === -1 && !empty($ep['nicht_geprueft'])) {
+        $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_ENDPUNKT'), sk_t('TEST.A_ENDPUNKT_NICHT_GEPRUEFT'));
+    } elseif ($ep['stand'] === 1) {
         $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_ENDPUNKT'), sk_t('TEST.A_ENDPUNKT_OK'));
     } elseif ($ep['stand'] === 0) {
         $zeilen[] = sk_pruefzeile(0, sk_t('TEST.F_ENDPUNKT'),
@@ -463,7 +498,8 @@ function sk_endpunkt_probe()
          * Fehlerkanal - deshalb steht es vorn. */
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        // 3 s (O11, Regeln/04: Netzpruefungen mit 3 s Zeitgrenze; bis 0.9.28 5 s).
+        curl_setopt($ch, CURLOPT_TIMEOUT, 3);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
@@ -477,7 +513,7 @@ function sk_endpunkt_probe()
         }
     } else {
         $ctx = stream_context_create(array(
-            'http' => array('timeout' => 5, 'ignore_errors' => true,
+            'http' => array('timeout' => 3, 'ignore_errors' => true,
                             'header' => "Connection: close\r\n"),
             'ssl'  => array('verify_peer' => false, 'verify_peer_name' => false),
         ));
@@ -504,6 +540,21 @@ function sk_endpunkt_probe()
     $erg['text'] = substr($erste, 0, 120);
     sk_json_schreiben($marke, $erg);
     return $erg;
+}
+
+/**
+ * Das letzte Ergebnis der Endpunktprobe, ohne Netz (O11). Fehlt es, heisst
+ * das "nicht geprueft" - kein Haken und kein Kreuz.
+ */
+function sk_endpunkt_probe_gespeichert()
+{
+    $alt = sk_json_lesen(sk_paths()['datadir'] . '/endpunktprobe.json');
+    if (isset($alt['ts'], $alt['stand']) && in_array($alt['stand'], array(-1, 0, 1), true)) {
+        $alt['text'] = (isset($alt['text']) ? (string) $alt['text'] : '')
+                     . ' (' . sprintf(sk_t('TEST.A_ENDPUNKT_ALT'), max(0, time() - (int) $alt['ts'])) . ')';
+        return $alt;
+    }
+    return array('ts' => 0, 'stand' => -1, 'text' => '', 'nicht_geprueft' => 1);
 }
 
 /**
@@ -620,10 +671,11 @@ function sk_themen_vergleich()
     if ($q === false || strpos($q, 'MQTT_FELDER') === false) {
         return null;
     }
-    /* Die beiden Listen des Dienstes: MQTT_FELDER traegt Zahlen- und
-     * Schaltwerte, MQTT_TEXTFELDER die Texte. */
+    /* Die drei Listen des Dienstes: MQTT_FELDER traegt Zahlen- und
+     * Schaltwerte, MQTT_TEXTFELDER die Texte, MQTT_SIGNALFELDER (seit dem
+     * Durchgang 01.10.2026, M3) fahrzeugN/ok und fahrzeugN/ts. */
     $dienst = array();
-    foreach (array('MQTT_FELDER', 'MQTT_TEXTFELDER') as $name) {
+    foreach (array('MQTT_FELDER', 'MQTT_TEXTFELDER', 'MQTT_SIGNALFELDER') as $name) {
         $t = sk_py_tupel($q, $name);
         if ($t === null) {
             return null;

@@ -58,6 +58,38 @@ header('Content-Type: text/plain; charset=utf-8');
 $sk_cfg = sk_config();
 $sk_p = sk_paths();
 
+/* ---------------- Beschaedigte Konfiguration (C8, Durchgang 01.10.2026) ----------------
+ *
+ * Bis 0.9.28 antwortete der Endpunkt bei abgeschnittener skoda.json mit
+ * "GRUND=KEIN_TOKEN_GESETZT - Die Plugin-Oberflaeche wurde noch nie geoeffnet"
+ * (403), waehrend der Dienst mit der Zweitschrift weiterarbeitete (gemessen,
+ * Codebericht Nr. 7). Der Grund war falsch benannt. Jetzt sagt er es: 503
+ * KONFIG_KAPUTT. Geschrieben wird hier nichts - geheilt wird nur dort, wo
+ * jemand angemeldet ist (sk_config_heilen() in der Oberflaeche). Gibt es eine
+ * brauchbare Zweitschrift, muss der Aufrufer ihr Token kennen; sonst bekommt
+ * er dieselbe Abweisung wie immer. */
+$sk_lage_datei = sk_config_lage();
+if ($sk_lage_datei['lage'] === 'kaputt') {
+    $sk_zt = sk_zweitschrift_token();
+    $sk_ist0 = isset($_GET['token']) && is_string($_GET['token']) ? (string) $_GET['token'] : '';
+    if ($sk_zt !== '' && ($sk_ist0 === '' || !hash_equals($sk_zt, $sk_ist0))) {
+        http_response_code(403);
+        echo isset($_GET['selftest']) ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
+        exit;
+    }
+    http_response_code(503);
+    if (isset($_GET['selftest'])) {
+        echo "SELFTEST;OK=0;ERR=KONFIG_KAPUTT\n";
+        exit;
+    }
+    echo "FEHLER;OK=0;GRUND=KONFIG_KAPUTT\n";
+    echo $sk_zt !== ''
+        ? "skoda.json ist beschaedigt (kein gueltiges JSON). Der Dienst arbeitet mit der Zweitschrift weiter.\n"
+        : "skoda.json ist beschaedigt (kein gueltiges JSON), und eine brauchbare Zweitschrift gibt es nicht.\n";
+    echo "Die Plugin-Oberflaeche einmal oeffnen: sie legt die Datei als .kaputt beiseite und sagt, was sie tut.\n";
+    exit;
+}
+
 /* ---------------- Token ---------------- */
 $sk_soll = (string) $sk_cfg['aktionstoken'];
 $sk_ist = isset($_GET['token']) && is_string($_GET['token']) ? (string) $_GET['token'] : '';
@@ -237,6 +269,12 @@ if ($sk_alter < 0) {
  * Miniserver waeren dann verschieden. Fuer jede Ausfallerkennung ist
  * "999999" so gut wie jede groessere Zahl. */
 $sk_alter = min(999999, $sk_alter);
+/* OK=0 AB DEM DREIFACHEN TAKT (C2, Durchgang 01.10.2026; Entscheidung 4).
+ * Bis 0.9.28 kam OK allein aus 'ok' in loxone.json: stirbt der Dienst, bleibt
+ * OK=1 fuer immer stehen (gemessen: OK=1 bei ALTER=7201 und 172801,
+ * Codebericht Nr. 2). Jetzt gilt OK=0, sobald ALTER groesser als das
+ * Dreifache des Abruftakts ist; ALTER steht unveraendert daneben. */
+$sk_grenze = 3 * max(60, (int) $sk_cfg['intervall']);
 $sk_zaehler = (isset($sk_lox['zaehler']) && is_numeric($sk_lox['zaehler']))
             ? (int) $sk_lox['zaehler'] : 0;
 $sk_alle = sk_fahrzeuge();
@@ -361,7 +399,7 @@ if ($sk_aktion === 'ladungen') {
      * diese Falle hatte 0.9.13 fuer die fuehrende Null geschlossen. */
     $sk_nr_lad = array_search($sk_f, $sk_alle, true);
     $sk_l = sk_ladungen_lesen((int) $sk_nr_lad, 200);
-    echo 'LADUNGEN;OK=' . ((!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0)
+    echo 'LADUNGEN;OK=' . ((!empty($sk_lox['ok']) && $sk_alter < 999999 && $sk_alter <= $sk_grenze) ? 1 : 0)
        . ';N=' . count($sk_l) . ';ALTER=' . $sk_alter . "\n";
     foreach ($sk_l as $sk_z) {
         printf("%s;%d;%d;%s;%s;%s;%s\n",
@@ -375,7 +413,7 @@ if ($sk_aktion === 'ladungen') {
 }
 
 if ($sk_aktion === 'fahrzeuge') {
-    $sk_gesamt = (!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0;
+    $sk_gesamt = (!empty($sk_lox['ok']) && $sk_alter < 999999 && $sk_alter <= $sk_grenze) ? 1 : 0;
     echo 'FAHRZEUGE;OK=' . $sk_gesamt . ';N=' . count($sk_alle)
        . ';ALTER=' . $sk_alter . ';ZAEHLER=' . $sk_zaehler . "\n";
     foreach ($sk_alle as $sk_nr => $sk_eintrag) {
@@ -411,7 +449,7 @@ if ($sk_aktion === 'fahrzeuge') {
  * Strichen. Die Ausfallerkennung, die dieses Plugin ausdruecklich auf ALTER
  * und OK aufbaut, griff fuer dieses Fahrzeug nicht.
  */
-$sk_ok = (!empty($sk_lox['ok']) && $sk_alter < 999999) ? 1 : 0;
+$sk_ok = (!empty($sk_lox['ok']) && $sk_alter < 999999 && $sk_alter <= $sk_grenze) ? 1 : 0;
 $sk_ausfaelle = 0;
 if ($sk_f !== null) {
     $sk_ok = ($sk_ok && !empty($sk_f['ok'])) ? 1 : 0;
@@ -428,7 +466,15 @@ if ($sk_f !== null) {
      * Lage wie bisher und nicht schlechter. */
     if (isset($sk_f['ts']) && is_numeric($sk_f['ts']) && (int) $sk_f['ts'] > 0) {
         $sk_falter = time() - (int) $sk_f['ts'];
-        $sk_alter = min(999999, max(0, $sk_falter));
+        /* EIN ZEITSTEMPEL AUS DER ZUKUNFT IST KEINE AUSSAGE (C2/Code 10,
+         * Durchgang 01.10.2026). Bis 0.9.28 machte max(0, ...) daraus ALTER=0 -
+         * den frischestmoeglichen Wert (gemessen: WARTUNG;...;ALTER=0 bei einem
+         * ts zwei Stunden voraus). Dieselbe Regel wie in sk_alter(): mehr als
+         * 60 s voraus gilt 999999. */
+        $sk_alter = $sk_falter < -60 ? 999999 : min(999999, max(0, $sk_falter));
+    }
+    if ($sk_alter > $sk_grenze) {
+        $sk_ok = 0;
     }
     $sk_ausfaelle = isset($sk_f['ausfaelle_n']) ? (int) $sk_f['ausfaelle_n']
                   : (isset($sk_f['ausfaelle']) && is_array($sk_f['ausfaelle'])
@@ -512,21 +558,12 @@ if ($sk_aktion === 'position') {
  * ausschaltete, konnte weiterhin vollstaendige Cloud-Durchgaenge ausloesen -
  * genau der Weg, ueber den laut bin/skoda.py in 0.9.12 3600 Durchgaenge je
  * Stunde entstanden sind. */
-if (empty($sk_cfg['steuerung_ein'])) {
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
-    exit;
-}
-if (sk_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
-    // und der Befehl laege bis zum naechsten Start in der Warteschlange.
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
+/* DIE ANFRAGE WIRD GEPRUEFT, BEVOR DER DIENST GEPRUEFT WIRD (C5, Durchgang
+ * 01.10.2026; Regeln/03 Abschnitt 4). Bis 0.9.28 stand dieser Block hinter
+ * der Dienstpruefung: aktion=ladegrenze ohne prozent ergab bei angehaltenem
+ * Dienst 503 DIENST_LAEUFT_NICHT statt 400 PROZENT_FEHLT - eine falsch
+ * gebaute Adresse sah aus wie ein angehaltener Dienst (gemessen, Codebericht
+ * Nr. 11). */
 $sk_befehl = array('aktion' => $sk_aktion, 'fahrzeug' => $sk_fahrzeug);
 
 $sk_zusatz = isset($sk_alle_befehle[$sk_aktion][2]) ? $sk_alle_befehle[$sk_aktion][2] : '';
@@ -547,6 +584,22 @@ if ($sk_aktion === 'klima_start' || $sk_aktion === 'zieltemperatur') {
     }
     $sk_befehl['prozent'] = (int) $sk_prozent;
 }
+
+if (empty($sk_cfg['steuerung_ein'])) {
+    http_response_code(403);
+    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
+    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
+    exit;
+}
+if (sk_dienst_pid() === 0) {
+    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
+    // und der Befehl laege bis zum naechsten Start in der Warteschlange.
+    http_response_code(503);
+    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
+    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
+    exit;
+}
+
 
 list($sk_erg, $sk_meldung) = sk_befehl_absetzen($sk_befehl);
 /* 409, nicht 500.

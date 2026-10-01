@@ -208,11 +208,65 @@ laeuft() {
     # (Pruefung-Skoda-Connect-NG-0.9.23/messe_luecke.sh, Fall 8): die
     # Deinstallation beendete einen laufenden "--wachzeichen"-Lauf als
     # waere er der Dienst.
-    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    ARGS=$( { tr '\0' '\n' < "/proc/$P/cmdline"; } 2>/dev/null )
     [ "$(echo "$ARGS" | sed -n '2p')" = "$SKRIPT" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
     # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
     [ "$(echo "$ARGS" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
+    return 0
+}
+
+# ---------- JEDER eigene Dienst, argumentweise (C3, Durchgang 01.10.2026) ----------
+#
+# laeuft() kennt nur die Nummer aus der PID-Datei. Gemessen bis 0.9.28
+# (skoda_agenten/code/_agent/m3_doppelstart.sh, installer D1/D2): zwei
+# gleichzeitige 'start' ergaben in 4 von 4 Laeufen ZWEI Dienste, beide meldeten
+# dieselbe PID; 'stop' liess einen weiterlaufen und meldete trotzdem
+# "angehalten", und die Waise ueberstand jedes Upgrade mit altem Code.
+# Gefunden wird hier jeder Vorgang mit GENAU zwei Argumenten "<python>
+# <bin>/skoda.py" - dieselbe Pruefung wie laeuft(), preupgrade.sh und
+# uninstall. Ein grep ueber alle cmdline-Dateien in EINEM Aufruf, danach
+# argumentweise.
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    # Die Umleitung des Fehlerkanals umschliesst auch das '<': endet der Vorgang
+    # zwischen Pruefung und Lesen, meldete die Schale sonst "No such file" -
+    # gemessen in der Ausgabe von 'stop' (Bauprobe D1, 01.10.2026).
+    sk_a=$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+    [ "$(echo "$sk_a" | sed -n '2p')" = "$SKRIPT" ] || return 1
+    echo "$sk_a" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    [ "$(echo "$sk_a" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
+    return 0
+}
+
+eigene_dienste() {
+    for sk_f in $(grep -laF -- "$SKRIPT" /proc/[0-9]*/cmdline 2>/dev/null); do
+        sk_n=${sk_f#/proc/}
+        sk_n=${sk_n%/cmdline}
+        ist_unser_dienst "$sk_n" && echo "$sk_n"
+    done
+}
+
+# ---------- Die Startsperre (C3) ----------
+#
+# flock auf DIESE Datei (aufgeloest), Deskriptor 9. Knopf in der Oberflaeche,
+# Minutenwaechter und postinstall.sh rufen dasselbe Skript - wer die Sperre
+# nicht bekommt, startet nichts. Der Dienst erbt den Deskriptor NICHT ('9>&-'
+# an der nohup-Zeile): sonst hielte er die Sperre, solange er laeuft, und kein
+# 'stop' oder 'restart' kaeme mehr durch (Gedaechtnis "Sperre vererbt sich an
+# Kinder", Einspeisebremse 28.09.2026). Ohne flock bleibt es beim bisherigen
+# Weg. $1: 0 = nicht warten (Start), sonst Sekunden (Anhalten).
+SK_SPERRE=0
+sperre_nehmen() {
+    [ "$SK_SPERRE" = 1 ] && return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9<"$(readlink -f "$0")" || return 0
+    if [ "${1:-0}" = 0 ]; then
+        flock -n 9 || return 1
+    else
+        flock -w "$1" 9 || return 1
+    fi
+    SK_SPERRE=1
     return 0
 }
 
@@ -310,8 +364,21 @@ starten() {
         echo "Eine Aktualisierung dieses Plugins laeuft - es wird nichts gestartet."
         return 0
     fi
+    if ! sperre_nehmen 0; then
+        echo "Ein anderer Aufruf startet oder haelt den Dienst gerade an - es wird nichts doppelt gestartet."
+        return 0
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    # Ein eigener Dienst OHNE PID-Datei (Waise aus einem frueheren Doppelstart)
+    # wird uebernommen, nicht verdoppelt.
+    sk_waise=$(eigene_dienste | head -n 1)
+    if [ -n "$sk_waise" ]; then
+        ordner_anlegen
+        echo "$sk_waise" > "$PID"
+        echo "laeuft bereits (PID $sk_waise, ohne PID-Datei gefunden - PID-Datei nachgetragen)"
         return 0
     fi
     if [ ! -x "$PY" ]; then
@@ -336,7 +403,7 @@ starten() {
     # und setzt STARTLOG_KAPPEN=0 - sonst ginge hier verloren, was er
     # vorher schon hineingeschrieben hat.
     [ "${STARTLOG_KAPPEN:-1}" = 0 ] || : > "$STARTLOG"
-    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 &
+    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 9>&- &
     echo $! > "$PID"
     # HINSEHEN, BIS ER WIRKLICH ANGELAUFEN IST - BERICHTIGT IN 0.9.21.
     #
@@ -388,14 +455,23 @@ starten() {
 }
 
 anhalten() {
+    # Auf einen laufenden Start wird gewartet (der haelt die Sperre hoechstens
+    # rund 33 s), dann gilt die Sperre auch fuer das Anhalten.
+    if ! sperre_nehmen 45; then
+        echo "FEHLER: Ein anderer Aufruf haelt die Startsperre seit 45 s - es wurde nichts angehalten."
+        return 1
+    fi
     rm -f "$SOLL"
-    if ! laeuft; then
+    # JEDER eigene Dienst, nicht nur der aus der PID-Datei (C3).
+    SK_LISTE=$( { laeuft && cat "$PID"; eigene_dienste; } 2>/dev/null | sort -u | tr '\n' ' ')
+    if [ -z "${SK_LISTE// /}" ]; then
         rm -f "$PID"
         echo "laeuft nicht"
         return 0
     fi
-    P=$(cat "$PID")
-    kill "$P" 2>/dev/null
+    for P in $SK_LISTE; do
+        kill "$P" 2>/dev/null
+    done
     # 70 Sekunden, nicht 10.
     #
     # Das Signal setzt nur einen Merker; geprueft wird er im Sekundentakt der
@@ -409,27 +485,40 @@ anhalten() {
     # nicht mehr kommt.
     i=0
     while [ "$i" -lt 70 ]; do
-        laeuft || break
+        sk_rest=""
+        for P in $SK_LISTE; do
+            ist_unser_dienst "$P" && sk_rest="$sk_rest $P"
+        done
+        [ -z "$sk_rest" ] && break
         sleep 1
         i=$((i + 1))
     done
-    if laeuft; then
-        kill -9 "$P" 2>/dev/null
-        sleep 1
-    fi
+    for P in $SK_LISTE; do
+        # Vor dem harten Signal noch einmal nachsehen: die Nummer kann neu
+        # vergeben sein (uninstall, beenden()).
+        ist_unser_dienst "$P" && kill -9 "$P" 2>/dev/null
+    done
+    sleep 1
     # NACHSEHEN, ob er wirklich weg ist - SEIT 0.9.21, uebernommen aus
     # AudiConnect 0.9.12. Bis 0.9.20 folgte hier ohne Pruefung "rm -f $PID"
     # und "angehalten". Gehoert der Vorgang einem anderen Benutzer, scheitert
     # das kill mit EPERM, das rm gelingt aber, weil das Verzeichnis loxberry
     # gehoert. Danach meldet "laeuft" false, und ein anschliessendes "start"
     # legt ein ZWEITES Exemplar an.
-    if laeuft; then
-        echo "FEHLER: Vorgang $P ist noch da - die PID-Datei bleibt stehen."
-        echo "        Gehoert er einem anderen Benutzer? ps -o user= -p $P"
+    # "angehalten" NUR, WENN KEINER MEHR LAEUFT - gezaehlt, nicht angenommen.
+    sk_uebrig=$(eigene_dienste | tr '\n' ' ')
+    if [ -n "${sk_uebrig// /}" ]; then
+        echo "FEHLER: Vorgang/Vorgaenge ${sk_uebrig% } noch da - die PID-Datei bleibt stehen."
+        echo "        Gehoert er einem anderen Benutzer? ps -o user= -p ${sk_uebrig%% *}"
         return 1
     fi
     rm -f "$PID" "$BEREIT"
-    echo "angehalten"
+    sk_anz=$(echo $SK_LISTE | wc -w)
+    if [ "$sk_anz" -gt 1 ]; then
+        echo "angehalten ($sk_anz Dienste - einer davon lief ohne PID-Datei)"
+    else
+        echo "angehalten"
+    fi
     return 0
 }
 
@@ -438,8 +527,19 @@ case "$1" in
     stop)    anhalten ;;
     restart) anhalten; sleep 1; starten ;;
     status)
+        # Jeder eigene Dienst zaehlt (C3) - auch einer ohne PID-Datei.
+        sk_alle=$(eigene_dienste | tr '\n' ' ')
         if laeuft; then
-            echo "laeuft $(cat "$PID")"
+            sk_mehr=$(echo " $sk_alle " | sed "s/ $(cat "$PID") / /g")
+            if [ -n "${sk_mehr// /}" ]; then
+                echo "laeuft $(cat "$PID") (dazu ohne PID-Datei:$(echo "$sk_mehr" | sed 's/ *$//'))"
+            else
+                echo "laeuft $(cat "$PID")"
+            fi
+            exit 0
+        fi
+        if [ -n "${sk_alle// /}" ]; then
+            echo "laeuft ${sk_alle% } (ohne PID-Datei)"
             exit 0
         fi
         echo "gestoppt"
@@ -478,6 +578,13 @@ case "$1" in
             : > "$STARTLOG"
             exec 2>>"$STARTLOG"
             jetzt=$(date '+%Y-%m-%d %H:%M:%S')
+            # Laeuft er doch - ohne PID-Datei? Dann nur nachtragen (C3).
+            sk_waise=$(eigene_dienste | head -n 1)
+            if [ -n "$sk_waise" ]; then
+                echo "$sk_waise" > "$PID"
+                echo "[$jetzt] Waechter: Dienst lief ohne PID-Datei (PID $sk_waise) - PID-Datei nachgetragen, nichts gestartet." >> "$LOGDATEI"
+                exit 0
+            fi
             if [ -x "$PY" ] && ! zugang_vollstaendig; then
                 rm -f "$SOLL"
                 echo "[$jetzt] Waechter: keine Zugangsdaten - Dienst bleibt angehalten, Sollmerker entfernt." >> "$LOGDATEI"

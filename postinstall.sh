@@ -100,10 +100,55 @@ VENV="$PBIN/venv"
 # Stelle und mit welchem Rueckgabewert dieses Skript endet. Ob der Dienst
 # gestartet werden soll, steht danach in LIEF_VORHER - einer Variablen,
 # die kein Abbruch liegen lassen kann.
+# ---------- Upgrade oder Neuinstallation? (I1, Durchgang 01.10.2026) ----------
+#
+# Entscheidung 1 (29.09.2026): zurueckgespielt wird NUR bei einer
+# Aktualisierung, und eine Aktualisierung erkennt dieses Skript an der Marke,
+# die preupgrade.sh als Erstes anlegt - ohne Altersvergleich (Entscheidung 8:
+# auch eine vergessene Marke gilt; wer frisch anfangen will, deinstalliert
+# vorher). Bis 0.9.28 spielte eine Neuinstallation liegengebliebene
+# Zweitschriften, Bestaende und den Startmerker einer FRUEHEREN Installation
+# ein - altes Konto, altes Passwort, altes Aktionstoken - und startete den
+# Dienst ungefragt (gemessen, Installerbericht F1/F1b).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+UPG_MARKE=0
+[ -f "$MARKE" ] && UPG_MARKE=1
+
 MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
 LIEF_VORHER=0
-[ -f "$MERKER" ] && LIEF_VORHER=1
+[ "$UPG_MARKE" = 1 ] && [ -f "$MERKER" ] && LIEF_VORHER=1
 trap 'rm -f "$MERKER"' EXIT
+
+# Ist die Datei ein JSON-Objekt mit mindestens einem nicht leeren Textwert?
+# (I2, Durchgang 01.10.2026: statt grep; bis 0.9.28 nahm die Zeichenkettensuche
+# eine abgeschnittene Datei an und meldete "<OK> wiederhergestellt", gemessen
+# B1/B2.) Gelesen mit dem System-Python - die venv entsteht erst weiter unten.
+# Rueckgabe 0 ja, 1 nein, 2 nicht pruefbar (kein python3).
+json_mit_inhalt() {
+    command -v python3 >/dev/null 2>&1 || return 2
+    python3 -c 'import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, dict) and any(isinstance(v, str) and v.strip() for v in d.values()) else 1)' "$1" 2>/dev/null
+}
+
+# Eine Datei oder einen Ordner der .alt-Ablage entfernen. Ein Verweis wird nur
+# als Verweis entfernt (I6), eine Datei vorher ueberschrieben (sie kann ein
+# Passwort tragen).
+alt_entfernen() {
+    if [ -L "$1" ]; then
+        rm -f "$1"
+    elif [ -d "$1" ]; then
+        rm -rf "${1:?}"
+    elif [ -f "$1" ]; then
+        sk_l=$(stat -c %s "$1" 2>/dev/null || echo 0)
+        [ "$sk_l" -gt 0 ] && dd if=/dev/zero of="$1" bs=1 count="$sk_l" conv=notrunc >/dev/null 2>&1
+        rm -f "$1"
+    fi
+}
 
 # Fassung der Bibliothek. Auf eine Fassung festgenagelt, damit eine
 # Installation von heute morgen und eine von heute abend dasselbe ergeben.
@@ -131,7 +176,32 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 # liegengebliebene Rettung wuerde beim naechsten Upgrade einen alten Stand
 # ueber einen neuen legen.
 RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
-if [ -d "$RETTUNG" ]; then
+
+# NEUINSTALLATION: alles aus einer frueheren Installation nach .alt (I1).
+# Einmal <WARNING> mit den Pfaden; ein vorhandenes .alt wird vorher
+# abgeraeumt; uninstall raeumt die .alt mit ab. Die Selbstheilung der
+# Bibliothek liest .alt nie.
+if [ "$UPG_MARKE" = 0 ]; then
+    ALT_LISTE=""
+    for z in "$BASE/config/plugins/$PFOLDER.backup.skoda.json" \
+             "$BASE/config/plugins/$PFOLDER.backup.zugang.json" \
+             "$RETTUNG" "$MERKER"; do
+        [ -e "$z" ] || [ -L "$z" ] || continue
+        if [ -e "$z.alt" ] || [ -L "$z.alt" ]; then
+            alt_entfernen "$z.alt"
+        fi
+        if mv -f "$z" "$z.alt" 2>/dev/null; then
+            ALT_LISTE="$ALT_LISTE $z.alt"
+        else
+            ALT_LISTE="$ALT_LISTE $z (liess sich NICHT verschieben)"
+        fi
+    done
+    if [ -n "$ALT_LISTE" ]; then
+        echo "<WARNING> Neuinstallation: Zweitschriften und Bestaende einer frueheren Installation wurden nicht eingespielt, sondern beiseitegelegt:$ALT_LISTE - der Dienst wird nicht gestartet; die Deinstallation raeumt sie ab."
+    fi
+fi
+
+if [ "$UPG_MARKE" = 1 ] && [ -d "$RETTUNG" ]; then
     ZURUECK=0
     for f in soll_laufen zustand.json ladungen.csv; do
         if [ -e "$RETTUNG/$f" ] && [ ! -e "$PDATA/$f" ]; then
@@ -156,29 +226,41 @@ if [ ! -f "$PCONFIG/zugang.json" ]; then
 fi
 chmod 600 "$PCONFIG/zugang.json"
 
-# Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
-for f in skoda.json zugang.json; do
-    BK="$BASE/config/plugins/$PFOLDER.backup.$f"
-    CF="$PCONFIG/$f"
-    if [ -f "$BK" ]; then
-        INHALT=$(cat "$CF" 2>/dev/null)
-        if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            # Nur eine Zweitschrift MIT Inhalt. Bis 0.9.25 wurde auch "{}"
-            # oder ein leeres Konto ({"email":"","passwort":""}) kopiert und
-            # als "wiederhergestellt" gemeldet (gemessen 24.09.2026,
-            # Pruefung-Skoda-Connect-NG-0.9.26, Fall c). Inhalt heisst hier:
-            # mindestens ein nicht leerer Textwert. Python ist an dieser
-            # Stelle noch nicht gesucht - deshalb grep; ein Aktionstoken,
-            # eine E-Mail oder ein Passwort ist immer ein Text.
-            if ! grep -q '"[^"]*" *: *"[^"]' "$BK" 2>/dev/null; then
-                echo "<INFO> $f: Sicherung ohne Einstellungen - nichts zurueckgespielt."
-            else
-                cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+# Sicherung zurueckspielen - NUR BEI EINER AKTUALISIERUNG (I1). Bei einer
+# Neuinstallation liegen die Zweitschriften schon unter .alt (oben). Bis 0.9.28
+# stand hier "uebersteht Update UND Neuinstallation" - genau das war der
+# Befund.
+if [ "$UPG_MARKE" = 1 ]; then   # Upgrade-Marke (upgrade_laeuft) lag beim Start
+    for f in skoda.json zugang.json; do
+        BK="$BASE/config/plugins/$PFOLDER.backup.$f"
+        CF="$PCONFIG/$f"
+        if [ -L "$BK" ]; then
+            echo "<WARNING> $BK ist ein Verweis, keine Datei - nichts zurueckgespielt."
+        elif [ -f "$BK" ]; then
+            INHALT=$(cat "$CF" 2>/dev/null)
+            if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
+                # Nur eine Zweitschrift, die ein JSON-Objekt MIT Inhalt ist
+                # (mindestens ein nicht leerer Textwert; bis 0.9.25 wurde auch
+                # "{}" kopiert, bis 0.9.28 auch eine abgeschnittene Datei).
+                # <OK> erst, wenn die zurueckgespielte Datei selbst die Pruefung
+                # besteht - die Wirkung, nicht der Rueckgabewert von cp.
+                json_mit_inhalt "$BK"
+                sk_rc=$?
+                if [ "$sk_rc" = 2 ]; then
+                    echo "<WARNING> $f: python3 fehlt - die Sicherung liess sich nicht pruefen und wurde nicht zurueckgespielt ($BK)."
+                elif [ "$sk_rc" != 0 ]; then
+                    echo "<INFO> $f: Sicherung ohne Einstellungen oder kein gueltiges JSON-Objekt - nichts zurueckgespielt."
+                elif cp -p "$BK" "$CF" && chmod 600 "$CF" && json_mit_inhalt "$CF"; then
+                    echo "<OK> $f aus Sicherung wiederhergestellt."
+                else
+                    echo "<WARNING> $f liess sich aus der Sicherung nicht zurueckspielen ($BK)."
+                fi
             fi
         fi
-    fi
-done
-chmod 600 "$PCONFIG/zugang.json"
+    done
+fi
+# 0600 auch fuer skoda.json (C9): sie traegt das Aktionstoken.
+chmod 600 "$PCONFIG/zugang.json" "$PCONFIG/skoda.json"
 
 # ---------- Die S-PIN abraeumen, die es nicht mehr gibt (0.9.11) ----------
 #
@@ -373,7 +455,57 @@ if [ "$(id -u)" = "0" ]; then
         echo "<WARNING> fremdem Eigentuemer bitte von Hand pruefen."
     fi
 fi
-chmod 600 "$PCONFIG/zugang.json"
+chmod 600 "$PCONFIG/zugang.json" "$PCONFIG/skoda.json"
+for f in skoda.json zugang.json; do
+    [ -f "$BASE/config/plugins/$PFOLDER.backup.$f" ] && [ ! -L "$BASE/config/plugins/$PFOLDER.backup.$f" ] \
+        && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.$f"
+done
+
+# ---------- Jeder eigene Dienst, bevor gestartet wird (C3, Durchgang 01.10.2026) ----------
+#
+# Regeln/06: bei liegender Marke haelt postinstall JEDEN eigenen Dienst an,
+# auch einen ohne PID-Datei. Bis 0.9.28 ueberstand eine Waise aus einem
+# Doppelstart jedes Upgrade und lief mit dem ALTEN Code weiter, und nach dem
+# Start hier liefen zwei (gemessen, Installerbericht D2). Argumentweise wie in
+# preupgrade.sh, bin/dienst.sh und uninstall.
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ARGS=$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+    [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    [ "$(echo "$ARGS" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
+    return 0
+}
+if [ "$UPG_MARKE" = 1 ]; then
+    WAISEN=""
+    for sk_f in $(grep -laF -- "$PBIN/skoda.py" /proc/[0-9]*/cmdline 2>/dev/null); do
+        sk_n=${sk_f#/proc/}
+        sk_n=${sk_n%/cmdline}
+        ist_unser_dienst "$sk_n" && WAISEN="$WAISEN $sk_n"
+    done
+    if [ -n "$WAISEN" ]; then
+        for P in $WAISEN; do kill "$P" 2>/dev/null; done
+        i=0
+        REST="$WAISEN"
+        while [ "$i" -lt 70 ]; do
+            REST=""
+            for P in $WAISEN; do ist_unser_dienst "$P" && REST="$REST $P"; done
+            [ -z "$REST" ] && break
+            sleep 1
+            i=$((i + 1))
+        done
+        for P in $REST; do ist_unser_dienst "$P" && kill -9 "$P" 2>/dev/null; done
+        [ -n "$REST" ] && sleep 1
+        UEBRIG=""
+        for P in $WAISEN; do ist_unser_dienst "$P" && UEBRIG="$UEBRIG $P"; done
+        if [ -n "$UEBRIG" ]; then
+            echo "<WARNING> Ein Dienst aus der Zeit vor der Aktualisierung laeuft noch (PID$UEBRIG)."
+            echo "<WARNING> Nach der Aktualisierung im Reiter Einstellungen 'Dienst anhalten' und neu starten."
+        else
+            echo "<INFO> $(echo $WAISEN | wc -w) Dienst(e) aus der Zeit vor der Aktualisierung angehalten (PID$WAISEN); es laeuft keiner mehr."
+        fi
+    fi
+fi
 
 # ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
 #
@@ -445,13 +577,24 @@ d=json.load(open(sys.argv[1],encoding="utf-8"))
 ok=lambda k: isinstance(d.get(k),str) and d.get(k).strip()!=""
 sys.exit(0 if isinstance(d,dict) and ok("email") and ok("passwort") else 1)' \
         "$PCONFIG/zugang.json" >/dev/null 2>&1; then
-    if [ "$LIEF_VORHER" -eq 0 ]; then
-        echo "<INFO> Der Dienst lief vor dem Update nicht und bleibt angehalten;"
-        echo "<INFO> gestartet wird er im Reiter Einstellungen."
+    # Die Schlusszeile richtet sich nach der Marke (I1): eine Neuinstallation
+    # heisst nicht "Aktualisierung abgeschlossen".
+    if [ "$UPG_MARKE" = 1 ]; then
+        if [ "$LIEF_VORHER" -eq 0 ]; then
+            echo "<INFO> Der Dienst lief vor dem Update nicht und bleibt angehalten;"
+            echo "<INFO> gestartet wird er im Reiter Einstellungen."
+        fi
+        echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    else
+        echo "<OK> Installation abgeschlossen."
+        echo "<INFO> Der Dienst ist angehalten; gestartet wird er im Reiter Einstellungen."
     fi
-    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
 else
-    echo "<OK> Installation abgeschlossen."
+    if [ "$UPG_MARKE" = 1 ]; then
+        echo "<OK> Aktualisierung abgeschlossen."
+    else
+        echo "<OK> Installation abgeschlossen."
+    fi
     echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des MySkoda-Kontos"
     echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."
 fi

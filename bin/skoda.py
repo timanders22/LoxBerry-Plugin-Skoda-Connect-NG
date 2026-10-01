@@ -870,6 +870,11 @@ def mqtt_senden(paare: dict, praefix: str, retain: int = 0) -> tuple[int, int]:
                          ("127.0.0.1", z["udpport"]))
             except OSError:
                 schlecht += 1
+            # 5 ms ABSTAND (M7, Durchgang 01.10.2026). Der UDP-Eingang des
+            # Gateways verwarf am Geraet ohne Pause bis zu 6 von 90 Datagrammen,
+            # mit 5 ms keines (Regeln/07, Fensterbilanz 16.09.2026); gemessen
+            # waren hier 87 Datagramme in 5,3 ms.
+            time.sleep(0.005)
     except OSError as err:
         melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
     finally:
@@ -895,7 +900,7 @@ def mqtt_eigenes_thema(praefix: str, thema: str) -> str:
         return rest
     teile = rest.split("/")
     if (len(teile) == 2 and re.match(r"^fahrzeug[0-9]{1,2}$", teile[0])
-            and teile[1] in MQTT_FELDER + MQTT_TEXTFELDER):
+            and teile[1] in MQTT_FELDER + MQTT_TEXTFELDER + MQTT_SIGNALFELDER):
         return rest
     return ""
 
@@ -1099,7 +1104,23 @@ def mqtt_leeren(warten: float = 3.0) -> int:
     <INFO>, <WARNING>). Rueckgabe 0 geleert/nichts zu leeren, 1 es blieb
     etwas stehen, 2 nicht am Broker moeglich (dann der UDP-Rueckfall).
     """
-    praefix = config()["mqtt_topic"]
+    # ALLE PRAEFIXE, NICHT NUR DAS AKTUELLE (M5, Durchgang 01.10.2026): dazu
+    # die vorgemerkten und das, unter dem zuletzt retained gesendet wurde
+    # (mqtt_praefix_pflegen()). Gemessen bis 0.9.28: nach einem Praefixwechsel
+    # 0 Loeschbefehle unter dem alten Praefix.
+    z = json_lesen(DATEI_ZUSTAND)
+    praefixe = [config()["mqtt_topic"]]
+    for p in list(z.get("mqtt_vorgemerkt") or []) + [z.get("mqtt_retain_praefix")]:
+        if isinstance(p, str) and p and thema_saeubern(p) == p and p not in praefixe:
+            praefixe.append(p)
+    rc_gesamt = 0
+    for praefix in praefixe:
+        rc_gesamt = max(rc_gesamt, _mqtt_leeren_eines(praefix, warten))
+    return rc_gesamt
+
+
+def _mqtt_leeren_eines(praefix: str, warten: float) -> int:
+    """mqtt_leeren() fuer EIN Praefix (Form bis 0.9.28)."""
     erg = _broker_leeren(praefix, lambda t: bool(mqtt_eigenes_thema(praefix, t)), warten)
     if erg["rc"] == 0:
         if erg["geleert"]:
@@ -1749,7 +1770,16 @@ class Horcher:
                 return 0
         wert = zahl(roh, 3)
         if wert is None:
-            return None
+            # VERSTUMMT HEISST 0, NICHT NICHTS (M6, Durchgang 01.10.2026).
+            # Bis 0.9.28 lieferte eine Quelle, die nach Entscheidung 5 "keine
+            # Aussage" als "-" meldet (oder leer), hier None - gesendet wurde
+            # nichts, und in Loxone blieb die letzte 1 stehen (gemessen,
+            # skoda_agenten/mqtt/_agent/messung_2.txt). Der Kopf dieser
+            # Funktion verspricht es seit 31.08.2026.
+            melde_gebremst("empf_keine_zahl",
+                           f"Auf '{thema}' kam keine Zahl ('{str(roh)[:20]}'). Die "
+                           f"Ladeempfehlung geht als 0 hinaus, nicht als der alte Stand.", 3600)
+            return 0
         grenze = float(cfg["empf_grenze"])
         return 1 if ((wert < grenze) if cfg.get("empf_kleiner") else (wert > grenze)) else 0
 
@@ -1867,6 +1897,32 @@ def ladung_buchen(nummer: str, f: dict) -> None:
 # Der Loxone-Endpunkt legt hier eine JSON-Datei ab, der Dienst arbeitet sie ab
 # und legt die Antwort daneben. Der Endpunkt selbst spricht NIE mit der Cloud.
 # ---------------------------------------------------------------------------
+def nebendateien_abraeumen(ordner: Path, mindestalter: int = 60) -> int:
+    """Nebendateien <ziel>.json.tmp.<pid> eines FREMDEN, TOTEN Schreibers
+    abraeumen, die mindestens 'mindestalter' Sekunden alt sind (C7).
+
+    Die Nebendatei eines lebenden Vorgangs gehoert ihm - er benennt sie gleich
+    um. Die eigene ebenso. Rueckgabe: Zahl der entfernten Dateien.
+    """
+    n = 0
+    jetzt = time.time()
+    for p in ordner.glob("*.json.tmp.*"):
+        m = re.match(r"^.+\.json\.tmp\.([0-9]+)$", p.name)
+        if not m:
+            continue
+        pid = int(m.group(1))
+        if pid == os.getpid() or Path("/proc", str(pid)).exists():
+            continue
+        try:
+            if jetzt - p.stat().st_mtime < mindestalter:
+                continue
+            p.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def antwort_schreiben(kennung: str, ok: int, meldung: str, zusatz: dict | None = None) -> None:
     ORDNER_ANTWORTEN.mkdir(parents=True, exist_ok=True)
     d = {"ok": ok, "meldung": meldung, "ts": int(time.time())}
@@ -1884,6 +1940,12 @@ def antwort_schreiben(kennung: str, ok: int, meldung: str, zusatz: dict | None =
                 alt.unlink()
         except OSError:
             pass
+    # UND DIE NEBENDATEIEN HEUTIGER BAUART (C7, Durchgang 01.10.2026).
+    # json_schreiben() haengt seit 01.09.2026 die Prozessnummer an
+    # (<kennung>.json.tmp.<pid>); die beiden Muster oben fingen sie nie ein -
+    # gemessen: c.json.tmp.4711, zwei Stunden alt, blieb liegen
+    # (skoda_agenten/code/_agent/m8_nebendatei.py).
+    nebendateien_abraeumen(ORDNER_ANTWORTEN)
     # Und die Befehlsdateien, die niemand abgeholt hat. Der Endpunkt weigert
     # sich zwar einzureihen, wenn der Dienst nicht laeuft - aber zwischen
     # seiner PID-Pruefung und dem Ablegen liegt ein Augenblick, in dem der
@@ -1971,8 +2033,22 @@ class Bremse:
 _BREMSE = Bremse()
 
 
-def vin_waehlen(vins: list[str], nummer_oder_vin) -> str | None:
-    """Nimmt entweder die laufende Nummer (1-basiert) oder die VIN selbst."""
+def vin_waehlen(vins: list[str], nummer_oder_vin, karte: dict | None = None) -> str | None:
+    """Nimmt entweder die FESTE Fahrzeugnummer oder die VIN selbst.
+
+    DIE NUMMER IST DIE AUS nummern_zuordnen(), NICHT DIE STELLE IN DER LISTE
+    (C1, Durchgang 01.10.2026). Bis 0.9.28 stand hier "vins[n - 1]": gelesen
+    wurde ueber die feste Nummer aus zustand.json, geschaltet ueber die Stelle
+    in der sortierten VIN-Liste. Gemessen (skoda_agenten/code/_agent/
+    m1_fahrzeugnummer.py): kam ein zweites Auto mit kleinerer VIN dazu, las
+    fahrzeug=1 die Werte des einen und klimatisierte das andere; verliess
+    Auto 1 das Konto, schaltete fahrzeug=1 das verbliebene Auto 2 - beides mit
+    OK=1. Gilt fuer den Endpunkt, die Knoepfe im Reiter Test und die
+    Vorklimatisierung zur Abfahrtszeit gleichermassen.
+
+    Gehoert die Nummer zu einer VIN, die das Konto gerade nicht fuehrt, gibt
+    es kein Ziel (None) - geraten wird nicht.
+    """
     s = str(nummer_oder_vin or "").strip()
     if s.upper() in [v.upper() for v in vins]:
         for v in vins:
@@ -1989,7 +2065,17 @@ def vin_waehlen(vins: list[str], nummer_oder_vin) -> str | None:
         # stille Zurechtbiegen drei Zeilen ueber seiner eigenen Musterpruefung
         # ausdruecklich; hier stand das Gegenteil.
         n = 0
-    return vins[n - 1] if 1 <= n <= len(vins) else None
+    if n < 1:
+        return None
+    if karte is None:
+        karte = nummern_zuordnen(vins)
+    for vin, nr in karte.items():
+        if nr == n:
+            for v in vins:
+                if v.upper() == str(vin).upper():
+                    return v
+            return None
+    return None
 
 
 async def befehl_ausfuehren(ms, vins: list[str], cfg: dict, b: dict) -> tuple[int, str, dict]:
@@ -2237,6 +2323,10 @@ def kann(stamm: dict, kennung: str) -> bool:
 async def fahrzeug_abrufen(ms, vin: str, stamm: dict, cfg: dict, zyklus: int) -> dict:
     ausfaelle: dict[str, str] = {}
     d: dict = {"vin": vin}
+    # Welche Endpunkte haben IN DIESEM ABRUF geantwortet? Nur deren fehlende
+    # Felder gelten als "ohne Aussage" (M1/M2) - ein ausgefallener Endpunkt
+    # laesst seine Felder wie bisher stehen (Nr. 8).
+    geliefert: list[str] = []
 
     if zyklus % cfg["takt_stamm"] == 0 or not stamm:
         info = await endpunkt(ausfaelle, "info", ms.get_info(vin))
@@ -2259,6 +2349,7 @@ async def fahrzeug_abrufen(ms, vin: str, stamm: dict, cfg: dict, zyklus: int) ->
     if kann(stamm, "CHARGING") or kann(stamm, "CHARGING_MEB") or kann(stamm, "CHARGING_MQB"):
         ch = await endpunkt(ausfaelle, "laden", ms.get_charging(vin))
         if ch is not None:
+            geliefert.append("laden")
             laden = abbild_laden(ch)
             meter = hole(ch, "status", "battery", "remaining_cruising_range_in_meters")
             laden["reichweite_batterie_km"] = None if meter is None else zahl(int(meter) / 1000)
@@ -2275,16 +2366,19 @@ async def fahrzeug_abrufen(ms, vin: str, stamm: dict, cfg: dict, zyklus: int) ->
     if kann(stamm, "AIR_CONDITIONING"):
         ac = await endpunkt(ausfaelle, "klima", ms.get_air_conditioning(vin))
         if ac is not None:
+            geliefert.append("klima")
             d.update(abbild_klima(ac))
 
     if kann(stamm, "PARKING_POSITION"):
         po = await endpunkt(ausfaelle, "position", ms.get_positions(vin))
         if po is not None:
+            geliefert.append("position")
             d.update(abbild_position(po))
 
     if kann(stamm, "VEHICLE_HEALTH_WARNINGS") or kann(stamm, "WARNING_LIGHTS"):
         he = await endpunkt(ausfaelle, "gesundheit", ms.get_health(vin))
         if he is not None:
+            geliefert.append("gesundheit")
             d.update(abbild_gesundheit(he))
 
     if zyklus % cfg["takt_wartung"] == 0:
@@ -2320,6 +2414,7 @@ async def fahrzeug_abrufen(ms, vin: str, stamm: dict, cfg: dict, zyklus: int) ->
         d["kilometerstand"] = d["kilometerstand_wartung"]
 
     d["ausfaelle"] = ausfaelle
+    d["geliefert"] = geliefert
     # Bis 0.9.12 stand hier eine absolute Schwelle: 'drei oder mehr Ausfaelle
     # heisst nicht ok'. Sie zaehlte, ohne zu wiegen. Ein Fahrzeug, das drei
     # Endpunkte dauerhaft mit 404 beantwortet, weil es sie nicht beherrscht,
@@ -2363,6 +2458,162 @@ MQTT_TEXTFELDER = (
     "modell", "kennzeichen", "ladezustand", "klima_zustand", "adresse",
     "warnleuchten_text",
 )
+
+
+# Die Signalthemen JE FAHRZEUG (M3, Durchgang 01.10.2026; Nr. 26, Nr. 4):
+# fahrzeugN/ok (1 = der letzte Abruf dieses Fahrzeugs ist gelungen) und
+# fahrzeugN/ts (Zeitstempel seines letzten Erfolgs). Beide fluechtig - "ok" und
+# "ts" stehen in MQTT_OHNE_RETAIN - und beide in JEDEM Durchgang. Damit ist der
+# MQTT-Weg dem Endpunkt gleichwertig, der OK und ALTER je Fahrzeug fuehrt. Neue
+# Namen, keine umgedeutete alte (CLAUDE.md, Abschnitt 4).
+MQTT_SIGNALFELDER = (
+    "ok", "ts",
+)
+
+# Zustaende ohne Aussage (M1/M2, Entscheidung 5 und Nr. 8): liefert ein
+# GELUNGENER Abruf des zugehoerigen Endpunkts das Feld nicht, geht einmal "-"
+# retained hinaus - nie eine leere Nutzlast und nie der stehenbleibende Altwert.
+# Gemessen bis 0.9.28: warnleuchten_text blieb nach dem Erloeschen der Leuchte
+# auf "ENGINE", zuhause bei einer Position ohne Fahrzeugeintrag auf 1
+# (skoda_agenten/mqtt/_agent/messung_1.txt, W2 und Z2).
+OHNE_AUSSAGE = {
+    "warnleuchten_text": "gesundheit",
+    "ladezustand": "laden",
+    "klima_zustand": "klima",
+    "adresse": "position",
+    "breite": "position",
+    "laenge": "position",
+    "zuhause": "position",
+    "heim_entfernung_m": "position",
+}
+# Nur Aenderungen, der volle Satz alle 30 Minuten (M7, Nr. 26). Lebenszeichen
+# und fahrzeugN/ok, fahrzeugN/ts gehen in jedem Durchgang hinaus.
+VOLLSATZ_SEKUNDEN = 1800
+_MQTT_GESENDET: dict[str, tuple] = {}
+_MQTT_VOLL = {"ts": 0.0}
+
+
+def mqtt_fahrzeugpaare(nummer, f: dict, cfg: dict) -> dict:
+    """Die Themen EINES Fahrzeugs (M1-M3).
+
+    Ein Fahrzeug mit ok = 0 bekommt nur sein Signal: die Zustaende bleiben
+    retained stehen, Messwerte mit Zeitbezug gehen nicht neu hinaus (bis 0.9.28
+    gingen seine Altwerte in jedem Lauf frisch aussehend hinaus - gemessen
+    "ladeleistung_kw 11.0" eines seit 24 h ausgefallenen Wagens).
+    """
+    p = {f"fahrzeug{nummer}/ok": 1 if f.get("ok") else 0,
+         f"fahrzeug{nummer}/ts": ganz(f.get("ts"), 0)}
+    if not f.get("ok"):
+        return p
+    geliefert = f.get("geliefert") or []
+    heim = cfg.get("heim_breite") not in ("", None) and cfg.get("heim_laenge") not in ("", None)
+    for feld in MQTT_FELDER + MQTT_TEXTFELDER:
+        w = f.get(feld)
+        if w is None or str(w).strip() == "":
+            ep = OHNE_AUSSAGE.get(feld)
+            if not ep or ep not in geliefert:
+                continue
+            if feld in ("zuhause", "heim_entfernung_m") and not heim:
+                # Ohne Heimatort gibt es diese beiden Aussagen gar nicht.
+                continue
+            w = "-"
+        p[f"fahrzeug{nummer}/{feld}"] = w
+    return p
+
+
+def mqtt_entfernt_paare(entfernt) -> dict:
+    """M4: die retained Themen eines entfernten Fahrzeugs einmal auf "-"."""
+    p = {}
+    for nr in entfernt or []:
+        for feld in MQTT_FELDER + MQTT_TEXTFELDER:
+            if not mqtt_ohne_retain(feld):
+                p[f"fahrzeug{nr}/{feld}"] = "-"
+    return p
+
+
+def mqtt_aenderungen(immer: dict, fahrzeug: dict, praefix: str, retain: int) -> tuple:
+    """Was in diesem Durchgang hinausgeht (M7): 'immer' ganz, aus 'fahrzeug'
+    nur, was sich gegenueber dem zuletzt Gesendeten geaendert hat - es sei
+    denn, der Vollsatz ist faellig. Rueckgabe (paare, vollsatz)."""
+    voll = time.time() - _MQTT_VOLL["ts"] >= VOLLSATZ_SEKUNDEN
+    aus = dict(immer)
+    for k, v in fahrzeug.items():
+        if v is None:
+            continue
+        signal = k.rsplit("/", 1)[-1] in MQTT_SIGNALFELDER
+        stand = (mqtt_wert_saeubern(v), 1 if (retain and not mqtt_ohne_retain(k)) else 0)
+        if voll or signal or _MQTT_GESENDET.get(f"{praefix}/{k}") != stand:
+            aus[k] = v
+    return aus, voll
+
+
+def mqtt_gesendet_merken(paare: dict, praefix: str, retain: int, voll: bool,
+                         versucht: int, schlecht: int) -> None:
+    """Erst merken, wenn wirklich etwas hinausging - sonst ginge nach einem
+    fehlenden UDP-Port eine Aenderung erst mit dem naechsten Vollsatz hinaus."""
+    if versucht <= 0 or schlecht:
+        return
+    for k, v in paare.items():
+        if v is None:
+            continue
+        _MQTT_GESENDET[f"{praefix}/{k}"] = (mqtt_wert_saeubern(v),
+                                            1 if (retain and not mqtt_ohne_retain(k)) else 0)
+    if voll:
+        _MQTT_VOLL["ts"] = time.time()
+
+
+def mqtt_praefix_pflegen(cfg: dict, warten: float = 3.0) -> list:
+    """Altes Praefix vormerken und am Broker abraeumen (M5, Nr. 26).
+
+    Bis 0.9.28 raeumte der Reiter MQTT beim Praefixwechsel, bei "MQTT aus" und
+    bei "Werte behalten aus" nichts ab und merkte sich kein altes Praefix;
+    mqtt_leeren() leerte bei der Deinstallation nur das aktuelle (gemessen:
+    89 Loeschbefehle unter auto/skoda/, 0 unter skoda/). Jetzt fuehrt
+    zustand.json, unter welchem Praefix zuletzt retained gesendet wurde
+    ('mqtt_retain_praefix'), und die noch abzuraeumenden ('mqtt_vorgemerkt').
+    zustand.json uebersteht jedes Upgrade (preupgrade.sh rettet sie), und die
+    Deinstallation leert alle vorgemerkten. Abgeraeumt wird am Broker mit
+    Nachlesen (_broker_leeren); ein Fehlschlag bleibt vorgemerkt und wird
+    stuendlich erneut versucht. Rueckgabe: die noch vorgemerkten Praefixe.
+    """
+    z = json_lesen(DATEI_ZUSTAND)
+    aktiv = cfg.get("mqtt_ein") and cfg.get("mqtt_retain")
+    jetzt_p = thema_saeubern(cfg.get("mqtt_topic")) if aktiv else ""
+    vorher = z.get("mqtt_retain_praefix")
+    if not isinstance(vorher, str):
+        # Erster Lauf nach dem Update: was frueher galt, weiss niemand.
+        vorher = jetzt_p
+    liste = [p for p in (z.get("mqtt_vorgemerkt") or []) if isinstance(p, str) and p]
+    neu_dazu = False
+    if vorher and vorher != jetzt_p and vorher not in liste:
+        liste.append(vorher)
+        neu_dazu = True
+        _LOG.info("MQTT: retained Werte unter '%s/' zum Abraeumen vorgemerkt (%s).", vorher,
+                  "Praefix gewechselt" if jetzt_p else
+                  ("MQTT aus" if not cfg.get("mqtt_ein") else "Werte behalten aus"))
+    liste = [p for p in liste if p != jetzt_p]
+    versuch = ganz(z.get("mqtt_vormerk_versuch"), 0)
+    if liste and (neu_dazu or time.time() - versuch >= 3600):
+        rest = []
+        for p in liste:
+            erg = _broker_leeren(p, lambda t, p=p: bool(mqtt_eigenes_thema(p, t)), warten)
+            if erg["rc"] == 0:
+                _LOG.info("MQTT: unter '%s/' %d retained Themen am Broker geloescht und "
+                          "nachgelesen.", p, len(erg["geleert"]))
+            else:
+                rest.append(p)
+                melde_gebremst("mqtt_vorgemerkt_" + p,
+                               f"MQTT: retained Werte unter '{p}/' liessen sich noch nicht "
+                               f"abraeumen - {erg['grund'] or 'es blieb etwas stehen'}. Sie "
+                               f"bleiben vorgemerkt (auch fuer die Deinstallation).",
+                               86400 if erg.get("ohne_paho") else 3600)
+        liste = rest
+        versuch = int(time.time()) if rest else 0
+    if (z.get("mqtt_retain_praefix") != jetzt_p or z.get("mqtt_vorgemerkt") != liste
+            or ganz(z.get("mqtt_vormerk_versuch"), 0) != versuch):
+        zustand_schreiben(mqtt_retain_praefix=jetzt_p, mqtt_vorgemerkt=liste,
+                          mqtt_vormerk_versuch=versuch)
+    return liste
 
 
 def zaehler_naechster() -> int:
@@ -2426,7 +2677,8 @@ def lebenszeichen_senden(paare: dict, praefix: str, retain: int) -> tuple[int, i
 
 
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
-                     fehler_folge: int = 0, zaehler: int = 0, empfehlung=None) -> dict:
+                     fehler_folge: int = 0, zaehler: int = 0, empfehlung=None,
+                     entfernt=None) -> dict:
     """Schreibt den Zwischenspeicher.
 
     Wichtig: bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen
@@ -2452,7 +2704,7 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     }
     if stand.get("ts"):
         lox["ts"] = int(stand["ts"])
-    json_schreiben(DATEI_LOXONE, lox)
+    json_schreiben(DATEI_LOXONE, lox, rechte=0o600)
 
     # Vollstaendiges Abbild fuer die Fehlersuche. Zugangsdaten stehen hier
     # nicht drin - die fuehrt die Bibliothek getrennt.
@@ -2461,9 +2713,11 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     # ok=0 und mit den ALTEN Fahrzeugwerten daneben. Drei Zeilen weiter oben
     # steht die Begruendung, warum genau das nicht sein darf. Wer die Datei
     # zur Fehlersuche aufschlaegt, liest sonst ein Alter, das es nicht gibt.
+    # 0600 seit dem Durchgang 01.10.2026 (C4): beide Dateien tragen Standort
+    # und Anschrift des Wagens.
     json_schreiben(DATEI_CACHE, {"ts": int(stand.get("ts") or 0), "ok": ok,
                                  "geschrieben": int(time.time()),
-                                 "fehler": fehler, "fahrzeuge": fahrzeuge})
+                                 "fehler": fehler, "fahrzeuge": fahrzeuge}, rechte=0o600)
 
     praefix = thema_saeubern(cfg.get("mqtt_topic"))
     retain = 1 if cfg.get("mqtt_retain") else 0
@@ -2500,11 +2754,18 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
         lebenszeichen["empfehlung"] = empfehlung
     if not ok:
         # Bei einer Stoerung nur das Lebenszeichen senden. Die alten Messwerte
-        # erneut zu veroeffentlichen liesse sie frisch aussehen.
+        # erneut zu veroeffentlichen liesse sie frisch aussehen. Dazu das Signal
+        # je Fahrzeug (M3) und das "-" fuer ein entferntes Fahrzeug (M4) - die
+        # Fahrzeugliste kann in einem sonst gescheiterten Lauf gekommen sein.
         if cfg.get("mqtt_ein"):
-            versucht, schlecht = lebenszeichen_senden(lebenszeichen, praefix, retain)
+            paare = dict(lebenszeichen)
+            for nummer, f in fahrzeuge.items():
+                paare[f"fahrzeug{nummer}/ok"] = 0
+                paare[f"fahrzeug{nummer}/ts"] = ganz(f.get("ts"), 0)
+            paare.update(mqtt_entfernt_paare(entfernt))
+            versucht, schlecht = lebenszeichen_senden(paare, praefix, retain)
             lox["mqtt_versucht"], lox["mqtt_schlecht"] = versucht, schlecht
-            json_schreiben(DATEI_LOXONE, lox)
+            json_schreiben(DATEI_LOXONE, lox, rechte=0o600)
         return lox
 
     try:
@@ -2524,17 +2785,18 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
             pass
 
     if cfg.get("mqtt_ein"):
-        paare = dict(lebenszeichen)
+        # M1-M4 und M7 (Durchgang 01.10.2026): je Fahrzeug mqtt_fahrzeugpaare(),
+        # gesendet wird nur, was sich geaendert hat, der volle Satz alle 30 min.
+        immer = dict(lebenszeichen)
+        immer.update(mqtt_entfernt_paare(entfernt))
+        fz_paare: dict = {}
         for nummer, f in fahrzeuge.items():
-            for feld in MQTT_FELDER:
-                paare[f"fahrzeug{nummer}/{feld}"] = f.get(feld)
-            for feld in MQTT_TEXTFELDER:
-                w = f.get(feld)
-                if w is not None and str(w).strip() != "":
-                    paare[f"fahrzeug{nummer}/{feld}"] = w
+            fz_paare.update(mqtt_fahrzeugpaare(nummer, f, cfg))
+        paare, voll = mqtt_aenderungen(immer, fz_paare, praefix, retain)
         versucht, schlecht = lebenszeichen_senden(paare, praefix, retain)
+        mqtt_gesendet_merken(paare, praefix, retain, voll, versucht, schlecht)
         lox["mqtt_versucht"], lox["mqtt_schlecht"] = versucht, schlecht
-        json_schreiben(DATEI_LOXONE, lox)
+        json_schreiben(DATEI_LOXONE, lox, rechte=0o600)
 
     return lox
 
@@ -2580,6 +2842,30 @@ def nummern_zuordnen(vins: list) -> dict:
     if neu:
         zustand_schreiben(vin_nummern=karte)
     return karte
+
+
+def stand_vorbelegen() -> dict:
+    """Den letzten guten Stand aus loxone.json lesen (C4).
+
+    loxone.json ist das Abbild, das der Endpunkt liest; es wird atomar und
+    (seit diesem Durchgang) mit 0600 geschrieben, weil es Standort und
+    Anschrift traegt. Jedes Fahrzeug kommt mit ok = 0 herein - gemessen ist in
+    diesem Prozess noch nichts -, sein Zeitstempel bleibt der des letzten
+    Erfolgs, damit ALTER weiterwaechst. Ist die Datei beschaedigt oder fehlt
+    sie, beginnt der Stand leer wie bisher.
+    """
+    lox, lage = json_lage(DATEI_LOXONE)
+    if lage != "ok" or not isinstance(lox.get("fahrzeuge"), dict):
+        return {"ts": 0, "fahrzeuge": {}}
+    aus: dict[str, dict] = {}
+    for nr, f in lox["fahrzeuge"].items():
+        if not re.match(r"^[0-9]{1,2}$", str(nr)) or not isinstance(f, dict):
+            continue
+        g = dict(f)
+        g["ok"] = 0
+        aus[str(nr)] = g
+    ts = ganz(lox.get("ts"), 0)
+    return {"ts": ts if ts > 0 else 0, "fahrzeuge": aus}
 
 
 def zustand_schreiben(**felder) -> None:
@@ -2787,7 +3073,13 @@ async def dienst(einmal: bool = False) -> int:
         # Letzter gueltiger Stand. Bleibt bei einer Stoerung stehen, damit der
         # Endpunkt nicht ploetzlich "Fahrzeug unbekannt" meldet und damit ALTER
         # weiterwaechst - daran haengt die Ausfallerkennung in Loxone.
-        stand: dict = {"ts": 0, "fahrzeuge": {}}
+        # SEIT DEM DURCHGANG 01.10.2026 (C4) AUS loxone.json VORBELEGT. Bis
+        # 0.9.28 begann jeder Dienststart mit einem leeren Stand: startete der
+        # Dienst waehrend einer Cloud-Stoerung neu (Waechter, Upgrade, Neustart
+        # des LoxBerry), waren die zuletzt gemessenen Werte fort - gemessen:
+        # FAHRZEUG_UNBEKANNT (404) bzw. SOC=-;REICHW=- statt der Altwerte mit
+        # OK=0 (skoda_agenten/code/_agent/m4_neustart_stoerung.sh).
+        stand: dict = stand_vorbelegen()
         zyklus = 0
         fehler_folge = 0
         # VOR der Schleife gesetzt, nicht nur darin. Trifft SIGTERM den
@@ -2807,10 +3099,15 @@ async def dienst(einmal: bool = False) -> int:
             fehler = ""
             fahrzeuge: dict[str, dict] = {}
             _NEU_ANMELDEN = False
+            # Hat die Cloud die Fahrzeugliste IN DIESEM LAUF geliefert? Nur dann
+            # gilt ein fehlendes Fahrzeug als entfernt (M4) - ein Ausfall des
+            # Abrufs ist keine Aussage ueber das Konto.
+            vins_frisch = False
             try:
                 if not vins or zyklus % cfg["takt_stamm"] == 0:
                     vins = sorted(await asyncio.wait_for(
                         ms.list_vehicle_vins(), timeout=GRENZE_ABRUF))
+                    vins_frisch = True
                 nummern = nummern_zuordnen(vins)
                 for vin in sorted(vins):
                     i = nummern.get(str(vin), 0)
@@ -2925,6 +3222,25 @@ async def dienst(einmal: bool = False) -> int:
                 if stand["ts"] is None:
                     stand.pop("ts")
 
+            # AUS DEM KONTO ENTFERNTE FAHRZEUGE (M4, Durchgang 01.10.2026;
+            # Entscheidungen 8 und 16). Bis 0.9.28 fiel ein Eintrag aus alt_f nie
+            # heraus: ein entferntes Fahrzeug ging bis zum naechsten Neustart mit
+            # seinen Altwerten weiter hinaus, 'fahrzeuge' zaehlte es mit, und nach
+            # dem Neustart standen seine retained Themen fuer immer im Broker.
+            # Jetzt: liefert die Cloud die Liste und fehlt die VIN darin, verlaesst
+            # das Fahrzeug den Stand, seine retained Themen bekommen EINMAL "-",
+            # und seine Nummer bleibt in vin_nummern reserviert.
+            entfernt: list[str] = []
+            if vins_frisch:
+                im_konto = {str(nr) for v, nr in nummern_zuordnen(vins).items() if v in vins}
+                entfernt = [nr for nr in sorted(stand.get("fahrzeuge") or {})
+                            if nr not in im_konto]
+                if entfernt:
+                    stand["fahrzeuge"] = {k: v for k, v in stand["fahrzeuge"].items()
+                                          if k not in entfernt}
+                    _LOG.info("Fahrzeug(e) %s fuehrt das Konto nicht mehr - aus dem Abbild "
+                              "genommen, retained Themen einmal auf '-'.", ", ".join(entfernt))
+
             # Wurde der Durchgang durch ein Beendigungssignal abgebrochen,
             # wird NICHTS geschrieben. Ein halber Zyklus haette sonst ok=0
             # und damit in Loxone eine Stoerung gemeldet, wo nur jemand den
@@ -2934,7 +3250,15 @@ async def dienst(einmal: bool = False) -> int:
             _HORCHER.pflegen(cfg)
             empfehlung = _HORCHER.empfehlung(cfg)
             zaehler = zaehler_naechster()
-            abbild_schreiben(stand, cfg, ok, fehler, fehler_folge, zaehler, empfehlung)
+            # Altes Praefix, "MQTT aus", "Werte behalten aus" (M5): vormerken und
+            # am Broker abraeumen, bevor unter dem neuen gesendet wird.
+            try:
+                mqtt_praefix_pflegen(cfg)
+            except Exception as err:  # noqa: BLE001
+                melde_gebremst("mqtt_vormerken", f"MQTT: Vormerken/Abraeumen alter Praefixe "
+                                                 f"uebersprungen ({fehlertext(err)}).")
+            abbild_schreiben(stand, cfg, ok, fehler, fehler_folge, zaehler, empfehlung,
+                             entfernt=entfernt)
             zustand_schreiben(ok=ok, fehler=fehler, zyklus=zyklus, fehler_folge=fehler_folge,
                               zaehler=zaehler, empfehlung=empfehlung,
                               horcher=_HORCHER.grund if _HORCHER.grund else "",
@@ -3233,7 +3557,24 @@ def selbsttest() -> int:
     return 1 if fehler else 0
 
 
+# Die Schalter, die dieses Skript kennt. Alles andere beendet es mit Antwort.
+ERLAUBTE_SCHALTER = ("--einmal", "--selbsttest", "--wachzeichen", "--mqtt-leeren")
+
+
 def main() -> int:
+    # EIN UNBEKANNTER SCHALTER BEENDET DAS WERKZEUG (C6, Durchgang 01.10.2026).
+    # Bis 0.9.28 lief "skoda.py --selftest" (Tippfehler) als Dauerlaeufer gegen
+    # die Cloud an, legte dienst.bereit mit der fremden PID an und schrieb
+    # "Dienst startet" ins Protokoll (gemessen: rc 124 nach timeout 8,
+    # skoda_agenten/code/_agent/m7_schalter.sh). Regeln/03: ein unbekannter
+    # Schalter wird gemeldet, nicht als Dienst gedeutet. Geschrieben wird
+    # nichts - die Pruefung steht vor log_einrichten().
+    fremd = [a for a in sys.argv[1:] if a not in ERLAUBTE_SCHALTER]
+    if fremd:
+        sys.stderr.write("FEHLER: unbekannter Schalter %s. Erlaubt sind: %s. "
+                         "Es wurde nichts gestartet.\n"
+                         % (", ".join(fremd), ", ".join(ERLAUBTE_SCHALTER)))
+        return 2
     # VOR log_einrichten(): --mqtt-leeren laeuft aus der Deinstallation
     # (uninstall/uninstall, Abschnitt 1b), und dort soll kein Protokoll mehr
     # entstehen - LoxBerry raeumt log/plugins/<ordner> vor diesem Skript

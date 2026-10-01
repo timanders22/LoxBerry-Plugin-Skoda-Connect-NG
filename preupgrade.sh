@@ -110,6 +110,29 @@ else
     echo "<WARNING> koennte den Dienst mitten in der Aktualisierung starten."
 fi
 
+# ---------- Eine Rettung aus einem FRUEHEREN Lauf (I1, Durchgang 01.10.2026) ----------
+#
+# Entscheidung 1: preupgrade.sh raeumt einen alten Bestand weg, bevor es einen
+# neuen anlegt - bei einem Upgrade wird nie ein Bestand aus einem frueheren
+# Vorgang eingespielt. Bis 0.9.28 blieb eine solche Rettung liegen, wenn im
+# Datenordner nichts zu retten war (Installerbericht, Hinweis). Sie wird nicht
+# geloescht, sondern nach .alt gelegt (ein vorhandenes .alt vorher abgeraeumt);
+# uninstall raeumt die .alt ab. Diese Lage entsteht nur, wenn ein frueheres
+# Upgrade nach preupgrade abbrach.
+SK_RETTUNG_ALT="$BASE/data/plugins/$PFOLDER.rettung"
+if [ -e "$SK_RETTUNG_ALT" ] || [ -L "$SK_RETTUNG_ALT" ]; then
+    if [ -L "$SK_RETTUNG_ALT.alt" ]; then
+        rm -f "$SK_RETTUNG_ALT.alt"
+    elif [ -e "$SK_RETTUNG_ALT.alt" ]; then
+        rm -rf "${SK_RETTUNG_ALT:?}.alt"
+    fi
+    if mv -f "$SK_RETTUNG_ALT" "$SK_RETTUNG_ALT.alt" 2>/dev/null; then
+        echo "<WARNING> Eine Rettung aus einem frueheren, abgebrochenen Upgrade wurde nicht wiederverwendet, sondern beiseitegelegt: $SK_RETTUNG_ALT.alt"
+    else
+        echo "<WARNING> Eine Rettung aus einem frueheren Upgrade liess sich nicht beiseitelegen: $SK_RETTUNG_ALT"
+    fi
+fi
+
 # Der Merker sagt dem postinstall, dass der Dienst LIEF.
 #
 # ZURUECKGENOMMEN am 31.08.2026, und das ist die zweite Berichtigung an
@@ -178,7 +201,7 @@ PID="$PDATA/dienst.pid"
 # Einmallauf ist kein Dienst.
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    ARGS=$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
     [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/skoda.py" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
     # cmdline endet auf ein Nullbyte; die leere letzte Zeile zaehlt nicht mit.
@@ -209,40 +232,54 @@ DIENSTSH="$PBIN/dienst.sh"
 # "stop" wird in JEDEM Fall gerufen, auch wenn nichts laeuft: es raeumt den
 # Sollmerker und eine verwaiste PID-Datei mit ab. Gesagt wird "angehalten"
 # aber nur, wenn vorher etwas lief.
+# JEDER EIGENE DIENST, NICHT NUR DER AUS DER PID-DATEI (C3, Durchgang 01.10.2026).
+#
+# Bis 0.9.28 fragte dieser Block nur das dienst.sh der installierten Fassung,
+# und das kennt nur die PID-Datei: eine Waise aus einem Doppelstart lief
+# weiter, ueberstand das Upgrade mit dem ALTEN Code, und die Meldung lautete
+# trotzdem "angehalten" (gemessen, Installerbericht D2: vorher 2 Dienste,
+# nach preupgrade 1). Jetzt: erst geordnet ueber dienst.sh (bis 70 s), dann
+# jeder uebrige eigene Vorgang - argumentweise mit ist_unser_dienst() -, und
+# "angehalten" steht nur da, wenn danach KEINER mehr laeuft.
+eigene_dienste() {
+    for sk_f in $(grep -laF -- "$PBIN/skoda.py" /proc/[0-9]*/cmdline 2>/dev/null); do
+        sk_n=${sk_f#/proc/}
+        sk_n=${sk_n%/cmdline}
+        ist_unser_dienst "$sk_n" && echo "$sk_n"
+    done
+}
+VORHER=$(eigene_dienste | tr '\n' ' ')
+LIEF=0
+[ -n "${VORHER// /}" ] && LIEF=1
+AUSGABE=""
 if [ -x "$DIENSTSH" ]; then
-    LIEF=0
     "$DIENSTSH" status >/dev/null 2>&1 && LIEF=1
-    [ "$LIEF" = 1 ] && : > "$MERKER"
     AUSGABE=$("$DIENSTSH" stop 2>&1)
-    if "$DIENSTSH" status >/dev/null 2>&1; then
-        echo "<WARNING> Der Dienst liess sich nicht anhalten: $AUSGABE"
-    elif [ "$LIEF" = 1 ]; then
-        echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
-        echo "<INFO> Laufender Dienst ueber dienst.sh angehalten."
-    else
-        echo "<INFO> Es lief kein Dienst."
-    fi
-    rm -f "$PID"
-elif [ -f "$PID" ]; then
-    PNUM=$(cat "$PID" 2>/dev/null)
-    if [ -n "$PNUM" ] && ist_unser_dienst "$PNUM"; then
-        : > "$MERKER"
-        echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
-        echo "<INFO> $DIENSTSH fehlt - angehalten wird ueber die Prozessnummer."
-        kill "$PNUM" 2>/dev/null || true
-        i=0
-        while [ "$i" -lt 70 ] && ist_unser_dienst "$PNUM"; do
-            sleep 1
-            i=$((i + 1))
-        done
-        ist_unser_dienst "$PNUM" && kill -9 "$PNUM" 2>/dev/null
-        echo "<INFO> Laufender Dienst angehalten."
-    else
-        # Kein Wort von "angehalten": es lief nichts. Bis 0.9.14 stand die
-        # Zeile ausserhalb der Bedingung und behauptete das Gegenteil.
-        echo "<INFO> Die PID-Datei war verwaist - es lief kein Dienst."
-    fi
-    rm -f "$PID"
+fi
+rm -f "$PID"
+REST=$(eigene_dienste | tr '\n' ' ')
+if [ -n "${REST// /}" ]; then
+    for P in $REST; do kill "$P" 2>/dev/null; done
+    i=0
+    while [ "$i" -lt 70 ]; do
+        NOCH=""
+        for P in $REST; do ist_unser_dienst "$P" && NOCH="$NOCH $P"; done
+        [ -z "$NOCH" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    for P in $REST; do ist_unser_dienst "$P" && kill -9 "$P" 2>/dev/null; done
+    sleep 1
+fi
+UEBRIG=$(eigene_dienste | tr '\n' ' ')
+[ "$LIEF" = 1 ] && : > "$MERKER"
+if [ -n "${UEBRIG// /}" ]; then
+    echo "<WARNING> Der Dienst liess sich nicht anhalten (PID ${UEBRIG% }). $AUSGABE"
+elif [ "$LIEF" = 1 ]; then
+    echo "<INFO> Der Dienst lief - er wird nach dem Upgrade wieder gestartet."
+    echo "<INFO> Angehalten: $(echo $VORHER | wc -w) eigene(r) Dienst(e) gezaehlt, danach laeuft keiner mehr."
+else
+    echo "<INFO> Es lief kein Dienst."
 fi
 
 # Was ein Upgrade ueberstehen muss, wandert NEBEN den Ordner (siehe oben).
@@ -294,12 +331,50 @@ elif [ -d "$RETTUNG" ]; then
     echo "<INFO> abgebrochenen Laufs bleibt unberuehrt."
 fi
 
+# ---------- Zweitschriften: NUR JSON-OBJEKTE (I2, Durchgang 01.10.2026) ----------
+#
+# Die Zweitschrift ist die laufende Rueckfallkopie: die Oberflaeche erneuert
+# sie erst nach gelungenem Zuruecklesen, bin/skoda.py liest sie bei Schaden.
+# Bis 0.9.28 kopierte dieses Skript mit cp -p OHNE Pruefung darueber - gerade
+# im Fall, fuer den es sie gibt (Datei beschaedigt), zerstoerte das Update sie:
+# danach ein neues Aktionstoken bzw. ein verlorenes Passwort, und im Protokoll
+# stand <OK> (gemessen, Installerbericht B1/B2). Jetzt: nur eine Datei, die
+# sich als JSON-Objekt lesen laesst; gebaut unter .neu, geprueft, dann
+# umbenannt. Sonst bleibt die vorhandene Zweitschrift unberuehrt, und es steht
+# eine <WARNING> da. 0600 fuer beide (C9).
+json_objekt() {
+    command -v python3 >/dev/null 2>&1 || return 2
+    python3 -c 'import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, dict) else 1)' "$1" 2>/dev/null
+}
 CFGDIR="$BASE/config/plugins/$PFOLDER"
 for f in skoda.json zugang.json; do
-    if [ -f "$CFGDIR/$f" ]; then
-        cp -p "$CFGDIR/$f" "$BASE/config/plugins/$PFOLDER.backup.$f" || true
+    QUELLE="$CFGDIR/$f"
+    ZIEL="$BASE/config/plugins/$PFOLDER.backup.$f"
+    [ -f "$QUELLE" ] || continue
+    json_objekt "$QUELLE"
+    sk_rc=$?
+    if [ "$sk_rc" = 1 ]; then
+        echo "<WARNING> $f ist kein gueltiges JSON-Objekt - die vorhandene Zweitschrift bleibt unberuehrt ($ZIEL)."
+        continue
+    fi
+    if [ "$sk_rc" = 2 ] && { [ -e "$ZIEL" ] || [ -L "$ZIEL" ]; }; then
+        echo "<WARNING> python3 fehlt - $f liess sich nicht pruefen; die vorhandene Zweitschrift bleibt unberuehrt."
+        continue
+    fi
+    rm -f "$ZIEL.neu"
+    if cp -p "$QUELLE" "$ZIEL.neu" 2>/dev/null && chmod 600 "$ZIEL.neu" \
+       && { [ "$sk_rc" = 2 ] || json_objekt "$ZIEL.neu"; } && mv -f "$ZIEL.neu" "$ZIEL"; then
+        [ "$sk_rc" = 2 ] && echo "<WARNING> python3 fehlt - $f wurde ungeprueft gesichert ($ZIEL)."
+    else
+        rm -f "$ZIEL.neu"
+        echo "<WARNING> $f liess sich nicht sichern - die vorhandene Zweitschrift bleibt unberuehrt ($ZIEL)."
     fi
 done
-chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null || true
 echo "<OK> preupgrade abgeschlossen."
 exit 0

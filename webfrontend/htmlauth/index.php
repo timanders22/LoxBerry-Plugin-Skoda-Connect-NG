@@ -110,7 +110,22 @@ if ($sk_upgrade) {
     exit;
 }
 
-sk_config_heilen();
+/* SEIT DEM DURCHGANG 01.10.2026 MIT MELDUNG (C8). Bis 0.9.28 wurde der
+ * Rueckgabewert verworfen: eine beschaedigte skoda.json wurde still durch die
+ * Zweitschrift ersetzt oder - ohne Zweitschrift - still auf Werkseinstellung
+ * mit neuem Token gesetzt (gemessen, Oberflaechenbericht K1/K2). Jetzt steht
+ * auf der Seite, was geschah; reist ueber die Einmalmeldung, wenn es bei einem
+ * POST geschieht. */
+$sk_heil = sk_config_heilen();
+$sk_heilkasten = array();
+if ($sk_heil['aktion'] === 'zweitschrift') {
+    $sk_heilkasten[] = array('sm-warnung', sprintf(sk_t('ALLG.KONFIG_AUS_ZWEITSCHRIFT'),
+        sk_e(sk_t('ALLG.LAGE_' . strtoupper($sk_heil['lage'])))));
+} elseif ($sk_heil['aktion'] === 'werk') {
+    $sk_heilkasten[] = array('sm-fehler', sk_t('ALLG.KONFIG_WERK'));
+} elseif ($sk_heil['aktion'] === 'fehlgeschlagen') {
+    $sk_heilkasten[] = array('sm-fehler', sk_t('ALLG.KONFIG_HEIL_FEHL'));
+}
 
 /* Und danach die Vervollstaendigung: fehlende Schluessel werden EINMAL in die
  * Datei geschrieben.
@@ -173,6 +188,65 @@ function sk_post($name, $vorgabe = '')
     return (string) $_POST[$name];
 }
 
+/** Ein POST-Feld als Text fuer ein beanstandetes Formular (X-2): nur gueltiges
+ *  UTF-8, hoechstens 2100 Byte - eine Liste reist nicht mit. */
+function sk_eingaben_sammeln($formular, $felder, $falsch)
+{
+    $werte = array();
+    foreach ($felder as $f) {
+        if (!isset($_POST[$f]) || !is_string($_POST[$f])) {
+            continue;
+        }
+        if (strlen($_POST[$f]) <= 2100 && preg_match('//u', $_POST[$f])) {
+            $werte[$f] = $_POST[$f];
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte,
+                 'falsch' => array_values(array_unique($falsch)));
+}
+
+/* ---- X-2: Werte und Markierung nach einer Beanstandung (Regeln/04) ---- */
+/** Ist dieses Formular das beanstandete? */
+function sk_fa($formular)
+{
+    global $sk_eingaben;
+    return is_array($sk_eingaben) && isset($sk_eingaben['formular'])
+        && $sk_eingaben['formular'] === $formular;
+}
+/** Wert eines Feldes: nach einer Beanstandung die Eingabe, sonst der gespeicherte. */
+function sk_fw($formular, $feld, $gespeichert)
+{
+    global $sk_eingaben;
+    if (sk_fa($formular) && isset($sk_eingaben['werte'][$feld])
+        && is_string($sk_eingaben['werte'][$feld])) {
+        return $sk_eingaben['werte'][$feld];
+    }
+    return (string) $gespeichert;
+}
+/** Haken: nach einer Beanstandung so, wie er abgeschickt wurde. */
+function sk_fh($formular, $feld, $gespeichert)
+{
+    global $sk_eingaben;
+    if (!sk_fa($formular)) {
+        return (bool) $gespeichert;
+    }
+    return isset($sk_eingaben['werte'][$feld]);
+}
+/** Markierung eines beanstandeten Feldes (Attribute, schon maskiert). */
+function sk_fm($feld)
+{
+    global $sk_eingaben;
+    return (is_array($sk_eingaben) && isset($sk_eingaben['falsch'])
+            && in_array($feld, $sk_eingaben['falsch'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+/** Ein beanstandetes Zahlenfeld wird als Textfeld gezeigt - sonst verwirft der
+ *  Browser die Eingabe "abc", und X-2 zeigte ein leeres Feld. */
+function sk_ftyp($feld)
+{
+    return sk_fm($feld) !== '' ? 'text' : 'number';
+}
+
 $sk_meldungen = array();   // Erfolgsmeldungen
 $sk_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 /* DIE DRITTE ART, seit 0.9.15. Zwei Toepfe waren zu wenig, und beide Faelle
@@ -194,8 +268,17 @@ $sk_warnungen = array();   // weder Erfolg noch Beanstandung
  * berichtigen" - am Geraet etwa "Zugangsdaten fehlen" nach "Dienst starten".
  * Die Ueberschrift beschrieb einen anderen Vorgang als den, der misslang. */
 $sk_stoerungen = array();
+/* DIE FUENFTE ART, seit dem Durchgang 01.10.2026 (O10): "Eingereiht, aber der
+ * Dienst hat nicht geantwortet" stand bis 0.9.28 unter "Zur Kenntnis -
+ * gespeichert wurde trotzdem:", obwohl nichts gespeichert wurde. */
+$sk_unklar = array();
 $sk_testausgabe = '';
+$sk_eingaben = null;       // X-2: das beanstandete Formular samt Eingaben
+$sk_teil = false;          // es wurde etwas gespeichert, aber nicht alles
 $sk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+/* Ob die Anfrage ein POST WAR - auch dann, wenn der Wachposten sie abweist.
+ * Jeder POST endet mit einer Umleitung (O1). */
+$sk_ist_post = $sk_post;
 
 /* ==================================================================
  * DER WACHPOSTEN - EINE PRUEFUNG, VOR ALLEN HANDLERN
@@ -270,70 +353,72 @@ if ($sk_post && isset($_POST['vorlage'])) {
     exit;
 }
 
-/* ---------------- Einstellungen speichern ---------------- */
+/* ---------------- Einstellungen speichern ----------------
+ *
+ * BEI EINER BEANSTANDUNG WIRD NICHTS GESPEICHERT (O2, Durchgang 01.10.2026;
+ * Entscheidungen 16 und 19) - auch nicht die uebrigen, richtigen Felder und
+ * nicht die Zugangsdaten im selben Zug. Bis 0.9.28 stand hier "GESPEICHERT
+ * WIRD IMMER": intervall=abc zusammen mit takt_stamm=13 speicherte die 13, und
+ * die Kopfzeile behauptete "Es wurde nichts gespeichert" (gemessen F2). Die
+ * Eingaben kommen markiert zurueck ins Formular (X-2, O3), die Seite selbst
+ * kommt per Umleitung (O1). Still bleibt nur Leerraum am Rand (Nr. 19); ein
+ * leeres Zahlenfeld behaelt seinen Wert und sagt es - aber nur, wenn
+ * gespeichert wird. */
 if ($sk_post && isset($_POST['speichern'])) {
     $sk_cfg = sk_config();
-
-    /* DIE GRENZEN KOMMEN AUS sk_regeln(). Berichtigt 31.08.2026.
-     *
-     * Hier stand bis 0.9.14 eine eigene Tabelle mit elf Paaren - waehrend
-     * sk_regeln() im Kopf von sk_lib.php ausdruecklich von sich sagt: "Drei
-     * Verbraucher lesen daraus: das Formular beim Speichern, die
-     * Sicherungsdatei beim Zurueckspielen und die Lesefunktion. Eine zweite
-     * Wahrheit ueber zulaessige Werte gibt es nicht." Das Formular las nicht
-     * daraus. Die elf Paare stimmten Feld fuer Feld ueberein - was den Fall
-     * nicht besser macht, sondern nur unauffaellig: die naechste Aenderung
-     * an einer der beiden Stellen haette sie getrennt. */
+    $sk_falsch = array();
+    $sk_leer = array();
     $sk_regeln = sk_regeln();
-    foreach (array('intervall', 'takt_stamm', 'takt_wartung', 'temp_min', 'temp_max',
-                   'verlauf_tage', 'wartezeit', 'abstand_abruf', 'befehle_stunde',
-                   'entprellung', 'heim_radius') as $sk_feld) {
-        $sk_grenzen = array($sk_regeln[$sk_feld][1], $sk_regeln[$sk_feld][2]);
-        $sk_wert = trim(sk_post($sk_feld));
-        /* Ein LEERES Feld ist keine falsche Eingabe, sondern gar keine.
-         * Bis 0.9.1 lief es in dieselbe harte Fehlermeldung wie "abc": wer
-         * beim Bearbeiten den Inhalt herausloescht und speichert, bekam
-         * "bitte eine ganze Zahl eintragen" und musste raten, was vorher
-         * dort stand.
-         *
-         * Zurueckgefallen wird bewusst auf den BISHER GESPEICHERTEN Wert,
-         * nicht auf den Werkswert, wie vorgeschlagen: Wer den Takt auf 300
-         * gestellt hat und das Feld versehentlich leert, bekaeme sonst
-         * stillschweigend wieder 60 - eine Aenderung, die er nie eingegeben
-         * hat. Und gesagt wird es, statt es still zu tun. */
+    $sk_zahlfelder = array('intervall', 'takt_stamm', 'takt_wartung', 'temp_min', 'temp_max',
+                           'verlauf_tage', 'wartezeit', 'abstand_abruf', 'befehle_stunde',
+                           'entprellung', 'heim_radius');
+    foreach ($sk_zahlfelder as $sk_feld) {
+        $sk_name = sk_t('EINST.L_' . strtoupper($sk_feld));
+        $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
+        if (!is_string($sk_roh)) {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), $sk_name);
+            $sk_falsch[] = $sk_feld;
+            continue;
+        }
+        $sk_wert = trim($sk_roh);
         if ($sk_wert === '') {
-            $sk_meldungen[] = sprintf(sk_t('EINST.LEER_UEBERNOMMEN'),
-                sk_t('EINST.L_' . strtoupper($sk_feld)), (int) $sk_cfg[$sk_feld]);
+            $sk_leer[] = sprintf(sk_t('EINST.LEER_UEBERNOMMEN'), $sk_name, (int) $sk_cfg[$sk_feld]);
             continue;
         }
         if (!preg_match('/^[0-9]+$/', $sk_wert)) {
-            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_ZAHL'), sk_t('EINST.L_' . strtoupper($sk_feld)));
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_ZAHL'), $sk_name);
+            $sk_falsch[] = $sk_feld;
             continue;
         }
         $sk_zahl = (int) $sk_wert;
-        if ($sk_zahl < $sk_grenzen[0] || $sk_zahl > $sk_grenzen[1]) {
-            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_BEREICH'),
-                sk_t('EINST.L_' . strtoupper($sk_feld)), $sk_grenzen[0], $sk_grenzen[1]);
+        if ($sk_zahl < $sk_regeln[$sk_feld][1] || $sk_zahl > $sk_regeln[$sk_feld][2]) {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_BEREICH'), $sk_name,
+                                   $sk_regeln[$sk_feld][1], $sk_regeln[$sk_feld][2]);
+            $sk_falsch[] = $sk_feld;
             continue;
         }
         $sk_cfg[$sk_feld] = $sk_zahl;
     }
-    if (isset($sk_cfg['temp_min'], $sk_cfg['temp_max'])
-        && $sk_cfg['temp_min'] > $sk_cfg['temp_max']) {
+    if (!in_array('temp_min', $sk_falsch, true) && !in_array('temp_max', $sk_falsch, true)
+        && (int) $sk_cfg['temp_min'] > (int) $sk_cfg['temp_max']) {
         $sk_fehler[] = sk_t('EINST.FEHLER_TEMP_TAUSCH');
+        $sk_falsch[] = 'temp_min';
+        $sk_falsch[] = 'temp_max';
     }
 
     $sk_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $sk_cfg['sitzung_merken'] = isset($_POST['sitzung_merken']) ? 1 : 0;
 
-    /* Die Heimatkoordinaten. Sie duerfen LEER bleiben - dann gibt es keinen
-     * Geofence, und die Felder ZUHAUSE und HEIMENTF liefern einen Strich
-     * statt einer erfundenen Null. Ein unbrauchbarer Wert wird abgewiesen,
-     * nicht gekappt: eine stillschweigend auf 90 Grad gekappte Breite waere
-     * ein Heimatort am Nordpol. */
+    /* Die Heimatkoordinaten duerfen LEER bleiben (kein Geofence). Ein
+     * unbrauchbarer Wert wird abgewiesen, nicht gekappt. */
     foreach (array('heim_breite', 'heim_laenge') as $sk_feld) {
-        $sk_wert = isset($_POST[$sk_feld]) && is_string($_POST[$sk_feld])
-            ? trim(sk_post($sk_feld)) : '';
+        $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
+        if (!is_string($sk_roh)) {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), sk_t('EINST.L_' . strtoupper($sk_feld)));
+            $sk_falsch[] = $sk_feld;
+            continue;
+        }
+        $sk_wert = trim($sk_roh);
         if ($sk_wert === '') {
             $sk_cfg[$sk_feld] = '';
             continue;
@@ -344,164 +429,154 @@ if ($sk_post && isset($_POST['speichern'])) {
         } else {
             $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_KOORD'),
                                    sk_t('EINST.L_' . strtoupper($sk_feld)));
+            $sk_falsch[] = $sk_feld;
         }
     }
 
-
-    /* Zugangsdaten: eigene Datei mit Rechten 0600. Ein leer zurueckgegebenes
-     * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
-     * Passwort in der Datei, ohne dass es jemand merkt. */
-    $sk_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        sk_post('email')));
-    $sk_pw = sk_post('passwort');
-    if (isset($_POST['zugang_loeschen'])) {
-        // Ausdruecklich gewollt: alles weg. Was im selben Absenden im
-        // Formular stand, wird bewusst verworfen - sonst waere unklar, ob
-        // Loeschen oder Eintragen gewonnen hat.
-        if (sk_zugang_loeschen()) {
-            $sk_meldungen[] = sk_t('EINST.ZUGANG_GELOESCHT');
-            sk_log_zeile('Zugangsdaten geloescht.');
-        } else {
-            $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_LOESCHEN');
-        }
-    } elseif ($sk_email !== '' && !filter_var($sk_email, FILTER_VALIDATE_EMAIL)) {
-        $sk_fehler[] = sk_t('EINST.FEHLER_EMAIL');
-    } else {
-        if (!sk_zugang_speichern($sk_email, $sk_pw)) {
-            $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_SPEICHERN');
-        }
+    /* Zugangsdaten: dieselbe Regel wie beim Zurueckspielen (sk_email_pruefen,
+     * sk_passwort_max). Bis 0.9.28 wurden Anfuehrungszeichen und Steuerzeichen
+     * STILL entfernt - o'brien@example.com wurde als obrien@example.com
+     * gespeichert (gemessen F3) -, und ein Passwort mit 300 Zeichen wurde
+     * angenommen, das die eigene Sicherung danach abwies (F8). */
+    $sk_email_roh = isset($_POST['email']) ? $_POST['email'] : '';
+    list($sk_ok_email, $sk_email) = sk_email_pruefen($sk_email_roh);
+    if (!$sk_ok_email) {
+        $sk_fehler[] = is_string($sk_email_roh) ? sk_t('EINST.FEHLER_EMAIL')
+                                               : sprintf(sk_t('EINST.FEHLER_LISTE'), sk_t('EINST.L_EMAIL'));
+        $sk_falsch[] = 'email';
     }
-    $sk_zg = sk_zugang();
-    if ($sk_zg['laenge'] > 0 && $sk_zg['email'] === '') {
-        /* EINE WARNUNG, KEINE BEANSTANDUNG. Berichtigt 31.08.2026.
-         *
-         * Der Satz landete bis 0.9.14 in $sk_fehler. Damit haengt er an
-         * derselben Bedingung wie die Erfolgsmeldung ("if (!$sk_fehler)"),
-         * und wer ein Passwort ohne Benutzernamen gespeichert hat, sah bei
-         * JEDEM Speichern die rote Ueberschrift "Es wurde nichts
-         * gespeichert" - obwohl gespeichert wurde. Die Lage ist ein Hinweis,
-         * kein Grund, das Speichern zu beanstanden. */
-        $sk_warnungen[] = sk_t('EINST.WARN_PW_OHNE_KONTO');
+    $sk_pw = isset($_POST['passwort']) ? $_POST['passwort'] : '';
+    if (!is_string($sk_pw)) {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), sk_t('EINST.L_PASSWORT'));
+        $sk_falsch[] = 'passwort';
+        $sk_pw = '';
+    } elseif (strlen($sk_pw) > sk_passwort_max()) {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_PW_LANG'), sk_passwort_max());
+        $sk_falsch[] = 'passwort';
     }
 
-    /* GESPEICHERT WIRD IMMER - beanstandet wird trotzdem.
-     *
-     * Bis 0.9.13 stand hier "if (!$sk_fehler)". Ein einziger Tippfehler
-     * verwarf damit ALLE uebrigen Aenderungen desselben Formulars; gemessen
-     * am 31.08.2026 gingen bei einem falschen 'intervall' drei von vier
-     * weiteren Feldern verloren, und der Reiter hat fuenfzehn davon.
-     *
-     * Noetig ist die Blockade nicht: die Schleife oben ueberspringt ein
-     * beanstandetes Feld mit 'continue', der ALTE Wert steht also weiter im
-     * Feld. Was gespeichert wird, ist damit in jedem Fall ein gueltiger Stand.
-     * Die Hausregel sagt es genauso: "Was sich zurechtruecken laesst, wird
-     * zurechtgerueckt, die betroffene Zeile uebergangen, und alles Uebrige
-     * gespeichert. Blockieren darf nur, was das Speichern technisch unmoeglich
-     * macht."
-     */
-    if (sk_config_speichern($sk_cfg)) {
-        if (!$sk_fehler) {
-            $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+    if ($sk_fehler) {
+        /* NICHTS gespeichert. Das Passwort reist nie mit. */
+        $sk_eingaben = sk_eingaben_sammeln('einst', array_merge($sk_zahlfelder,
+            array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken')), $sk_falsch);
+    } elseif (sk_config_speichern($sk_cfg)) {
+        $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+        foreach ($sk_leer as $sk_l) {
+            $sk_meldungen[] = $sk_l;
         }
         sk_log_zeile('Einstellungen gespeichert.');
+        if (isset($_POST['zugang_loeschen'])) {
+            // Ausdruecklich gewollt: alles weg. Was im selben Absenden im
+            // Formular stand, wird bewusst verworfen.
+            if (sk_zugang_loeschen()) {
+                $sk_meldungen[] = sk_t('EINST.ZUGANG_GELOESCHT');
+                sk_log_zeile('Zugangsdaten geloescht.');
+            } else {
+                $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_LOESCHEN');
+                $sk_teil = true;
+            }
+        } elseif (!sk_zugang_speichern($sk_email, $sk_pw)) {
+            $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_SPEICHERN');
+            $sk_teil = true;
+        }
+        $sk_zg = sk_zugang();
+        if ($sk_zg['laenge'] > 0 && $sk_zg['email'] === '') {
+            $sk_warnungen[] = sk_t('EINST.WARN_PW_OHNE_KONTO');
+        }
     } else {
         $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
     }
     $sk_tab = 'tab-settings';
 
     /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
-     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
-     * kommt aus sk_config(), die Werte ueberleben also unveraendert. Stuende
-     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
-     * der Einstellungen MQTT stillschweigend abschalten. */
+     * Reiter MQTT und haben dort ein eigenes Formular. */
 }
 
 /* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
  *
- * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
- * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
- * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
- * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
- * ruehrt ausschliesslich die MQTT-Werte an. */
+ * Eigenes Formular UND eigener Handler gehoeren zusammen; der Handler laedt
+ * den Bestand und ruehrt ausschliesslich die MQTT-Werte an. Seit dem
+ * Durchgang 01.10.2026 wie das Einstellungsformular: bei einer Beanstandung
+ * nichts speichern (bis 0.9.28 wurden die uebrigen Haken trotzdem
+ * gespeichert, MQTT-Bericht, Randbefund), nichts still entfernen (bis 0.9.28
+ * wurde aus sk"oda still skoda, F4), und eine Liste ist eine Beanstandung (bis
+ * 0.9.28 stand danach mqtt_topic="Array" in der Datei, F5). */
 if ($sk_post && isset($_POST['save_mqtt'])) {
     $sk_mcfg = sk_config();
+    $sk_falsch = array();
+    $sk_leer = array();
+    $sk_vorher = array((int) $sk_mcfg['mqtt_ein'], (int) $sk_mcfg['mqtt_retain'], (string) $sk_mcfg['mqtt_topic']);
     $sk_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $sk_mcfg['mqtt_retain'] = isset($_POST['mqtt_retain']) ? 1 : 0;
-    /* GEPRUEFT WIRD MIT sk_wert_pruefen(), nicht mit einem eigenen Muster.
-     *
-     * Bis 0.9.14 stand hier '#^[A-Za-z0-9_/\-]{1,64}$#'. Das ist weiter als
-     * die Regel in sk_regeln(), und gemessen am 31.08.2026 gingen damit
-     * Werte durch, die beim naechsten Lesen wieder verworfen wurden:
-     *
-     *     auto//skoda   Formular 1  gespeichert "auto//skoda"  sk_regeln 0
-     *     /             Formular 1  gespeichert ""             sk_regeln 0
-     *
-     * Der Bediener sah "Gespeichert", beim naechsten Seitenaufbau stand
-     * wieder "skoda" da, der Dienst veroeffentlichte unter einem anderen
-     * Praefix als angezeigt, und der Reiter Test meldete den Schluessel als
-     * abgewiesen. Das Abschneiden der Schraegstriche steht jetzt VOR der
-     * Pruefung: '/skoda/' ist eine zulaessige Eingabe, '/' ist keine. */
-    $sk_mtopic = trim(trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''))), '/');
-    list($sk_ok_topic, $sk_rein_topic) = sk_wert_pruefen('mqtt_topic', $sk_mtopic);
-    if (!$sk_ok_topic) {
-        $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
+    $sk_roh = isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '';
+    if (!is_string($sk_roh)) {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), sk_t('EINST.L_MQTT_TOPIC'));
+        $sk_falsch[] = 'mqtt_topic';
     } else {
-        $sk_mcfg['mqtt_topic'] = $sk_rein_topic;
+        list($sk_ok_topic, $sk_rein_topic) = sk_wert_pruefen('mqtt_topic', $sk_roh);
+        if (!$sk_ok_topic) {
+            $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
+            $sk_falsch[] = 'mqtt_topic';
+        } else {
+            $sk_mcfg['mqtt_topic'] = $sk_rein_topic;
+        }
     }
-    /* Die Felder des Horchers wohnen im Reiter MQTT, weil es MQTT-Themen
-     * sind - eine Sache, eine Stelle. Sie laufen durch dieselbe Wertpruefung
-     * wie alles andere; ein unbrauchbarer Wert wird abgewiesen, nicht
-     * gekappt. */
     $sk_mcfg['empf_kleiner'] = isset($_POST['empf_kleiner']) ? 1 : 0;
     $sk_mcfg['abfahrt_ein'] = isset($_POST['abfahrt_ein']) ? 1 : 0;
     foreach (array('empf_thema', 'empf_grenze', 'abfahrt_thema',
                    'abfahrt_vorlauf', 'abfahrt_temp', 'empf_alter') as $sk_feld) {
-        $sk_wert = isset($_POST[$sk_feld]) && is_string($_POST[$sk_feld])
-            ? trim(sk_post($sk_feld)) : '';
+        $sk_name = sk_t('EINST.L_' . strtoupper($sk_feld));
+        $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
+        if (!is_string($sk_roh)) {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), $sk_name);
+            $sk_falsch[] = $sk_feld;
+            continue;
+        }
+        $sk_wert = trim($sk_roh);
         if ($sk_wert === '' && in_array($sk_feld, array('empf_thema', 'empf_grenze',
                                                         'abfahrt_thema'), true)) {
             $sk_mcfg[$sk_feld] = '';
             continue;
         }
-        /* Ein leergeloeschtes ZAHLENFELD ist keine falsche Eingabe, sondern
-         * gar keine - genau wie im Einstellungsformular, das das seit 0.9.1
-         * so haelt. Bis 0.9.14 lief 'abfahrt_vorlauf', 'abfahrt_temp' und
-         * (neu) 'empf_alter' hier mit '' in sk_wert_pruefen() und wurde
-         * abgewiesen: "Unzulaessiger Wert fuer: Vorlauf", ohne dass der
-         * Bediener erfaehrt, was vorher dort stand. */
         if ($sk_wert === '') {
-            $sk_meldungen[] = sprintf(sk_t('EINST.LEER_UEBERNOMMEN'),
-                sk_t('EINST.L_' . strtoupper($sk_feld)), (int) $sk_mcfg[$sk_feld]);
+            $sk_leer[] = sprintf(sk_t('EINST.LEER_UEBERNOMMEN'), $sk_name, (int) $sk_mcfg[$sk_feld]);
             continue;
         }
         list($sk_ok3, $sk_rein3) = sk_wert_pruefen($sk_feld, $sk_wert);
         if ($sk_ok3) {
             $sk_mcfg[$sk_feld] = $sk_rein3;
         } else {
-            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_WERT'),
-                                   sk_t('EINST.L_' . strtoupper($sk_feld)));
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_WERT'), $sk_name);
+            $sk_falsch[] = $sk_feld;
         }
     }
-    /* Ein Haken, dessen Thema fehlt, taete nichts und saehe eingeschaltet
-     * aus. Das wird gesagt, nicht stillschweigend geduldet. */
-    if ($sk_mcfg['abfahrt_ein'] && $sk_mcfg['abfahrt_thema'] === '') {
+    if ($sk_mcfg['abfahrt_ein'] && $sk_mcfg['abfahrt_thema'] === '' && !in_array('abfahrt_thema', $sk_falsch, true)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_ABFAHRT_OHNE_THEMA');
+        $sk_falsch[] = 'abfahrt_thema';
     }
-    if ($sk_mcfg['empf_thema'] !== '' && $sk_mcfg['empf_grenze'] === '') {
+    if ($sk_mcfg['empf_thema'] !== '' && $sk_mcfg['empf_grenze'] === '' && !in_array('empf_grenze', $sk_falsch, true)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_EMPF_OHNE_GRENZE');
+        $sk_falsch[] = 'empf_grenze';
     }
 
-    /* Dieselbe Form wie im Einstellungsformular - und der fehlende
-     * else-Zweig war hier ein eigener Befund: gemessen am 31.08.2026 mit
-     * schreibgeschuetzter Konfigurationsdatei kam eine Seite ohne JEDE
-     * Meldung heraus, mit leerem Haken. Der Bediener versucht es dann
-     * dreimal. Der Sprachschluessel dafuer war die ganze Zeit vorhanden. */
-    if (sk_config_speichern($sk_mcfg)) {
-        if (!$sk_fehler) {
-            $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+    if ($sk_fehler) {
+        $sk_eingaben = sk_eingaben_sammeln('mqtt', array('mqtt_ein', 'mqtt_topic', 'mqtt_retain',
+            'empf_thema', 'empf_grenze', 'empf_kleiner', 'empf_alter', 'abfahrt_ein',
+            'abfahrt_thema', 'abfahrt_vorlauf', 'abfahrt_temp'), $sk_falsch);
+    } elseif (sk_config_speichern($sk_mcfg)) {
+        $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+        foreach ($sk_leer as $sk_l) {
+            $sk_meldungen[] = $sk_l;
         }
         sk_log_zeile('MQTT-Einstellungen gespeichert.');
+        /* M5 (Durchgang 01.10.2026): Lagen bisher retained Werte unter einem
+         * Praefix, das jetzt nicht mehr retained beschickt wird, raeumt der
+         * Dienst sie am Broker ab (mit Nachlesen) und merkt sie bis dahin vor -
+         * auch fuer die Deinstallation. Die Seite sagt es. */
+        if ($sk_vorher[0] && $sk_vorher[1]
+            && (!$sk_mcfg['mqtt_ein'] || !$sk_mcfg['mqtt_retain'] || $sk_mcfg['mqtt_topic'] !== $sk_vorher[2])) {
+            $sk_meldungen[] = sprintf(sk_t('MQTT.ABRAEUMEN_VORGEMERKT'), sk_e($sk_vorher[2]));
+        }
     } else {
         $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
     }
@@ -581,7 +656,8 @@ if ($sk_post && isset($_POST['test'])) {
     if ($sk_stand === 1) {
         $sk_meldungen[] = sk_e($sk_text);
     } elseif ($sk_stand === 2) {
-        $sk_warnungen[] = sk_e($sk_text);
+        // O10 (Durchgang 01.10.2026): eigene Ueberschrift "Ergebnis unbekannt".
+        $sk_unklar[] = sk_e($sk_text);
     } else {
         $sk_stoerungen[] = sk_e($sk_text);
     }
@@ -658,7 +734,7 @@ if ($sk_post && isset($_POST['sk_zurueck'])) {
         // 64 kB. Eine Sicherung dieses Plugins ist wenige Kilobyte gross.
         $sk_fehler[] = sk_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($sk_neu, $sk_mangel, $sk_n, $sk_neuzugang) = sk_sicherung_lesen(
+        list($sk_neu, $sk_mangel, $sk_n, $sk_neuzugang, $sk_hinw) = sk_sicherung_lesen(
             (string) @file_get_contents($_FILES['sk_sicherung']['tmp_name']));
         if ($sk_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
@@ -670,12 +746,17 @@ if ($sk_post && isset($_POST['sk_zurueck'])) {
         } elseif (sk_config_speichern($sk_neu)) {
             $sk_meldungen[] = sprintf(sk_t('EINST.SICH_UEBERNOMMEN'), $sk_n);
             sk_log_zeile('Einstellungen zurueckgespielt (' . $sk_n . ' Werte).');
+            // O7: ein leeres Token in der Datei - das geltende bleibt, gesagt wird es.
+            foreach ((array) $sk_hinw as $sk_h) {
+                $sk_warnungen[] = $sk_h;
+            }
             if ($sk_neuzugang !== null) {
                 if (sk_zugang_speichern($sk_neuzugang['email'], $sk_neuzugang['passwort'])) {
                     $sk_meldungen[] = sk_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
                     sk_log_zeile('Zugangsdaten aus der Sicherung uebernommen.');
                 } else {
                     $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_SPEICHERN');
+                    $sk_teil = true;
                 }
             }
             /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
@@ -688,6 +769,61 @@ if ($sk_post && isset($_POST['sk_zurueck'])) {
                 : sk_t('EINST.SICH_DIENST_STEHT');
         } else {
             $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
+/* ==================================================================
+ * PRG: JEDER POST ENDET MIT EINER UMLEITUNG (O1, Durchgang 01.10.2026)
+ * ==================================================================
+ *
+ * Regeln/04, Entscheidung 19. Bis 0.9.28 wurde nach jedem POST unmittelbar
+ * gerendert: F5 nach "Laden starten" im Reiter Test legte eine zweite
+ * Befehlsdatei an, F5 nach "Token neu" zeigte die Angriffswarnung des
+ * Wachpostens (gemessen F1, F6, F7). Was der Handler zu sagen hat, reist in
+ * der Einmalmeldung (sk_flash_*: 0600, 120 s, nur beim GET gelesen). Die
+ * Downloads (Vorlage, Sicherung) haben ihre Datei oben schon geliefert. Laesst
+ * sich die Einmalmeldung nicht schreiben, wird wie bisher direkt gezeigt -
+ * eine verlorene Meldung waere schlimmer als ein F5-Risiko. */
+if ($sk_ist_post) {
+    $sk_inhalt = array('tab' => $sk_tab, 'meldungen' => $sk_meldungen,
+                       'warnungen' => $sk_warnungen, 'unklar' => $sk_unklar,
+                       'fehler' => $sk_fehler, 'stoerungen' => $sk_stoerungen,
+                       'heil' => $sk_heilkasten, 'teil' => $sk_teil,
+                       'testausgabe' => $sk_testausgabe, 'eingaben' => $sk_eingaben);
+    if (sk_flash_schreiben($sk_inhalt)) {
+        header('Location: index.php?form=' . rawurlencode(preg_replace('/^tab-/', '', $sk_tab)), true, 303);
+        exit;
+    }
+} else {
+    $sk_flash = sk_flash_lesen();
+    if ($sk_flash) {
+        if (isset($sk_flash['tab']) && is_string($sk_flash['tab']) && preg_match($sk_muster, $sk_flash['tab'])) {
+            $sk_tab = $sk_flash['tab'];
+        }
+        foreach (array('meldungen', 'warnungen', 'unklar', 'fehler', 'stoerungen') as $sk_fk) {
+            if (isset($sk_flash[$sk_fk]) && is_array($sk_flash[$sk_fk])) {
+                foreach ($sk_flash[$sk_fk] as $sk_ft) {
+                    if (is_string($sk_ft)) {
+                        ${'sk_' . $sk_fk}[] = $sk_ft;
+                    }
+                }
+            }
+        }
+        if (isset($sk_flash['heil']) && is_array($sk_flash['heil'])) {
+            foreach ($sk_flash['heil'] as $sk_hk) {
+                if (is_array($sk_hk) && count($sk_hk) === 2 && is_string($sk_hk[0]) && is_string($sk_hk[1])) {
+                    $sk_heilkasten[] = $sk_hk;
+                }
+            }
+        }
+        $sk_teil = !empty($sk_flash['teil']);
+        if (isset($sk_flash['testausgabe']) && is_string($sk_flash['testausgabe'])) {
+            $sk_testausgabe = $sk_flash['testausgabe'];
+        }
+        if (isset($sk_flash['eingaben']['formular'], $sk_flash['eingaben']['werte'], $sk_flash['eingaben']['falsch'])
+            && is_array($sk_flash['eingaben']['werte']) && is_array($sk_flash['eingaben']['falsch'])) {
+            $sk_eingaben = $sk_flash['eingaben'];
         }
     }
 }
@@ -821,12 +957,25 @@ if ($sk_rahmen) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* X-2 (Regeln/04, Durchgang 01.10.2026): ein beanstandetes Feld ist rot
+   gerahmt und traegt aria-invalid. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+.sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
 
 </style>
 <div class="sm-wrap">
 
+<?php foreach ($sk_heilkasten as $sk_hk) { ?>
+<div class="<?= sk_e($sk_hk[0]) ?>"><?= $sk_hk[1] ?></div>
+<?php } ?>
 <?php foreach ($sk_meldungen as $sk_m) { ?>
 <div class="sm-hinweis"><?= $sk_m ?></div>
+<?php } ?>
+<?php if ($sk_unklar) { ?>
+<div class="sm-warnung"><b><?= sk_e(sk_t('ALLG.ERGEBNIS_UNBEKANNT')) ?></b>
+<ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($sk_unklar as $sk_u) { ?><li><?= $sk_u ?></li><?php } ?>
+</ul></div>
 <?php } ?>
 <?php if ($sk_warnungen) { ?>
 <div class="sm-warnung"><b><?= sk_e(sk_t('ALLG.HINWEIS')) ?></b>
@@ -835,14 +984,13 @@ if ($sk_rahmen) {
 </ul></div>
 <?php } ?>
 <?php if ($sk_fehler) { ?>
-<!-- Zwei Kopftexte, nicht einer. "Es wurde nichts gespeichert" war
-     unwahr, sobald im selben Absenden die Zugangsdaten geschrieben oder
-     geloescht wurden - beides laeuft unabhaengig von den Beanstandungen, und
-     das Loeschen ist nicht umkehrbar. Seit 0.9.14 wird ausserdem der
-     Konfigurationsstand immer geschrieben. Steht daneben eine Erfolgsmeldung,
-     lautet der Kopf deshalb "nicht alles". -->
-<div class="sm-fehler"><b><?= sk_e(sk_t($sk_meldungen ? 'ALLG.BEANSTANDUNG_TEIL'
-                                                      : 'ALLG.BEANSTANDUNG')) ?></b>
+<!-- Zwei Kopftexte, nicht einer (O2/O10, Durchgang 01.10.2026). Seit Nr. 16
+     wird bei einer Beanstandung nichts gespeichert; "nicht alles" gilt nur
+     noch, wenn die Konfiguration geschrieben wurde und danach die
+     Zugangsdaten scheiterten ($sk_teil). Bis 0.9.28 hing der Kopf an der
+     blossen Existenz einer Meldung. -->
+<div class="sm-fehler"><b><?= sk_e(sk_t($sk_teil ? 'ALLG.BEANSTANDUNG_TEIL'
+                                                 : 'ALLG.BEANSTANDUNG')) ?></b>
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($sk_fehler as $sk_f) { ?><li><?= $sk_f ?></li><?php } ?>
 </ul></div>
@@ -975,17 +1123,17 @@ if ($sk_rahmen) {
 <div class="sm-warnung"><?= sk_t('EINST.KONTO_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="email"><?= sk_e(sk_t('EINST.L_EMAIL')) ?></label>
-  <input data-role="none" type="text" id="email" name="email" value="<?= sk_e($sk_zg['email']) ?>" placeholder="name@example.com">
+  <input data-role="none" type="text" id="email" name="email" value="<?= sk_e(sk_fw('einst', 'email', $sk_zg['email'])) ?>"<?= sk_fm('email') ?> placeholder="name@example.com">
   <div class="sm-hilfe"><?= sk_t('EINST.H_EMAIL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="passwort"><?= sk_e(sk_t('EINST.L_PASSWORT')) ?></label>
-  <input data-role="none" type="password" id="passwort" name="passwort" value="" placeholder="<?= $sk_zg['laenge'] > 0 ? sk_e(sprintf(sk_t('EINST.PW_GESETZT'), $sk_zg['laenge'])) : sk_e(sk_t('EINST.PW_LEER')) ?>">
+  <input data-role="none" type="password" id="passwort" name="passwort" value=""<?= sk_fm('passwort') ?> placeholder="<?= $sk_zg['laenge'] > 0 ? sk_e(sprintf(sk_t('EINST.PW_GESETZT'), $sk_zg['laenge'])) : sk_e(sk_t('EINST.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_PASSWORT') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="sitzung_merken" value="1" <?= !empty($sk_cfg['sitzung_merken']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="sitzung_merken" value="1" <?= sk_fh('einst', 'sitzung_merken', !empty($sk_cfg['sitzung_merken'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_SITZUNG_MERKEN')) ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_SITZUNG_MERKEN') ?></div>
@@ -1004,22 +1152,22 @@ if ($sk_rahmen) {
 <div class="sm-warnung"><?= sk_t('EINST.TAKT_WARNUNG') ?></div>
 <div class="sm-feld">
   <label for="intervall"><?= sk_e(sk_t('EINST.L_INTERVALL')) ?></label>
-  <input data-role="none" type="number" id="intervall" name="intervall" value="<?= (int) $sk_cfg['intervall'] ?>" min="<?= (int) $sk_regeln_anz['intervall'][1] ?>" max="<?= (int) $sk_regeln_anz['intervall'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('intervall') ?>" id="intervall" name="intervall" value="<?= sk_e(sk_fw('einst', 'intervall', (int) $sk_cfg['intervall'])) ?>"<?= sk_fm('intervall') ?> min="<?= (int) $sk_regeln_anz['intervall'][1] ?>" max="<?= (int) $sk_regeln_anz['intervall'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_INTERVALL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="takt_stamm"><?= sk_e(sk_t('EINST.L_TAKT_STAMM')) ?></label>
-  <input data-role="none" type="number" id="takt_stamm" name="takt_stamm" value="<?= (int) $sk_cfg['takt_stamm'] ?>" min="<?= (int) $sk_regeln_anz['takt_stamm'][1] ?>" max="<?= (int) $sk_regeln_anz['takt_stamm'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('takt_stamm') ?>" id="takt_stamm" name="takt_stamm" value="<?= sk_e(sk_fw('einst', 'takt_stamm', (int) $sk_cfg['takt_stamm'])) ?>"<?= sk_fm('takt_stamm') ?> min="<?= (int) $sk_regeln_anz['takt_stamm'][1] ?>" max="<?= (int) $sk_regeln_anz['takt_stamm'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_TAKT_STAMM') ?></div>
 </div>
 <div class="sm-feld">
   <label for="takt_wartung"><?= sk_e(sk_t('EINST.L_TAKT_WARTUNG')) ?></label>
-  <input data-role="none" type="number" id="takt_wartung" name="takt_wartung" value="<?= (int) $sk_cfg['takt_wartung'] ?>" min="<?= (int) $sk_regeln_anz['takt_wartung'][1] ?>" max="<?= (int) $sk_regeln_anz['takt_wartung'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('takt_wartung') ?>" id="takt_wartung" name="takt_wartung" value="<?= sk_e(sk_fw('einst', 'takt_wartung', (int) $sk_cfg['takt_wartung'])) ?>"<?= sk_fm('takt_wartung') ?> min="<?= (int) $sk_regeln_anz['takt_wartung'][1] ?>" max="<?= (int) $sk_regeln_anz['takt_wartung'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_TAKT_WARTUNG') ?></div>
 </div>
 <div class="sm-feld">
   <label for="verlauf_tage"><?= sk_e(sk_t('EINST.L_VERLAUF_TAGE')) ?></label>
-  <input data-role="none" type="number" id="verlauf_tage" name="verlauf_tage" value="<?= (int) $sk_cfg['verlauf_tage'] ?>" min="<?= (int) $sk_regeln_anz['verlauf_tage'][1] ?>" max="<?= (int) $sk_regeln_anz['verlauf_tage'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('verlauf_tage') ?>" id="verlauf_tage" name="verlauf_tage" value="<?= sk_e(sk_fw('einst', 'verlauf_tage', (int) $sk_cfg['verlauf_tage'])) ?>"<?= sk_fm('verlauf_tage') ?> min="<?= (int) $sk_regeln_anz['verlauf_tage'][1] ?>" max="<?= (int) $sk_regeln_anz['verlauf_tage'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_VERLAUF_TAGE') ?></div>
 </div>
 
@@ -1027,22 +1175,22 @@ if ($sk_rahmen) {
 <div class="sm-warnung"><?= sk_t('EINST.STEUERUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= !empty($sk_cfg['steuerung_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= sk_fh('einst', 'steuerung_ein', !empty($sk_cfg['steuerung_ein'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_STEUERUNG_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="temp_min"><?= sk_e(sk_t('EINST.L_TEMP_MIN')) ?></label>
-  <input data-role="none" type="number" id="temp_min" name="temp_min" value="<?= (int) $sk_cfg['temp_min'] ?>" min="<?= (int) $sk_regeln_anz['temp_min'][1] ?>" max="<?= (int) $sk_regeln_anz['temp_min'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('temp_min') ?>" id="temp_min" name="temp_min" value="<?= sk_e(sk_fw('einst', 'temp_min', (int) $sk_cfg['temp_min'])) ?>"<?= sk_fm('temp_min') ?> min="<?= (int) $sk_regeln_anz['temp_min'][1] ?>" max="<?= (int) $sk_regeln_anz['temp_min'][2] ?>">
 </div>
 <div class="sm-feld">
   <label for="temp_max"><?= sk_e(sk_t('EINST.L_TEMP_MAX')) ?></label>
-  <input data-role="none" type="number" id="temp_max" name="temp_max" value="<?= (int) $sk_cfg['temp_max'] ?>" min="<?= (int) $sk_regeln_anz['temp_max'][1] ?>" max="<?= (int) $sk_regeln_anz['temp_max'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('temp_max') ?>" id="temp_max" name="temp_max" value="<?= sk_e(sk_fw('einst', 'temp_max', (int) $sk_cfg['temp_max'])) ?>"<?= sk_fm('temp_max') ?> min="<?= (int) $sk_regeln_anz['temp_max'][1] ?>" max="<?= (int) $sk_regeln_anz['temp_max'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_TEMP') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= sk_e(sk_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $sk_cfg['wartezeit'] ?>" min="<?= (int) $sk_regeln_anz['wartezeit'][1] ?>" max="<?= (int) $sk_regeln_anz['wartezeit'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('wartezeit') ?>" id="wartezeit" name="wartezeit" value="<?= sk_e(sk_fw('einst', 'wartezeit', (int) $sk_cfg['wartezeit'])) ?>"<?= sk_fm('wartezeit') ?> min="<?= (int) $sk_regeln_anz['wartezeit'][1] ?>" max="<?= (int) $sk_regeln_anz['wartezeit'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
@@ -1050,17 +1198,17 @@ if ($sk_rahmen) {
 <div class="sm-warnung"><?= sk_t('EINST.BREMSEN_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="abstand_abruf"><?= sk_e(sk_t('EINST.L_ABSTAND_ABRUF')) ?></label>
-  <input data-role="none" type="number" id="abstand_abruf" name="abstand_abruf" value="<?= (int) $sk_cfg['abstand_abruf'] ?>" min="<?= (int) $sk_regeln_anz['abstand_abruf'][1] ?>" max="<?= (int) $sk_regeln_anz['abstand_abruf'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('abstand_abruf') ?>" id="abstand_abruf" name="abstand_abruf" value="<?= sk_e(sk_fw('einst', 'abstand_abruf', (int) $sk_cfg['abstand_abruf'])) ?>"<?= sk_fm('abstand_abruf') ?> min="<?= (int) $sk_regeln_anz['abstand_abruf'][1] ?>" max="<?= (int) $sk_regeln_anz['abstand_abruf'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_ABSTAND_ABRUF') ?></div>
 </div>
 <div class="sm-feld">
   <label for="befehle_stunde"><?= sk_e(sk_t('EINST.L_BEFEHLE_STUNDE')) ?></label>
-  <input data-role="none" type="number" id="befehle_stunde" name="befehle_stunde" value="<?= (int) $sk_cfg['befehle_stunde'] ?>" min="<?= (int) $sk_regeln_anz['befehle_stunde'][1] ?>" max="<?= (int) $sk_regeln_anz['befehle_stunde'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('befehle_stunde') ?>" id="befehle_stunde" name="befehle_stunde" value="<?= sk_e(sk_fw('einst', 'befehle_stunde', (int) $sk_cfg['befehle_stunde'])) ?>"<?= sk_fm('befehle_stunde') ?> min="<?= (int) $sk_regeln_anz['befehle_stunde'][1] ?>" max="<?= (int) $sk_regeln_anz['befehle_stunde'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_BEFEHLE_STUNDE') ?></div>
 </div>
 <div class="sm-feld">
   <label for="entprellung"><?= sk_e(sk_t('EINST.L_ENTPRELLUNG')) ?></label>
-  <input data-role="none" type="number" id="entprellung" name="entprellung" value="<?= (int) $sk_cfg['entprellung'] ?>" min="<?= (int) $sk_regeln_anz['entprellung'][1] ?>" max="<?= (int) $sk_regeln_anz['entprellung'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('entprellung') ?>" id="entprellung" name="entprellung" value="<?= sk_e(sk_fw('einst', 'entprellung', (int) $sk_cfg['entprellung'])) ?>"<?= sk_fm('entprellung') ?> min="<?= (int) $sk_regeln_anz['entprellung'][1] ?>" max="<?= (int) $sk_regeln_anz['entprellung'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_ENTPRELLUNG') ?></div>
 </div>
 
@@ -1068,16 +1216,16 @@ if ($sk_rahmen) {
 <div class="sm-hinweis"><?= sk_t('EINST.HEIM_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="heim_breite"><?= sk_e(sk_t('EINST.L_HEIM_BREITE')) ?></label>
-  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= sk_e($sk_cfg['heim_breite']) ?>" placeholder="51.318339">
+  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= sk_e(sk_fw('einst', 'heim_breite', $sk_cfg['heim_breite'])) ?>"<?= sk_fm('heim_breite') ?> placeholder="51.318339">
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= sk_e(sk_t('EINST.L_HEIM_LAENGE')) ?></label>
-  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= sk_e($sk_cfg['heim_laenge']) ?>" placeholder="9.489601">
+  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= sk_e(sk_fw('einst', 'heim_laenge', $sk_cfg['heim_laenge'])) ?>"<?= sk_fm('heim_laenge') ?> placeholder="9.489601">
   <div class="sm-hilfe"><?= sk_t('EINST.H_HEIM_KOORD') ?></div>
 </div>
 <div class="sm-feld">
   <label for="heim_radius"><?= sk_e(sk_t('EINST.L_HEIM_RADIUS')) ?></label>
-  <input data-role="none" type="number" id="heim_radius" name="heim_radius" value="<?= (int) $sk_cfg['heim_radius'] ?>" min="<?= (int) $sk_regeln_anz['heim_radius'][1] ?>" max="<?= (int) $sk_regeln_anz['heim_radius'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('heim_radius') ?>" id="heim_radius" name="heim_radius" value="<?= sk_e(sk_fw('einst', 'heim_radius', (int) $sk_cfg['heim_radius'])) ?>"<?= sk_fm('heim_radius') ?> min="<?= (int) $sk_regeln_anz['heim_radius'][1] ?>" max="<?= (int) $sk_regeln_anz['heim_radius'][2] ?>">
   <div class="sm-hilfe"><?= sk_t('EINST.H_HEIM_RADIUS') ?></div>
 </div>
 
@@ -1139,6 +1287,17 @@ if (!$sk_ladungen) { ?>
 <div class="sm-hinweis"><?= sk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= sk_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-hilfe"><?= sk_t('EINST.SICH_MIT_ZUGANG_HILFE') ?></div>
+<?php
+/* X-3 (O6, Durchgang 01.10.2026): wuerde die eigene Sicherung beim
+   Zurueckspielen abgewiesen, sagt es die Seite VOR dem Sichern - mit
+   denselben Pruefungen wie das Zurueckspielen. Nur Namen, nie Werte. */
+$sk_x3 = sk_sicherung_maengel(false);
+$sk_x3z = $sk_x3 ? array() : sk_sicherung_maengel(true);
+if ($sk_x3) { ?>
+<div class="sm-warnung"><?= sprintf(sk_t('EINST.SICH_X3'), sk_e(implode(', ', $sk_x3))) ?></div>
+<?php } elseif ($sk_x3z) { ?>
+<div class="sm-warnung"><?= sprintf(sk_t('EINST.SICH_X3_ZUGANG'), sk_e(implode(', ', $sk_x3z))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1172,19 +1331,19 @@ if (!$sk_ladungen) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($sk_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= sk_fh('mqtt', 'mqtt_ein', !empty($sk_cfg['mqtt_ein'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_MQTT_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= sk_e(sk_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= sk_e($sk_cfg['mqtt_topic']) ?>" placeholder="skoda">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= sk_e(sk_fw('mqtt', 'mqtt_topic', $sk_cfg['mqtt_topic'])) ?>"<?= sk_fm('mqtt_topic') ?> placeholder="skoda">
   <div class="sm-hilfe"><?= sk_t('EINST.H_MQTT_TOPIC') ?></div>
 </div>
 <div class="sm-warnung"><?= sk_t('EINST.RETAIN_WARNUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_retain" value="1" <?= !empty($sk_cfg['mqtt_retain']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="mqtt_retain" value="1" <?= sk_fh('mqtt', 'mqtt_retain', !empty($sk_cfg['mqtt_retain'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_MQTT_RETAIN')) ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_MQTT_RETAIN') ?></div>
@@ -1195,22 +1354,22 @@ if (!$sk_ladungen) { ?>
 <p class="sm-hilfe"><?= sk_t('MQTT.EMPFEHLUNG_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="empf_thema"><?= sk_e(sk_t('EINST.L_EMPF_THEMA')) ?></label>
-  <input data-role="none" type="text" id="empf_thema" name="empf_thema" value="<?= sk_e($sk_cfg['empf_thema']) ?>" placeholder="pv/ueberschuss_w">
+  <input data-role="none" type="text" id="empf_thema" name="empf_thema" value="<?= sk_e(sk_fw('mqtt', 'empf_thema', $sk_cfg['empf_thema'])) ?>"<?= sk_fm('empf_thema') ?> placeholder="pv/ueberschuss_w">
 </div>
 <div class="sm-feld">
   <label for="empf_grenze"><?= sk_e(sk_t('EINST.L_EMPF_GRENZE')) ?></label>
-  <input data-role="none" type="text" id="empf_grenze" name="empf_grenze" value="<?= sk_e($sk_cfg['empf_grenze']) ?>" placeholder="3000">
+  <input data-role="none" type="text" id="empf_grenze" name="empf_grenze" value="<?= sk_e(sk_fw('mqtt', 'empf_grenze', $sk_cfg['empf_grenze'])) ?>"<?= sk_fm('empf_grenze') ?> placeholder="3000">
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="empf_kleiner" value="1" <?= !empty($sk_cfg['empf_kleiner']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="empf_kleiner" value="1" <?= sk_fh('mqtt', 'empf_kleiner', !empty($sk_cfg['empf_kleiner'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_EMPF_KLEINER')) ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_EMPF_KLEINER') ?></div>
 </div>
 <div class="sm-feld">
   <label for="empf_alter"><?= sk_e(sk_t('EINST.L_EMPF_ALTER')) ?></label>
-  <input data-role="none" type="number" id="empf_alter" name="empf_alter" min="<?= (int) $sk_regeln_anz['empf_alter'][1] ?>" max="<?= (int) $sk_regeln_anz['empf_alter'][2] ?>" value="<?= (int) $sk_cfg['empf_alter'] ?>">
+  <input data-role="none" type="<?= sk_ftyp('empf_alter') ?>" id="empf_alter" name="empf_alter" min="<?= (int) $sk_regeln_anz['empf_alter'][1] ?>" max="<?= (int) $sk_regeln_anz['empf_alter'][2] ?>" value="<?= sk_e(sk_fw('mqtt', 'empf_alter', (int) $sk_cfg['empf_alter'])) ?>"<?= sk_fm('empf_alter') ?>>
   <div class="sm-hilfe"><?= sk_t('EINST.H_EMPF_ALTER') ?></div>
 </div>
 
@@ -1218,22 +1377,22 @@ if (!$sk_ladungen) { ?>
 <div class="sm-warnung"><?= sk_t('MQTT.ABFAHRT_WARNUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="abfahrt_ein" value="1" <?= !empty($sk_cfg['abfahrt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="abfahrt_ein" value="1" <?= sk_fh('mqtt', 'abfahrt_ein', !empty($sk_cfg['abfahrt_ein'])) ? 'checked' : '' ?>>
     <?= sk_e(sk_t('EINST.L_ABFAHRT_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_thema"><?= sk_e(sk_t('EINST.L_ABFAHRT_THEMA')) ?></label>
-  <input data-role="none" type="text" id="abfahrt_thema" name="abfahrt_thema" value="<?= sk_e($sk_cfg['abfahrt_thema']) ?>" placeholder="abfahrt/restminuten">
+  <input data-role="none" type="text" id="abfahrt_thema" name="abfahrt_thema" value="<?= sk_e(sk_fw('mqtt', 'abfahrt_thema', $sk_cfg['abfahrt_thema'])) ?>"<?= sk_fm('abfahrt_thema') ?> placeholder="abfahrt/restminuten">
   <div class="sm-hilfe"><?= sk_t('EINST.H_ABFAHRT_THEMA') ?></div>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_vorlauf"><?= sk_e(sk_t('EINST.L_ABFAHRT_VORLAUF')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_vorlauf" name="abfahrt_vorlauf" value="<?= (int) $sk_cfg['abfahrt_vorlauf'] ?>" min="<?= (int) $sk_regeln_anz['abfahrt_vorlauf'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_vorlauf'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('abfahrt_vorlauf') ?>" id="abfahrt_vorlauf" name="abfahrt_vorlauf" value="<?= sk_e(sk_fw('mqtt', 'abfahrt_vorlauf', (int) $sk_cfg['abfahrt_vorlauf'])) ?>"<?= sk_fm('abfahrt_vorlauf') ?> min="<?= (int) $sk_regeln_anz['abfahrt_vorlauf'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_vorlauf'][2] ?>">
 </div>
 <div class="sm-feld">
   <label for="abfahrt_temp"><?= sk_e(sk_t('EINST.L_ABFAHRT_TEMP')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_temp" name="abfahrt_temp" value="<?= (int) $sk_cfg['abfahrt_temp'] ?>" min="<?= (int) $sk_regeln_anz['abfahrt_temp'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_temp'][2] ?>">
+  <input data-role="none" type="<?= sk_ftyp('abfahrt_temp') ?>" id="abfahrt_temp" name="abfahrt_temp" value="<?= sk_e(sk_fw('mqtt', 'abfahrt_temp', (int) $sk_cfg['abfahrt_temp'])) ?>"<?= sk_fm('abfahrt_temp') ?> min="<?= (int) $sk_regeln_anz['abfahrt_temp'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_temp'][2] ?>">
 </div>
 
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION') ?></span></div>
@@ -1267,6 +1426,14 @@ if (!$sk_ladungen) { ?>
 <tr><td><?= sk_e(sk_t('MQTT.T_UDP')) ?></td><td><span class="sm-mono"><?= (int) $sk_mqtt['udpport'] ?></span></td></tr>
 <tr><td><?= sk_e(sk_t('MQTT.T_PLUGIN')) ?></td><td class="<?= !empty($sk_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($sk_cfg['mqtt_ein']) ? sk_e(sk_t('ALLG.EIN')) : sk_e(sk_t('ALLG.AUS')) ?></td></tr>
 <tr><td><?= sk_e(sk_t('MQTT.T_RETAIN')) ?></td><td><?= sk_e(sk_t(!empty($sk_cfg['mqtt_retain']) ? 'TEST.A_RETAIN_EIN' : 'TEST.A_RETAIN_AUS')) ?></td></tr>
+<?php
+/* M5 (Durchgang 01.10.2026): Praefixe, unter denen noch retained Werte dieses
+   Plugins liegen koennen und die der Dienst am Broker abraeumt. */
+$sk_zv = sk_zustand();
+$sk_vm = (isset($sk_zv['mqtt_vorgemerkt']) && is_array($sk_zv['mqtt_vorgemerkt']))
+    ? array_values(array_filter($sk_zv['mqtt_vorgemerkt'], 'is_string')) : array(); ?>
+<tr><td><?= sk_e(sk_t('MQTT.T_VORGEMERKT')) ?></td>
+    <td class="<?= $sk_vm ? 'sm-aus' : '' ?>"><?= $sk_vm ? sk_e(implode(', ', $sk_vm)) . ' &mdash; ' . sk_t('MQTT.A_VORGEMERKT') : sk_e(sk_t('MQTT.A_VORGEMERKT_KEINE')) ?></td></tr>
 <?php
 /* WIE VIELE MELDUNGEN SIND BEIM LETZTEN DURCHGANG WIRKLICH HINAUSGEGANGEN?
  *
@@ -1312,7 +1479,8 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 <?php foreach (sk_mqtt_themen() as $sk_thema => $sk_schluessel) { ?>
 <tr><td><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic'] . '/' . $sk_thema) ?></span></td>
     <td><?= sk_t($sk_schluessel) ?></td>
-    <td><?= sk_e(sk_t(sk_mqtt_behalten($sk_thema) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
+    <td><?= sk_e(sk_t(!sk_mqtt_behalten($sk_thema) ? 'MQTT.RETAIN_NEIN'
+        : (!empty($sk_cfg['mqtt_retain']) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN_HAKEN'))) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= sk_t('MQTT.PLATZHALTER') ?></p>
@@ -1597,7 +1765,7 @@ function sk_bausteine($nr = 1)
 <p class="sm-hilfe"><?= sk_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
 <tr><th style="width:36px;">&nbsp;</th><th><?= sk_e(sk_t('TEST.T_FRAGE')) ?></th><th><?= sk_e(sk_t('TEST.T_BEFUND')) ?></th></tr>
-<?php foreach (sk_pruefungen() as $sk_z) { ?>
+<?php foreach (sk_pruefungen($sk_tab === 'tab-test') as $sk_z) { ?>
 <tr><td style="text-align:center;"><?php
     if ($sk_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($sk_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }

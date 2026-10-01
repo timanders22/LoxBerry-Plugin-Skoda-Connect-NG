@@ -317,6 +317,20 @@ function sk_wert_pruefen($schluessel, $wert)
             }
             return preg_match($r[1], $s) ? array(true, $s) : array(false, null);
         case 'zahl':
+            /* OHNE EXPONENT (O13, Durchgang 01.10.2026). Bis 0.9.28 kam eine
+             * Zahl als float zurueck, json_encode schrieb 0.00005 als 5.0e-5,
+             * und beim naechsten Lesen wies das Muster unten "5.0E-5" ab: das
+             * Feld zeigte leer, und ein unveraendertes Speichern loeschte die
+             * Heimatkoordinate still (gemessen, Oberflaechenbericht F12).
+             * Jetzt: ein float aus einer aelteren Datei wird ohne Exponent
+             * geschrieben, und zurueck kommt die Zahl als Zeichenkette - so steht
+             * sie auch in der Datei. bin/skoda.py liest beides (kommazahl()). */
+            if (is_float($wert) || is_int($wert)) {
+                $s = rtrim(rtrim(sprintf('%.8F', (float) $wert), '0'), '.');
+                if ($s === '-0') {
+                    $s = '0';
+                }
+            }
             if ($s === '') {
                 return array(true, '');
             }
@@ -324,7 +338,8 @@ function sk_wert_pruefen($schluessel, $wert)
                 return array(false, null);
             }
             $f = (float) str_replace(',', '.', $s);
-            return ($f >= $r[1] && $f <= $r[2]) ? array(true, $f) : array(false, null);
+            return ($f >= $r[1] && $f <= $r[2]) ? array(true, str_replace(',', '.', $s))
+                                                : array(false, null);
     }
     return array(false, null);
 }
@@ -493,6 +508,17 @@ function sk_config_lage()
             $abgewiesen[] = (string) $k;
         }
     }
+    /* DIE VERTAUSCHUNG GILT AUCH BEIM LESEN (O2, Durchgang 01.10.2026).
+     * bin/skoda.py setzt temp_min > temp_max seit 0.9.14 auf beide Vorgaben
+     * zurueck; diese Seite zeigte bis 0.9.28 die vertauschten Werte an
+     * (gemessen 28/17 gegen 16/29 im Dienst - zwei Wahrheiten ueber dieselbe
+     * Datei). Jetzt dieselbe Regel, und beide stehen unter 'abgewiesen'. */
+    if ((int) $cfg['temp_min'] > (int) $cfg['temp_max']) {
+        $cfg['temp_min'] = $vorgaben['temp_min'];
+        $cfg['temp_max'] = $vorgaben['temp_max'];
+        $abgewiesen[] = 'temp_min';
+        $abgewiesen[] = 'temp_max';
+    }
     $GLOBALS['sk_cfg_speicher'] = array(
         'cfg'        => $cfg,
         'fehlend'    => array_values(array_diff(array_keys($vorgaben), array_keys($datei))),
@@ -570,7 +596,7 @@ function sk_config_vervollstaendigen()
     if (!$fehlend) {
         return 0;
     }
-    if (!sk_json_schreiben($p['config'], $datei)) {
+    if (!sk_json_schreiben($p['config'], $datei, 0600)) {
         return 0;
     }
     sk_config_zwischenspeicher_leeren();
@@ -599,14 +625,24 @@ function sk_config_vervollstaendigen()
  * Gerufen wird die Heilung jetzt nur noch dort, wo jemand angemeldet ist oder
  * das System selbst arbeitet: aus der Oberflaeche und aus postinstall.sh.
  *
- * Rueckgabe: true, wenn tatsaechlich zurueckgeholt wurde.
+ * RUECKGABE SEIT DEM DURCHGANG 01.10.2026 (C8): eine Auskunft statt true/false.
+ * Bis 0.9.28 verwarf die Oberflaeche den Rueckgabewert; eine abgeschnittene
+ * skoda.json wurde still durch die Zweitschrift ersetzt oder - ohne
+ * Zweitschrift - still auf Werkseinstellung mit NEUEM Token gesetzt, und der
+ * Reiter Test zeigte gruen (gemessen, Oberflaechenbericht K1/K2).
+ *   array('lage' => wie sk_json_lage(), 'aktion' => 'nichts' | 'zweitschrift'
+ *         | 'werk' | 'fehlgeschlagen', 'zweitschrift' => Lage der Zweitschrift)
+ * 'werk' heisst: die Datei war beschaedigt, eine brauchbare Zweitschrift gibt
+ * es nicht - es gelten die Vorgaben, und sk_token() wuerfelt gleich ein neues
+ * Token. Die Seite sagt beides (htmlauth/index.php).
  */
 function sk_config_heilen()
 {
     $p = sk_paths();
     list(, $lage) = sk_json_lage($p['config']);
+    $erg = array('lage' => $lage, 'aktion' => 'nichts', 'zweitschrift' => '');
     if ($lage === 'ok') {
-        return false;
+        return $erg;
     }
 
     /* EINE BESCHAEDIGTE DATEI WIRD ZUR SEITE GELEGT, NICHT UEBERSCHRIEBEN.
@@ -630,26 +666,51 @@ function sk_config_heilen()
     }
 
     if (!is_file($p['sicherung'])) {
-        return false;
+        $erg['aktion'] = $lage === 'kaputt' ? 'werk' : 'nichts';
+        $erg['zweitschrift'] = 'fehlt';
+        return $erg;
     }
 
     /* Die Zweitschrift wird GELESEN, nicht kopiert. Eine kaputte Sicherung
      * ueber eine kaputte Datei zu legen hilft niemandem, und ein 'copy'
      * kann nicht sagen, ob der Inhalt taugt. */
     list($gut, $slage) = sk_json_lage($p['sicherung']);
+    $erg['zweitschrift'] = $slage;
     if ($slage !== 'ok' || !$gut) {
         sk_log_zeile('Die Zweitschrift ist selbst unbrauchbar (' . $slage . ') - '
                    . 'es wurde nichts zurueckgeholt.');
-        return false;
+        $erg['aktion'] = $lage === 'kaputt' ? 'werk' : 'nichts';
+        return $erg;
     }
     if (!is_dir($p['configdir'])) {
         @mkdir($p['configdir'], 0775, true);
     }
-    if (!sk_json_schreiben($p['config'], $gut)) {
-        return false;
+    if (!sk_json_schreiben($p['config'], $gut, 0600)) {
+        $erg['aktion'] = 'fehlgeschlagen';
+        return $erg;
     }
     sk_config_zwischenspeicher_leeren();
-    return true;
+    sk_log_zeile('Die Konfiguration (' . $lage . ') wurde aus der Zweitschrift zurueckgeholt.');
+    $erg['aktion'] = 'zweitschrift';
+    return $erg;
+}
+
+/**
+ * Das Aktionstoken der Zweitschrift - nur GELESEN (C8, Durchgang 01.10.2026).
+ *
+ * Fuer den unangemeldeten Endpunkt bei beschaedigter skoda.json: er schreibt
+ * nichts, darf aber pruefen, ob der Aufrufer das Token kennt, mit dem der
+ * Dienst gerade arbeitet (bin/skoda.py liest bei Schaden die Zweitschrift).
+ * '' heisst: keine brauchbare Zweitschrift.
+ */
+function sk_zweitschrift_token()
+{
+    list($d, $lage) = sk_json_lage(sk_paths()['sicherung']);
+    if ($lage !== 'ok' || !isset($d['aktionstoken'])) {
+        return '';
+    }
+    list($ok, $t) = sk_wert_pruefen('aktionstoken', $d['aktionstoken']);
+    return $ok ? (string) $t : '';
 }
 
 /**
@@ -702,7 +763,11 @@ function sk_config_speichern($cfg)
     if (!is_dir($p['configdir'])) {
         @mkdir($p['configdir'], 0775, true);
     }
-    if (!sk_json_schreiben($p['config'], $cfg)) {
+    /* 0600 SEIT DEM DURCHGANG 01.10.2026 (C9; Regeln/05 "Wer das Aktionstoken
+     * in der Konfiguration fuehrt, fuehrt eine 0600-Datei"). Bis 0.9.28
+     * standen skoda.json und Zweitschrift mit 0644 da - beide tragen das
+     * Aktionstoken, aus dem sich auch das Formularmerkmal ableitet. */
+    if (!sk_json_schreiben($p['config'], $cfg, 0600)) {
         return false;
     }
     /* DIE ZWEITSCHRIFT WIRD ERST NACH GELUNGENEM ZURUECKLESEN ERNEUERT.
@@ -712,7 +777,7 @@ function sk_config_speichern($cfg)
      * auch - beide Staende weg, und das ist der Fall, fuer den es sie gibt. */
     list($zurueck, $lage) = sk_json_lage($p['config']);
     if ($lage === 'ok' && $zurueck) {
-        sk_json_schreiben($p['sicherung'], $zurueck);
+        sk_json_schreiben($p['sicherung'], $zurueck, 0600);
     }
     sk_config_zwischenspeicher_leeren();
     return true;
@@ -929,6 +994,38 @@ function sk_zugang_loeschen()
         $ok = @unlink($f) && $ok;
     }
     return $ok;
+}
+
+/**
+ * Ist das ein brauchbarer MySkoda-Benutzername? (O4/O8, Durchgang 01.10.2026)
+ *
+ * EINE Regel fuer das Formular und das Zurueckspielen. Bis 0.9.28 entfernte
+ * das Formular Anfuehrungszeichen und Steuerzeichen STILL (o'brien@... wurde
+ * als obrien@... gespeichert), und das Zurueckspielen machte aus einer Liste
+ * still '' (die gespeicherte Adresse war danach weg). Jetzt: nur Leerraum am
+ * Rand wird abgeschnitten (Entscheidung 19), alles andere ist zulaessig oder
+ * wird beanstandet. Rueckgabe array(ok, Wert).
+ */
+function sk_email_pruefen($w)
+{
+    if (!is_string($w)) {
+        return array(false, '');
+    }
+    $s = trim($w);
+    if ($s === '') {
+        return array(true, '');
+    }
+    if (strlen($s) > 254 || preg_match('/[\x00-\x1F\x7F]/', $s)
+        || !filter_var($s, FILTER_VALIDATE_EMAIL)) {
+        return array(false, $s);
+    }
+    return array(true, $s);
+}
+
+/** Hoechstlaenge des Passworts - dieselbe Grenze fuer Formular und Zurueckspielen (O6). */
+function sk_passwort_max()
+{
+    return 256;
 }
 
 /** Zufallstoken fuer den unangemeldeten Endpunkt. */
@@ -1635,6 +1732,10 @@ function sk_mqtt_themen()
          * Aenderung an einer fremden Loxone-Konfiguration. */
         'ok'                          => 'SK_MQTT.OK',
         'fahrzeuge'                   => 'SK_MQTT.FAHRZEUGE',
+        /* Das Signal JE FAHRZEUG (M3, Durchgang 01.10.2026): fluechtig, in jedem
+         * Durchgang - gleichwertig mit OK und ALTER am Endpunkt. */
+        'fahrzeugN/ok'                => 'SK_MQTT.FZ_OK',
+        'fahrzeugN/ts'                => 'SK_MQTT.FZ_TS',
         'fahrzeugN/soc'               => 'SK_MQTT.SOC',
         'fahrzeugN/reichweite_km'     => 'SK_MQTT.REICHWEITE',
         'fahrzeugN/tank_prozent'      => 'SK_MQTT.TANK',
@@ -2156,11 +2257,16 @@ function sk_t($schluessel)
  * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
  * stammen aus einer anderen Fassung oder einem anderen Plugin.
  *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
+ * Zugangsdaten|null, Hinweise[], Namen der beanstandeten Werte[]). Die beiden
+ * letzten seit dem Durchgang 01.10.2026: Hinweise fuer ein leeres Token (O7),
+ * Namen fuer die Warnung beim Sichern (X-3, O6).
  */
 function sk_sicherung_lesen($roh)
 {
     $mangel = array();
+    $hinweise = array();
+    $namen = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(sk_t('EINST.SICH_KEIN_JSON')), 0, null);
@@ -2185,14 +2291,40 @@ function sk_sicherung_lesen($roh)
          * war. Sie gehoeren NICHT in die Konfiguration, sondern in ihre
          * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und dem
          * Aufrufer gesondert zurueckgegeben. */
-        if ((string) $k === 'zugang' && is_array($w)) {
-            $email = isset($w['email']) && !is_array($w['email']) ? trim((string) $w['email']) : '';
-            $pw = isset($w['passwort']) && !is_array($w['passwort']) ? (string) $w['passwort'] : '';
-            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.email');
-            } elseif (strlen($pw) > 256) {
-                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.passwort');
-            } else {
+        /* JEDES FELD TYPGEPRUEFT (O8, Durchgang 01.10.2026). Bis 0.9.28 wurde
+         * eine Liste in zugang.email oder zugang.passwort still zu '' - mit
+         * 0 Beanstandungen, und die gespeicherte Adresse war danach geloescht
+         * (gemessen, Codebericht Nr. 6, Oberflaechenbericht F9d). Jetzt ist
+         * jeder Wert, der kein Text ist, eine Beanstandung, und es gilt nichts
+         * aus der Datei. Dieselbe Regel wie im Formular (sk_email_pruefen,
+         * sk_passwort_max). */
+        if ((string) $k === 'zugang') {
+            if (!is_array($w)) {
+                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang');
+                $namen[] = 'zugang';
+                continue;
+            }
+            $email = '';
+            $pw = '';
+            $gut = true;
+            if (array_key_exists('email', $w)) {
+                list($ok_e, $email) = sk_email_pruefen($w['email']);
+                if (!$ok_e) {
+                    $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.email');
+                    $namen[] = 'zugang.email';
+                    $gut = false;
+                }
+            }
+            if (array_key_exists('passwort', $w)) {
+                if (!is_string($w['passwort']) || strlen($w['passwort']) > sk_passwort_max()) {
+                    $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.passwort');
+                    $namen[] = 'zugang.passwort';
+                    $gut = false;
+                } else {
+                    $pw = $w['passwort'];
+                }
+            }
+            if ($gut) {
                 $zugang = array('email' => $email, 'passwort' => $pw);
                 $anzahl++;
             }
@@ -2205,6 +2337,21 @@ function sk_sicherung_lesen($roh)
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
+            continue;
+        }
+
+        /* EIN LEERES TOKEN BEHAELT DAS GELTENDE (O7, Durchgang 01.10.2026;
+         * Klasse 10, Regeln/05: leer ist kein unzulaessiger Wert, sondern
+         * "keins gesichert"). Bis 0.9.28 wurde es angenommen, und die Seite
+         * wuerfelte gleich danach still ein NEUES - jede Adresse im
+         * Miniserver bekam 403, die Meldung lautete "zurueckgespielt"
+         * (gemessen, Codebericht Nr. 5, Oberflaechenbericht F9c). Ein Token als
+         * Liste oder Objekt bleibt eine Beanstandung (Typfehler, unten). */
+        if ((string) $k === 'aktionstoken' && is_string($w) && trim($w) === '') {
+            $geltend = (string) sk_config()['aktionstoken'];
+            $neu['aktionstoken'] = $geltend;
+            $hinweise[] = sk_t($geltend !== '' ? 'EINST.SICH_TOKEN_LEER' : 'EINST.SICH_TOKEN_LEER_NEU');
             continue;
         }
 
@@ -2223,6 +2370,7 @@ function sk_sicherung_lesen($roh)
         if (!$ok) {
             $mangel[] = sprintf(sk_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
             continue;
         }
         $neu[$k] = $rein;
@@ -2232,6 +2380,8 @@ function sk_sicherung_lesen($roh)
     /* Die Grenzen, die kein einzelner Wert kennt. */
     if (!$mangel && $neu['temp_min'] > $neu['temp_max']) {
         $mangel[] = sk_t('EINST.FEHLER_TEMP_TAUSCH');
+        $namen[] = 'temp_min';
+        $namen[] = 'temp_max';
     }
     if ($anzahl === 0) {
         $mangel[] = sk_t('EINST.SICH_LEER');
@@ -2262,8 +2412,10 @@ function sk_sicherung_lesen($roh)
     if ($fehlend) {
         $mangel[] = sprintf(sk_t('EINST.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+        $namen = array_merge($namen, $fehlend);
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
+                 $hinweise, array_values(array_unique($namen)));
 }
 
 /**
@@ -2285,7 +2437,7 @@ function sk_sicherung_lesen($roh)
  *    Plugin kaeme trotzdem nicht an die Anlage. Jetzt entscheidet der
  *    Bediener, und der Dateiname sagt es mit.
  */
-function sk_sicherung_schreiben($mit_zugang = false)
+function sk_sicherung_schreiben($mit_zugang = false, $pruefen = true)
 {
     $cfg = sk_config();
     $aus = array(
@@ -2307,6 +2459,81 @@ function sk_sicherung_schreiben($mit_zugang = false)
             'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
         );
     }
+    /* X-3 (Durchgang 01.10.2026): die Sicherung geht durch DIESELBE Pruefung
+     * wie das Zurueckspielen (sk_sicherung_maengel -> sk_sicherung_lesen).
+     * Wuerde sie dort abgewiesen, traegt sie eine Warnung im Kopf - nur die
+     * Namen, nie die Werte - und die Seite warnt gelb am Knopf. Geliefert wird
+     * sie trotzdem. Bis 0.9.28 nahm das Formular ein Passwort mit 300 Zeichen
+     * an, und die eigene Sicherung wurde danach abgewiesen, ohne dass es vorher
+     * jemand sagte (gemessen, Oberflaechenbericht F8). */
+    $namen = $pruefen ? sk_sicherung_maengel($mit_zugang) : array();
+    if ($namen) {
+        $kopf = array();
+        foreach ($aus as $k => $v) {
+            $kopf[$k] = $v;
+            if ($k === '_hinweis') {
+                $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen. '
+                                  . 'Beanstandet: ' . implode(', ', $namen) . '.';
+            }
+        }
+        $aus = $kopf;
+    }
     $js = json_encode($aus, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     return $js === false ? '' : $js;
+}
+
+/**
+ * Welche Werte der Sicherung wuerde das Zurueckspielen beanstanden? (X-3)
+ * Leer heisst: keiner. Gerechnet mit sk_sicherung_lesen() an der Sicherung
+ * selbst (ohne Warnung gebaut), nicht nachgebaut.
+ */
+function sk_sicherung_maengel($mit_zugang = false)
+{
+    $js = sk_sicherung_schreiben($mit_zugang, false);
+    if ($js === '') {
+        return array('json');
+    }
+    $r = sk_sicherung_lesen($js);
+    return $r[0] === null ? $r[5] : array();
+}
+
+/* ==================================================================
+ * Die Einmalmeldung fuer PRG (O1, Durchgang 01.10.2026)
+ *
+ * Jeder POST-Handler der Oberflaeche endet mit einer Umleitung (303,
+ * Regeln/04; Entscheidung 19). Was er zu sagen hat, reist in dieser Datei:
+ * 0600 im Datenordner, hoechstens 120 s gueltig, gelesen und geloescht nur
+ * beim folgenden GET. Bis 0.9.28 wurde nach jedem POST unmittelbar gerendert:
+ * F5 nach einem Schaltknopf im Reiter Test legte einen zweiten Befehl an
+ * (gemessen: zwei Befehlsdateien laden_start), und F5 nach "Token neu" zeigte
+ * eine Angriffswarnung.
+ * ================================================================== */
+function sk_flash_datei()
+{
+    return sk_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function sk_flash_schreiben($inhalt)
+{
+    $inhalt['zeit'] = time();
+    $d = dirname(sk_flash_datei());
+    if (!is_dir($d)) {
+        @mkdir($d, 0775, true);
+    }
+    return sk_json_schreiben(sk_flash_datei(), $inhalt, 0600);
+}
+
+function sk_flash_lesen()
+{
+    $f = sk_flash_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) {
+        return array();
+    }
+    list($d, $lage) = sk_json_lage($f);
+    @unlink($f);
+    if ($lage !== 'ok' || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return array();
+    }
+    return $d;
 }
