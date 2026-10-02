@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.28 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.29 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -325,6 +325,16 @@ bisher allein in der Meldung — jetzt mit dem Grund in Worten, für die Codes
 * **`uninstall`** rechnet bei fehlendem Schlüssel mit der neuen Vorgabe.
 * Der Hinweis „Was ungeprüft ist" im Reiter *Test* und am Kopf dieser Datei
   nennt, was inzwischen am Gerät gemessen ist.
+
+## Neu in 0.9.29
+
+Neuinstallation ohne Altlast schon vor dem ersten Öffnen, Baustein-Liste nach A4 (Nachzug B, Bestand 02.10.).
+Gemessen im Installer-Prüfstand (WSL) und mit der gerenderten Oberfläche unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Neu: `preinstall.sh`.** Bei einer Neuinstallation ohne Upgrade-Marke legt es die Zweitschriften, die Rettung und den Startmerker einer früheren Installation schon vor dem Kopieren der Oberfläche nach `.alt`. Das meldet es einmal. Bisher geschah das erst in `postinstall.sh`. Wer die Oberfläche in der Zwischenzeit öffnete, bekam die Konfiguration samt Aktionstoken der früheren Installation zurück. Eine Aktualisierung bleibt unberührt.
+* **Baustein-Liste:** Die Meldung „Fahrzeug ist offen“ läuft über drei ODER (#14 bis #16), jeder Eingang trägt genau eine Quelle. Alle späteren Zeilen rücken um zwei (#15 → #17 … #34 → #36).
+
+**In Loxone:** Eine nach der alten Liste gebaute Logik arbeitet unverändert weiter.
 
 ## Neu in 0.9.28
 

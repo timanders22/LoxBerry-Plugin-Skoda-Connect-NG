@@ -178,6 +178,10 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
 
 # NEUINSTALLATION: alles aus einer frueheren Installation nach .alt (I1).
+# Seit dem Nachzug G1 (02.10.2026, X-1) tut das schon preinstall.sh - VOR dem
+# Kopieren der Oberflaeche, damit sk_config_heilen() in der Luecke nichts aus
+# einer alten Zweitschrift holt. Dieser Zweig bleibt als Rueckfall; er findet
+# dann nichts mehr und schweigt, die <WARNING> steht genau einmal im Protokoll.
 # Einmal <WARNING> mit den Pfaden; ein vorhandenes .alt wird vorher
 # abgeraeumt; uninstall raeumt die .alt mit ab. Die Selbstheilung der
 # Bibliothek liest .alt nie.
