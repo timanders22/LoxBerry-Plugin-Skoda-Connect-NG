@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.29 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.30 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,24 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Was 0.9.30 ändert
+
+Ansagen über die gemeinsame Sprachausgabe der Plugins dieses Hauses (Nr. 36). Gemessen unter PHP 7.4 und 8.5
+gegen Attrappen (Music Server, Alexa-NG); nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Neu: das Plugin sagt einzelne Ereignisse an (ab Werk aus).** Reiter Einstellungen, Abschnitt
+  „Sprachausgabe“: Loxone Music Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder
+  Google-Lautsprecher (Chromecast 4 Lox NG). Anlässe, jeder einzeln abwählbar: Ladung beendet, Ladung unter
+  der Ladegrenze oder mit Störung beendet, Fahrzeug steht offen oder unverriegelt, Licht an, Klimatisierung
+  beendet, keine Daten mehr. Angesagt wird nur ein Wechsel, derselbe Anlass je Fahrzeug höchstens einmal je
+  Stunde; nach einem Neustart des Dienstes spricht die erste Abfrage nie. MQTT und Loxone bleiben unverändert.
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen.
+* Testansage per Knopf im Reiter Test; die Zeile „Sprachausgabe“ zeigt Ausgabeart, letzte Ansage und die
+  eingeschalteten Anlässe.
+* Die Sprechtoken für Alexa-NG und Chromecast 4 Lox NG stehen nie in der Seite, im Protokoll oder in einer
+  Sicherung; eine Sicherungsdatei, die eines trägt, wird abgewiesen. Eine Sicherung von 0.9.29 lässt sich
+  weiter zurückspielen.
 
 ## Was 0.9.26 ändert
 

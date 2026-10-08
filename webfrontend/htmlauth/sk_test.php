@@ -407,6 +407,10 @@ function sk_pruefungen($netz = true)
         $kaputt ? sprintf(sk_t('TEST.A_VORLAGEN_KAPUTT'), sk_e(implode(', ', $kaputt)))
                 : sprintf(sk_t('TEST.A_VORLAGEN_OK'), count($arten)));
 
+    // Nr. 36 b (seit 0.9.30): die Sprachausgabe. Alexa-NG/Chromecast werden nur bei offenem
+    // Reiter Test gefragt (selftest=1, spricht nicht); der Music Server nie.
+    $zeilen[] = sk_ansage_zeile($netz);
+
     return $zeilen;
 }
 
@@ -704,6 +708,23 @@ function sk_themen_vergleich()
         'fehlend'      => array_values(array_diff($dienst, $liste)),
         'ueberzaehlig' => array_values(array_diff($liste, $dienst)),
     );
+}
+
+/** Die Zeile der Sprachausgabe: Ausgabeart, letzte Ansage und die eingeschalteten Anlaesse. */
+function sk_ansage_zeile($netz)
+{
+    $cfg = sk_config();
+    list($st, $html) = ansage_pruefzeile(sk_tts(), (bool) $netz, sk_ansage_k());
+    $an = array();
+    foreach (sk_ansage_anlaesse() as $a) {
+        if (!empty($cfg[$a[0]])) {
+            $an[] = sk_e(sk_t($a[1]));
+        }
+    }
+    $html .= ' ' . sprintf(sk_t('TEST.A_ANSAGE_ANLAESSE'), count($an),
+                           $an ? implode('; ', $an) : sk_e(sk_t('TEST.A_ANSAGE_KEINE')));
+    // -2 (aus, nicht gefragt) ist hier ein Hinweis, kein Haken.
+    return sk_pruefzeile($st === -2 ? -1 : $st, sk_t('TEST.F_ANSAGE'), $html);
 }
 
 /**

@@ -24,6 +24,10 @@ if (!function_exists('sk_e')) {
     }
 }
 
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b, seit
+ * 0.9.30). Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -185,6 +189,15 @@ function sk_vorgaben()
         'abfahrt_thema'  => '',
         'abfahrt_vorlauf' => 20,
         'abfahrt_temp'   => 21,
+        // Nr. 36 b (seit 0.9.30): Ansageanlaesse, je einzeln abwaehlbar. Gesprochen wird erst,
+        // wenn unter tts eine Ausgabeart gewaehlt ist - ab Werk 'aus'.
+        'ansage_laden_fertig'  => 1,
+        'ansage_laden_abbruch' => 1,
+        'ansage_offen'         => 1,
+        'ansage_licht'         => 1,
+        'ansage_klima'         => 1,
+        'ansage_ausfall'       => 1,
+        'tts'            => ansage_vorgaben('aus'),
         'aktionstoken'   => '',
         'wartezeit'      => 8,
     );
@@ -245,6 +258,14 @@ function sk_regeln()
         'abfahrt_thema'  => array('text', '#^[A-Za-z0-9_/+\#-]{0,128}$#', 128),
         'abfahrt_vorlauf' => array('ganz', 5, 180),
         'abfahrt_temp'   => array('ganz', 10, 30),
+        'ansage_laden_fertig'  => array('schalt'),
+        'ansage_laden_abbruch' => array('schalt'),
+        'ansage_offen'         => array('schalt'),
+        'ansage_licht'         => array('schalt'),
+        'ansage_klima'         => array('schalt'),
+        'ansage_ausfall'       => array('schalt'),
+        /* 'tts' steht hier nicht: der Block wird mit den Regeln des gemeinsamen Moduls geprueft
+         * (ansage_wert_pruefen(), sk_config_lage(), sk_sicherung_lesen()). */
         /* Das Aktionstoken: bewusst WEIT gefasst. sk_token_erzeugen() bildet
          * nur Kleinbuchstaben und Ziffern - aber ein Token kann von Hand
          * gesetzt, aus einer aelteren Fassung uebernommen oder von einem
@@ -495,6 +516,19 @@ function sk_config_lage()
     foreach ($datei as $k => $w) {
         if (!array_key_exists($k, $vorgaben)) {
             $fremd[] = (string) $k;
+            continue;
+        }
+        if ($k === 'tts') {
+            /* Nr. 36 b (seit 0.9.30): der Block der Sprachausgabe nach den Regeln des Moduls
+             * (Heimnetz, Token-Form, Ausgabearten ohne audioserver). Fehlende Eintraege bekommen
+             * ihre Vorgabe; ein unzulaessiger Block steht unter 'abgewiesen' (nur der Name). */
+            $sk_tg = '';
+            $sk_tp = ansage_wert_pruefen($w, $sk_tg, sk_ansage_modi());
+            if ($sk_tp !== null) {
+                list($cfg['tts']) = ansage_vervollstaendigen($sk_tp, 'aus');
+            } else {
+                $abgewiesen[] = 'tts';
+            }
             continue;
         }
         list($ok, $rein) = sk_wert_pruefen($k, $w);
@@ -2245,6 +2279,104 @@ function sk_t($schluessel)
 }
 
 
+/* ==================================================================
+ * Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.9.30)
+ *
+ * Der Dienst bin/skoda.py erkennt die Anlaesse und ruft bin/sk_ansage.php;
+ * dort entsteht der Satz aus der Sprachdatei, gesprochen wird mit der
+ * gemeinsamen Sprachausgabe (sprachausgabe.php). Ab Werk ist die Ausgabe aus.
+ * ================================================================== */
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). */
+function sk_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function sk_ansage_opt()
+{
+    return array('modi' => sk_ansage_modi());
+}
+
+/**
+ * Die Anlaesse: Name => array(Konfigschluessel, Beschriftung, Satz). Dieselbe
+ * Liste wie ANSAGE_ANLAESSE in bin/skoda.py; die Bruecke nimmt nur diese Namen an.
+ */
+function sk_ansage_anlaesse()
+{
+    return array(
+        'laden_fertig'  => array('ansage_laden_fertig', 'EINST.L_ANSAGE_LADEN_FERTIG', 'SK_ANSAGE.S_LADEN_FERTIG'),
+        'laden_abbruch' => array('ansage_laden_abbruch', 'EINST.L_ANSAGE_LADEN_ABBRUCH', 'SK_ANSAGE.S_LADEN_ABBRUCH'),
+        'offen'         => array('ansage_offen', 'EINST.L_ANSAGE_OFFEN', 'SK_ANSAGE.S_OFFEN'),
+        'licht'         => array('ansage_licht', 'EINST.L_ANSAGE_LICHT', 'SK_ANSAGE.S_LICHT'),
+        'klima'         => array('ansage_klima', 'EINST.L_ANSAGE_KLIMA', 'SK_ANSAGE.S_KLIMA'),
+        'ausfall'       => array('ansage_ausfall', 'EINST.L_ANSAGE_AUSFALL', 'SK_ANSAGE.S_AUSFALL'),
+    );
+}
+
+/** Die Schluessel, die mit 0.9.30 dazukamen - eine aeltere Sicherung kennt sie nicht. */
+function sk_ansage_neue_schluessel()
+{
+    $s = array('tts');
+    foreach (sk_ansage_anlaesse() as $a) {
+        $s[] = $a[0];
+    }
+    return $s;
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). Liest nur, schreibt nichts. */
+function sk_tts()
+{
+    $c = sk_config();
+    list($t) = ansage_vervollstaendigen(isset($c['tts']) && is_array($c['tts']) ? $c['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte. */
+function sk_ansage_k()
+{
+    $p = sk_paths();
+    return array(
+        'port'   => ansage_webport(($p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__)))
+                                   . '/config/system/general.json'),
+        'kopf'   => array('User-Agent: LoxBerry SkodaConnect'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return sk_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz in [ANSAGE]; linieneigen wie Intercom
+         * 2.2.18, bis der Modulschluessel mit einer ergaenzenden Fassung kommt (Entwurf, Stufe 2). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG'),
+    );
+}
+
+/**
+ * Der Satz zu einem Anlass, aus der Sprachdatei. $name ist der Fahrzeugname
+ * aus dem Konto; fehlt er, heisst es "Fahrzeug <nr>". Ladestand und
+ * Ladegrenze nur, wenn sie bekannt sind.
+ */
+function sk_ansage_satz($anlass, $nr, $name, $soc = null, $grenze = null)
+{
+    $a = sk_ansage_anlaesse();
+    if (!isset($a[$anlass])) {
+        return '';
+    }
+    $wer = ($name !== '') ? $name : sprintf(sk_t('SK_ANSAGE.FAHRZEUG_NR'), (int) $nr);
+    if ($anlass === 'ausfall') {
+        return sk_t('SK_ANSAGE.S_AUSFALL');
+    }
+    if ($anlass === 'laden_fertig') {
+        $s = sprintf(sk_t('SK_ANSAGE.S_LADEN_FERTIG'), $wer);
+        return $soc === null ? $s : $s . ' ' . sprintf(sk_t('SK_ANSAGE.S_LADESTAND'), (int) $soc);
+    }
+    if ($anlass === 'laden_abbruch') {
+        if ($soc === null || $grenze === null) {
+            return sprintf(sk_t('SK_ANSAGE.S_LADEN_STOERUNG'), $wer);
+        }
+        return sprintf(sk_t('SK_ANSAGE.S_LADEN_ABBRUCH'), $wer, (int) $soc, (int) $grenze);
+    }
+    return sprintf(sk_t($a[$anlass][2]), $wer);
+}
+
 /**
  * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
  *
@@ -2334,6 +2466,32 @@ function sk_sicherung_lesen($roh)
         /* ---- 3. Unbekannte Schluessel ----
          * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
          * anderen Fassung oder aus einem anderen Plugin. */
+        if ((string) $k === 'tts') {
+            /* Nr. 36 b (seit 0.9.30): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
+             * traegt die Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus
+             * "Einstellungen sichern" und wird abgewiesen; die geltenden Sprechtoken bleiben.
+             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
+            $sk_tm = ansage_sicherung_mangel($w);
+            if ($sk_tm) {
+                $mangel[] = sprintf(sk_t('EINST.SICH_TTS_TOKEN'),
+                                    htmlspecialchars(implode(', ', $sk_tm), ENT_QUOTES, 'UTF-8'));
+                $namen[] = 'tts';
+                continue;
+            }
+            $sk_tg = '';
+            $sk_tp = ansage_wert_pruefen($w, $sk_tg, sk_ansage_modi());
+            if ($sk_tp === null) {
+                $mangel[] = sprintf(sk_t('EINST.SICH_TTS'),
+                    htmlspecialchars(ansage_kennung_text($sk_tg, sk_ansage_k()), ENT_QUOTES, 'UTF-8'));
+                $namen[] = 'tts';
+                continue;
+            }
+            $sk_tj = sk_tts();
+            list($sk_tv) = ansage_vervollstaendigen($sk_tp + $sk_tj, 'aus');
+            $neu['tts'] = ansage_sicherung_tokens_behalten($sk_tv, $sk_tj);
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
@@ -2404,10 +2562,23 @@ function sk_sicherung_lesen($roh)
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
+    $sk_ohne_ansage = false;
     foreach (array_keys(sk_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Nr. 36 b: eine Sicherung von 0.9.29 oder frueher kennt die Sprachausgabe noch
+             * nicht. Sie bleibt zurueckspielbar; die Sprachausgabe behaelt ihren jetzigen Stand,
+             * und die Seite sagt es. */
+            if (in_array($fk, sk_ansage_neue_schluessel(), true)) {
+                $sk_jetzt = sk_config();
+                $neu[$fk] = $sk_jetzt[$fk];
+                $sk_ohne_ansage = true;
+                continue;
+            }
             $fehlend[] = $fk;
         }
+    }
+    if ($sk_ohne_ansage) {
+        $hinweise[] = sk_t('EINST.SICH_OHNE_ANSAGE');
     }
     if ($fehlend) {
         $mangel[] = sprintf(sk_t('EINST.SICH_FEHLEND'), count($fehlend),
@@ -2444,13 +2615,17 @@ function sk_sicherung_schreiben($mit_zugang = false, $pruefen = true)
         '_hinweis' => 'Einstellungen des LoxBerry-Plugins Skoda Connect. Enthaelt das '
                     . 'Aktionstoken dieser Anlage'
                     . ($mit_zugang ? ' UND die Zugangsdaten des MySkoda-Kontos' : '')
-                    . ' - wie ein Passwort behandeln.',
+                    . ' - wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
         '_plugin'  => 'skodaconnect',
         '_fassung' => sk_fassung(),
         '_stand'   => date('Y-m-d H:i:s'),
     );
     foreach (array_keys(sk_vorgaben()) as $k) {
         $aus[$k] = isset($cfg[$k]) ? $cfg[$k] : '';
+    }
+    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung (Entwurf 5). */
+    if (isset($aus['tts']) && is_array($aus['tts'])) {
+        $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']);
     }
     if ($mit_zugang) {
         $z = sk_json_lesen(sk_paths()['zugang']);

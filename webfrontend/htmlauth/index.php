@@ -455,10 +455,31 @@ if ($sk_post && isset($_POST['speichern'])) {
         $sk_falsch[] = 'passwort';
     }
 
+    /* Nr. 36 b (Stufe 2, seit 0.9.30): Sprachausgabe und Anlaesse. Jede Beanstandung verhindert
+     * das Speichern (Nr. 16); kein Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst
+     * "behalten", der Haken loescht, beides zugleich ist ein Widerspruch. */
+    $sk_anlass_felder = array();
+    foreach (sk_ansage_anlaesse() as $sk_a) {
+        $sk_cfg[$sk_a[0]] = isset($_POST[$sk_a[0]]) ? 1 : 0;
+        $sk_anlass_felder[] = $sk_a[0];
+    }
+    $sk_tmangel = array();
+    $sk_tbean = array();
+    $sk_cfg['tts'] = ansage_formular_lesen($_POST, sk_tts(), $sk_tmangel, $sk_tbean, sk_ansage_opt(),
+                                           sk_ansage_k());
+    foreach ($sk_tmangel as $sk_tm) {
+        $sk_fehler[] = sk_e($sk_tm['text']);
+    }
+    foreach ($sk_tbean as $sk_tb) {
+        $sk_falsch[] = $sk_tb;
+    }
+
     if ($sk_fehler) {
-        /* NICHTS gespeichert. Das Passwort reist nie mit. */
+        /* NICHTS gespeichert. Das Passwort und die Sprechtoken reisen nie mit
+         * (ansage_x2_felder() nennt die Token nicht). */
         $sk_eingaben = sk_eingaben_sammeln('einst', array_merge($sk_zahlfelder,
-            array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken')), $sk_falsch);
+            array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken'),
+            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt())), $sk_falsch);
     } elseif (sk_config_speichern($sk_cfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
         foreach ($sk_leer as $sk_l) {
@@ -660,6 +681,26 @@ if ($sk_post && isset($_POST['test'])) {
         $sk_unklar[] = sk_e($sk_text);
     } else {
         $sk_stoerungen[] = sk_e($sk_text);
+    }
+    $sk_tab = 'tab-test';
+}
+/* ---------------- Testansage (Nr. 36 b, seit 0.9.30) ----------------
+ * Spricht den Pruefsatz des Moduls ueber die eingestellte Ausgabeart - unabhaengig
+ * von den Anlaessen. Ins Protokoll nur die Kurzform ohne Text und Token. F5 nach dem
+ * Knopf spricht nicht erneut: der PRG-Block unten leitet um. */
+if ($sk_post && isset($_POST['ansage_test'])) {
+    $sk_ak = sk_ansage_k();
+    $sk_ar = ansage_testansage(sk_tts(), $sk_ak);
+    sk_log_zeile('Testansage: ' . ansage_kurz($sk_ar));
+    if ($sk_ar['stand'] === 1) {
+        $sk_meldungen[] = sk_e(sk_t('TEST.M_ANSAGE_TEST_OK'));
+    } elseif ($sk_ar['stand'] === -1) {
+        /* Nichts gesendet ohne Fehler (Ausgabe aus): eine Auskunft, kein Speicherhinweis. */
+        $sk_meldungen[] = sk_e(sprintf(sk_t('TEST.M_ANSAGE_TEST_NICHTS'),
+                                       ansage_kennung_text($sk_ar['kennung'], $sk_ak)));
+    } else {
+        $sk_stoerungen[] = sk_e(sprintf(sk_t('TEST.M_ANSAGE_TEST_FEHL'),
+                                        ansage_kennung_text($sk_ar['kennung'], $sk_ak)));
     }
     $sk_tab = 'tab-test';
 }
@@ -1229,6 +1270,24 @@ if ($sk_rahmen) {
   <div class="sm-hilfe"><?= sk_t('EINST.H_HEIM_RADIUS') ?></div>
 </div>
 
+<h2><?= sk_e(sk_t('EINST.H_ANSAGE')) ?></h2>
+<div class="sm-hinweis"><?= sk_t('EINST.ANSAGE_ERKLAERUNG') ?></div>
+<?= ansage_formular_html(sk_tts(), array(
+    'w' => function ($n, $g) { return sk_fw('einst', $n, $g); },
+    'm' => function ($n) { return sk_fm($n); },
+    'c' => function ($n, $g) { return sk_fh('einst', $n, $g); },
+    'modi' => sk_ansage_modi()), sk_ansage_k()) ?>
+<h3><?= sk_e(sk_t('EINST.H_ANSAGE_ANLAESSE')) ?></h3>
+<?php foreach (sk_ansage_anlaesse() as $sk_a) { ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="<?= sk_e($sk_a[0]) ?>" value="1" <?= sk_fh('einst', $sk_a[0], !empty($sk_cfg[$sk_a[0]])) ? 'checked' : '' ?><?= sk_fm($sk_a[0]) ?>>
+    <?= sk_e(sk_t($sk_a[1])) ?>
+  </label>
+</div>
+<?php } ?>
+<div class="sm-hilfe"><?= sk_t('EINST.H_ANSAGE_ANLAESSE_HILFE') ?></div>
+
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
@@ -1286,6 +1345,7 @@ if (!$sk_ladungen) { ?>
 <h2><?= sk_e(sk_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= sk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= sk_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-hinweis"><?= sk_t('EINST.SICH_OHNE_SPRECHTOKEN') ?></div>
 <div class="sm-hilfe"><?= sk_t('EINST.SICH_MIT_ZUGANG_HILFE') ?></div>
 <?php
 /* X-3 (O6, Durchgang 01.10.2026): wuerde die eigene Sicherung beim
@@ -1806,6 +1866,16 @@ function sk_bausteine($nr = 1)
 <?php if ($sk_testausgabe !== '') { ?>
 <div class="sm-pre"><?= sk_e($sk_testausgabe) ?></div>
 <?php } ?>
+
+<h3><?= sk_e(sk_t('TEST.H_ANSAGE')) ?></h3>
+<p class="sm-hilfe"><?= sk_e(sk_t('TEST.ANSAGE_TEST_TEXT')) ?></p>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?= sk_formfeld() ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= sk_e(sk_t('TEST.K_ANSAGE_TEST')) ?></button>
+  </form>
+</div>
 
 <h3><?= sk_e(sk_t('TEST.H_SCHALTEN')) ?></h3>
 <div class="sm-warnung"><?= sk_t('TEST.SCHALTEN_WARNUNG') ?></div>
