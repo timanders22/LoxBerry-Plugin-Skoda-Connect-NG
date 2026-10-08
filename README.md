@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.30 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.31 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,14 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.31
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Die Statuskacheln über den Reitern (Dienst, letzter Abruf, Fahrzeuge, MQTT) bleiben, wie sie sind.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Was 0.9.30 ändert
 

@@ -1121,6 +1121,7 @@ if ($sk_rahmen) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $sk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= sk_t('EINST.WAS_IST_DAS') ?></div>
 
 <?php if ($sk_pyv !== '' && version_compare($sk_pyv, '3.13.0', '<')) { ?>
 <div class="sm-fehler"><?= sk_t('EINST.PYTHON_ZU_ALT') ?></div>
