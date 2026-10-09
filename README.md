@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.31 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.32 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,20 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.32
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `#5` statt „I ← #5“, `I1 = #13, I2 = #6` statt „I1 ← #13, I2 ← #6“.
+  Was aus der eigenen Anlage kommt (Anwesenheitsmelder, Szene), bleibt in Worten. Gleiche Bausteine,
+  gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.31
 
