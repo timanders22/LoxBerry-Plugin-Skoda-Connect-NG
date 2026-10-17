@@ -2163,15 +2163,40 @@ function sk_vorlage($nummer = 1, $art = 'status')
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
              . '/index.php?token=' . $token . '&aktion=' . $art . '&fahrzeug=' . $nummer;
+    /* Welle Bild 17 (0.9.33, Entwurf Welle 17 sk E17): die Wartungswerte holt der
+     * Dienst nur jeden takt_wartung-ten Durchgang (ab Werk 24 x 300 s). Ein
+     * Miniserver, der sie alle 300 s abfragt, bekommt 24-mal denselben Wert;
+     * Schritt 4 des Reiters sagte schon immer "3600 Sekunden genuegen", die
+     * Vorlage schrieb trotzdem 300. Jetzt wie VolkswagenID: Takt x takt_wartung.
+     * Die drei uebrigen Arten bleiben bei 300 s (Titel, Befehle, Suchtexte
+     * unveraendert - kein Neuimport noetig). */
+    $abfrage = '300';
+    if ($art === 'wartung') {
+        $sk_vcfg = sk_config();
+        $abfrage = (string) max(60, (int) $sk_vcfg['intervall'] * max(1, (int) $sk_vcfg['takt_wartung']));
+    }
     return array(
         'skoda_fahrzeug' . $nummer . ($art === 'status' ? '' : '_' . $art) . '.xml',
         sk_xml_virtual_in_http(array(
             'title'   => 'Skoda ' . $nummer . ($art === 'status' ? '' : ' ' . $art),
             'address' => $adresse,
-            'polling' => '300',
+            'polling' => $abfrage,
             'comment' => 'Erzeugt vom LoxBerry-Plugin Skoda Connect (' . date('d.m.Y') . ')',
         ), $cmds),
     );
+}
+
+/**
+ * Welle Bild 17 (0.9.33, Entwurf Welle 17 sk E9): der Formatplatzhalter des Werts in einem analogen
+ * Ausgangsbefehl. Der Endpunkt nimmt temp nur als ganze oder halbe Grad (^[0-9]{1,2}([.,][05])?$) und
+ * prozent nur ganzzahlig (^[0-9]{1,3}$). Bis 0.9.32 stand dort das blanke <v>; wie Loxone es formatiert,
+ * ist nicht gemessen - mit "80.0" haette der Endpunkt jede Ladegrenze mit 400 abgewiesen. <v.1> traegt
+ * eine Nachkommastelle (21.0, 21.5), <v.0> keine - so schreiben es die Hausvorlagen (Dashboard,
+ * Fensterbilanz, Marstek) und das LoxBerry-Plugins Musterprojekt. Eine Stelle fuer Vorlage und Reiter.
+ */
+function sk_befehl_platzhalter($zusatz)
+{
+    return $zusatz === 'temp' ? '<v.1>' : '<v.0>';
 }
 
 /** Der Virtuelle Ausgang mit allen schaltenden Befehlen. */
@@ -2187,11 +2212,12 @@ function sk_vorlage_vo($nummer = 1)
         if ($aktion !== 'abruf') {
             $pfad .= '&fahrzeug=' . $nummer;
         }
-        /* Der Zusatzwert wird als <v> eingesetzt - so traegt Loxone den Wert
-         * des Ausgangs ein. Er steht ZULETZT, damit die Adresse auch dann
-         * lesbar bleibt, wenn jemand sie von Hand nacharbeitet. */
+        /* Der Zusatzwert wird als Formatplatzhalter eingesetzt - so traegt
+         * Loxone den Wert des Ausgangs ein. Er steht ZULETZT, damit die Adresse
+         * auch dann lesbar bleibt, wenn jemand sie von Hand nacharbeitet.
+         * Seit 0.9.33 <v.1> bzw. <v.0> statt <v> (sk_befehl_platzhalter()). */
         if ($b[2] !== '') {
-            $pfad .= '&' . $b[2] . '=<v>';
+            $pfad .= '&' . $b[2] . '=' . sk_befehl_platzhalter($b[2]);
         }
         $cmds[] = array(
             'title'   => 'SKODA_' . $nummer . '_' . strtoupper($aktion),

@@ -924,6 +924,14 @@ if ($sk_rahmen) {
 .sm-wrap, .sm-wrap *, .sm-tabs, .sm-tabs * { text-shadow: none !important; }
 .sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
 .sm-wrap h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+/* Welle Bild 17 (0.9.33): Seiten, Schritte, Hinweise und Bild je Baustein-Liste (Bauart Weissware 0.9.42). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0;
           padding: 9px 18px; font-size: 0.95em; color: #444 !important; text-decoration: none; display: inline-block; }
@@ -1692,7 +1700,7 @@ foreach ($sk_liste as $sk_n) { ?>
 <?php foreach (sk_befehle() as $sk_aktion => $sk_b) { ?>
 <tr><td><span class="sm-mono">/plugins/<?= sk_e($sk_p['plugin']) ?>/index.php?token=<?= sk_e($sk_token) ?>&amp;aktion=<?= sk_e($sk_aktion) ?><?=
     $sk_aktion === 'abruf' ? '' : '&amp;fahrzeug=1' ?><?=
-    $sk_b[2] !== '' ? '&amp;' . sk_e($sk_b[2]) . '=&lt;v&gt;' : '' ?></span></td>
+    $sk_b[2] !== '' ? '&amp;' . sk_e($sk_b[2]) . '=' . sk_e(sk_befehl_platzhalter($sk_b[2])) : '' ?></span></td>
     <td><?= sk_t($sk_b[1]) ?></td></tr>
 <?php } ?>
 </table>
@@ -1721,99 +1729,271 @@ foreach ($sk_liste as $sk_n) { ?>
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die Baustein-Listen des Reiters "Einbindung in Loxone" - Welle Bild 17 (0.9.33, Hausherr 11.10.2026:
+ * Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 17 sk,
+ * E1-E20, 17.10.2026). VIER Seiten wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt,
+ * Abschnitte "Skoda-Connect-NG" 31, "... Laden" 25, "... Klima und Befehle" 26, "... Fahrzeug" 36 Zeilen);
+ * bis 0.9.32 stand hier EINE Liste mit 36 Zeilen (Funktion sk_bausteine). Berichtigt gegen sie: die Vorheizkette
+ * konnte nie heizen (Analogbefehl bekam 1 statt einer Temperatur, "Wochenuhr" gibt es in Config nicht,
+ * der Impulsgeber taktet - jetzt Formel IF(I1>0;I2;-1) mit der Zieltemperatur), Benachrichtigungen hingen
+ * direkt hinter Schwellwertschaltern (Impuls je Abfrage - jetzt mit Einschaltverzoegerung), die
+ * Ausfallerkennung las ALTER (meldet bei stehendem LoxBerry nie - jetzt Analogwertvalidierung am
+ * Laufzaehler ZAEHLER), nie gelieferte Werte (0) loesten Meldungen aus (jetzt Formeln davor).
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Jede Zeile ist EIN Sprachschluessel BAUSTEIN.Z<Seite>_<Nr> "Typ | Name | Parameter | Eingaenge" (Zeilen mit
+ * Prozentzeichen dort als %% und ueber sprintf() geholt, angezeigt mit einem %; deutsch
+ * wortgleich mit der Liste fuer Fahrzeug 1; Bausteinnamen auch englisch deutsch). DIE NAMEN DER EINGAENGE UND
+ * AUSGANGSBEFEHLE WERDEN GEBAUT, NICHT ABGESCHRIEBEN (seit 0.9.15): eine Zeile mit Vorlage traegt den Namen
+ * aus sk_eingangsname() bzw. SKODA_<n>_<AKTION> wie in sk_vorlage_vo() als zweites Feld, und im Typ wird
+ * der Vorlagentitel "Skoda 1 ..." auf die angezeigte Nummer gesetzt - alle Titel beginnen mit "Skoda <n>".
+ * Keine Leitung geht ueber eine Seitengrenze; Eingaenge auf zwei Seiten sind dort weitere Instanzen.
  *
- * Je Zeile: Nummer, Typ, Name, Parameter, woran die Eingaenge kommen.
- * Typ, Name und Parameter stehen als Sprachschluessel drin, die Eingangsspalte
- * ist symbolisch und damit sprachfrei.
- *
- * X-10 (0.9.32): die Eingangsspalte in der Schreibweise von
- * Werkzeuge/leitungen_setzen.py - "#N" (Ausgang von Zeile N auf den ersten
- * Eingang), "I1 = #N, I2 = #M"; bis 0.9.31 stand dort "I &larr; #N".
+ * Rueckgabe: Liste von array('seite', 'bild', 'zeilen' => array(array(Nr, Typ, Name, Parameter, Eingaenge),
+ * ...), 'schritte', 'hinweise'). Zellen und Schritte sind Klartext (unten maskiert), die Hinweise
+ * freigegebenes HTML aus der Sprachdatei.
  */
-function sk_bausteine($nr = 1)
+function sk_bausteinliste($nr = 1)
 {
-    return array(
-        /* DIE NAMEN WERDEN GEBAUT, NICHT ABGESCHRIEBEN - seit 0.9.15.
-         *
-         * Sie standen als Sprachschluessel N01..N12 in beiden .ini-Dateien
-         * und mussten bei jeder Aenderung an der Feldliste von Hand
-         * nachgezogen werden. Genau das ist einmal unterblieben: #12 nannte
-         * SKODA_1_INSPTAGE, erzeugt wird SKODA_1_WARTUNG_INSPTAGE.
-         *
-         * Ein Feld ist ein PHP-Feld statt eines Schluessels - der Renderer
-         * unten unterscheidet daran, ob er uebersetzen muss. Und die Nummer
-         * ist die des angezeigten Fahrzeugs, nicht mehr fest die 1. */
-        array(1,  'BAUSTEIN.T_VE', array(sk_eingangsname('SOC', 'status', $nr)),      'BAUSTEIN.P01', '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE', array(sk_eingangsname('TANK', 'status', $nr)),     'BAUSTEIN.P02', '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE', array(sk_eingangsname('REICHW', 'status', $nr)),   'BAUSTEIN.P03', '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE', array(sk_eingangsname('KM', 'status', $nr)),       'BAUSTEIN.P04', '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE', array(sk_eingangsname('VERR', 'status', $nr)),     'BAUSTEIN.P05', '&mdash;'),
-        array(6,  'BAUSTEIN.T_VE', array(sk_eingangsname('TUEREN', 'status', $nr)),   'BAUSTEIN.P06', '&mdash;'),
-        array(7,  'BAUSTEIN.T_VE', array(sk_eingangsname('FENSTER', 'status', $nr)),  'BAUSTEIN.P07', '&mdash;'),
-        array(8,  'BAUSTEIN.T_VE', array(sk_eingangsname('KOFFER', 'status', $nr)),   'BAUSTEIN.P08', '&mdash;'),
-        array(9,  'BAUSTEIN.T_VE', array(sk_eingangsname('KLIMA', 'status', $nr)),    'BAUSTEIN.P09', '&mdash;'),
-        array(10, 'BAUSTEIN.T_VE', array(sk_eingangsname('WARN', 'status', $nr)),     'BAUSTEIN.P10', '&mdash;'),
-        array(11, 'BAUSTEIN.T_VE', array(sk_eingangsname('ALTER', 'status', $nr)),    'BAUSTEIN.P11', '&mdash;'),
-        array(12, 'BAUSTEIN.T_VE', array(sk_eingangsname('INSPTAGE', 'wartung', $nr)), 'BAUSTEIN.P12', '&mdash;'),
-        array(13, 'BAUSTEIN.T_NICHT',   'BAUSTEIN.N13', '',             '#5'),
-        /* Regel A4 (Regeln/04; Nachzug 02.10.2026): ein UND/ODER hat zwei Eingaenge, an jedem
-         * genau eine Quelle. Bisher hingen an #14 vier Quellen an zwei Eingaengen; jetzt drei
-         * ODER, und jede spaetere Zeile rueckt um zwei. Die Sprachschluessel N15 ff. behalten
-         * ihre Namen - die angezeigte Nummer ist die erste Spalte. */
-        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14A', '',            'I1 = #13, I2 = #6'),
-        array(15, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14B', '',            'I1 = #7, I2 = #8'),
-        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 = #14, I2 = #15'),
-        array(17, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N15', 'BAUSTEIN.P15', '#16'),
-        array(18, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N16', 'BAUSTEIN.P16', '#17'),
-        array(19, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N17', 'BAUSTEIN.P17', '#1'),
-        array(20, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N18', 'BAUSTEIN.P18', '#2'),
-        array(21, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N19', '',             'I1 = #19, I2 = #20'),
-        array(22, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N20', 'BAUSTEIN.P20', '#21'),
-        array(23, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N21', 'BAUSTEIN.P21', '#10'),
-        array(24, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N22', 'BAUSTEIN.P22', '#23'),
-        array(25, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N23', 'BAUSTEIN.P23', '#12'),
-        array(26, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N24', 'BAUSTEIN.P24', '#25'),
-        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N25', 'BAUSTEIN.P25', '#11'),
-        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N26', 'BAUSTEIN.P26', '#27'),
-        array(29, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I1 = #1, I2 = #3, I3 = #5'),
-        array(30, 'BAUSTEIN.T_WOCHE',   'BAUSTEIN.N28', 'BAUSTEIN.P28', '&mdash;'),
-        array(31, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N29', 'BAUSTEIN.P29', '&mdash;'),
-        array(32, 'BAUSTEIN.T_UND',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I1 = #30, I2 = ' . sk_t('BAUSTEIN.ANWESEND')),
-        array(33, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N31', '',             'I1 = #31, I2 = #32'),
-        array(34, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N32', 'BAUSTEIN.P32', '#33'),
-        array(35, 'BAUSTEIN.T_VA',      'BAUSTEIN.N33', 'BAUSTEIN.P33', '#34'),
-        array(36, 'BAUSTEIN.T_VA',      'BAUSTEIN.N34', 'BAUSTEIN.P34', sk_t('BAUSTEIN.MANUELL')),
+    $nr = max(1, min(99, (int) $nr));
+    // Seitenname (= Config-Seite im Musterprojekt, deshalb fest), Bild, Zeilen, Kasten, Hinweise
+    $seiten = array(
+        array('Skoda-Connect-NG', 'einbindung_loxone.png', array(
+            array(sk_t('BAUSTEIN.Z1_01'), sk_eingangsname('OK', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_02'), sk_eingangsname('ZAEHLER', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_03'), sk_eingangsname('ALTER', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_04'), sk_eingangsname('AUSFAELLE', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_05'), sk_eingangsname('ERREICH', 'status', $nr)),
+            array(sprintf(sk_t('BAUSTEIN.Z1_06')), sk_eingangsname('SOC', 'status', $nr)),
+            array(sprintf(sk_t('BAUSTEIN.Z1_07')), sk_eingangsname('TANK', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_08'), sk_eingangsname('REICHW', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z1_09'), sk_eingangsname('LAEDT', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z1_10'), sk_eingangsname('KABEL', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z1_11'), sk_eingangsname('LADEKW', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z1_12'), sk_eingangsname('RESTMIN', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z1_13')),
+            array(sk_t('BAUSTEIN.Z1_14')),
+            array(sk_t('BAUSTEIN.Z1_15')),
+            array(sk_t('BAUSTEIN.Z1_16')),
+            array(sk_t('BAUSTEIN.Z1_17')),
+            array(sk_t('BAUSTEIN.Z1_18')),
+            array(sk_t('BAUSTEIN.Z1_19')),
+            array(sk_t('BAUSTEIN.Z1_20')),
+            array(sprintf(sk_t('BAUSTEIN.Z1_21'))),
+            array(sk_t('BAUSTEIN.Z1_22')),
+            array(sk_t('BAUSTEIN.Z1_23')),
+            array(sk_t('BAUSTEIN.Z1_24')),
+            array(sk_t('BAUSTEIN.Z1_25')),
+            array(sk_t('BAUSTEIN.Z1_26')),
+            array(sprintf(sk_t('BAUSTEIN.Z1_27'))),
+            array(sprintf(sk_t('BAUSTEIN.Z1_28'))),
+            array(sk_t('BAUSTEIN.Z1_29')),
+            array(sk_t('BAUSTEIN.Z1_30')),
+            array(sk_t('BAUSTEIN.Z1_31')),
+        ), array(
+            'BAUSTEIN.SEITE1_SCHRITT1',
+            'BAUSTEIN.SEITE1_SCHRITT2',
+            'BAUSTEIN.SEITE1_SCHRITT3',
+            'BAUSTEIN.SEITE1_SCHRITT4',
+            'BAUSTEIN.SEITE1_SCHRITT5',
+            'BAUSTEIN.SEITE1_SCHRITT6',
+        ), array(
+            'BAUSTEIN.SEITE1_H1',
+            'BAUSTEIN.SEITE1_H2',
+            'BAUSTEIN.SEITE1_H3',
+            'BAUSTEIN.SEITE1_H4',
+            'BAUSTEIN.SEITE1_H5',
+            'BAUSTEIN.SEITE1_H6',
+            'BAUSTEIN.SEITE1_H7',
+        )),
+        array('Skoda-Connect-NG Laden', 'einbindung_loxone_laden.png', array(
+            array(sk_t('BAUSTEIN.Z2_01'), sk_eingangsname('LAEDT', 'laden', $nr)),
+            array(sprintf(sk_t('BAUSTEIN.Z2_02')), sk_eingangsname('SOC', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_03'), sk_eingangsname('LADEKW', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_04'), sk_eingangsname('TEMPO', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_05'), sk_eingangsname('RESTMIN', 'laden', $nr)),
+            array(sprintf(sk_t('BAUSTEIN.Z2_06')), sk_eingangsname('LADEGR', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_07'), sk_eingangsname('KABEL', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_08'), sk_eingangsname('REICHWBAT', 'laden', $nr)),
+            array(sk_t('BAUSTEIN.Z2_09'), sk_eingangsname('EMPFEHLUNG', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z2_10'), sk_eingangsname('ZUHAUSE', 'status', $nr)),
+            array(sprintf(sk_t('BAUSTEIN.Z2_11'))),
+            array(sprintf(sk_t('BAUSTEIN.Z2_12'))),
+            array(sk_t('BAUSTEIN.Z2_13'), 'SKODA_' . $nr . '_LADEGRENZE'),
+            array(sk_t('BAUSTEIN.Z2_14')),
+            array(sk_t('BAUSTEIN.Z2_15')),
+            array(sk_t('BAUSTEIN.Z2_16')),
+            array(sk_t('BAUSTEIN.Z2_17')),
+            array(sk_t('BAUSTEIN.Z2_18')),
+            array(sk_t('BAUSTEIN.Z2_19')),
+            array(sk_t('BAUSTEIN.Z2_20')),
+            array(sk_t('BAUSTEIN.Z2_21'), 'SKODA_' . $nr . '_LADEN_START'),
+            array(sk_t('BAUSTEIN.Z2_22')),
+            array(sk_t('BAUSTEIN.Z2_23')),
+            array(sk_t('BAUSTEIN.Z2_24'), 'SKODA_' . $nr . '_LADEN_STOP'),
+            array(sk_t('BAUSTEIN.Z2_25')),
+        ), array(
+            'BAUSTEIN.SEITE2_SCHRITT1',
+            'BAUSTEIN.SEITE2_SCHRITT2',
+            'BAUSTEIN.SEITE2_SCHRITT3',
+            'BAUSTEIN.SEITE2_SCHRITT4',
+            'BAUSTEIN.SEITE2_SCHRITT5',
+        ), array(
+            'BAUSTEIN.SEITE2_H1',
+            'BAUSTEIN.SEITE2_H2',
+            'BAUSTEIN.SEITE2_H3',
+            'BAUSTEIN.SEITE2_H4',
+        )),
+        array('Skoda-Connect-NG Klima und Befehle', 'einbindung_loxone_klima_befehle.png', array(
+            array(sk_t('BAUSTEIN.Z3_01'), sk_eingangsname('KLIMA', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z3_02'), sk_eingangsname('ZIELTEMP', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z3_03'), sk_eingangsname('AUSSEN', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z3_04')),
+            array(sk_t('BAUSTEIN.Z3_05')),
+            array(sk_t('BAUSTEIN.Z3_06')),
+            array(sk_t('BAUSTEIN.Z3_07')),
+            array(sk_t('BAUSTEIN.Z3_08')),
+            array(sk_t('BAUSTEIN.Z3_09')),
+            array(sk_t('BAUSTEIN.Z3_10')),
+            array(sk_t('BAUSTEIN.Z3_11')),
+            array(sk_t('BAUSTEIN.Z3_12'), 'SKODA_' . $nr . '_KLIMA_START'),
+            array(sk_t('BAUSTEIN.Z3_13')),
+            array(sk_t('BAUSTEIN.Z3_14'), 'SKODA_' . $nr . '_KLIMA_STOP'),
+            array(sk_t('BAUSTEIN.Z3_15')),
+            array(sk_t('BAUSTEIN.Z3_16'), 'SKODA_' . $nr . '_SCHEIBE_EIN'),
+            array(sk_t('BAUSTEIN.Z3_17')),
+            array(sk_t('BAUSTEIN.Z3_18'), 'SKODA_' . $nr . '_SCHEIBE_AUS'),
+            array(sk_t('BAUSTEIN.Z3_19')),
+            array(sk_t('BAUSTEIN.Z3_20'), 'SKODA_' . $nr . '_LUEFTUNG_START'),
+            array(sk_t('BAUSTEIN.Z3_21')),
+            array(sk_t('BAUSTEIN.Z3_22'), 'SKODA_' . $nr . '_LUEFTUNG_STOP'),
+            array(sk_t('BAUSTEIN.Z3_23')),
+            array(sk_t('BAUSTEIN.Z3_24'), 'SKODA_' . $nr . '_WECKEN'),
+            array(sk_t('BAUSTEIN.Z3_25')),
+            array(sk_t('BAUSTEIN.Z3_26'), 'SKODA_' . $nr . '_ABRUF'),
+        ), array(
+            'BAUSTEIN.SEITE3_SCHRITT1',
+            'BAUSTEIN.SEITE3_SCHRITT2',
+            'BAUSTEIN.SEITE3_SCHRITT3',
+            'BAUSTEIN.SEITE3_SCHRITT4',
+            'BAUSTEIN.SEITE3_SCHRITT5',
+        ), array(
+            'BAUSTEIN.SEITE3_H1',
+            'BAUSTEIN.SEITE3_H2',
+            'BAUSTEIN.SEITE3_H3',
+            'BAUSTEIN.SEITE3_H4',
+            'BAUSTEIN.SEITE3_H5',
+            'BAUSTEIN.SEITE3_H6',
+        )),
+        array('Skoda-Connect-NG Fahrzeug', 'einbindung_loxone_fahrzeug.png', array(
+            array(sk_t('BAUSTEIN.Z4_01'), sk_eingangsname('VERR', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_02'), sk_eingangsname('TUEREN', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_03'), sk_eingangsname('FENSTER', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_04'), sk_eingangsname('KOFFER', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_05'), sk_eingangsname('HAUBE', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_06'), sk_eingangsname('LICHT', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_07'), sk_eingangsname('BEWEG', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_08'), sk_eingangsname('ZUEND', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_09'), sk_eingangsname('OK', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_10'), sk_eingangsname('KM', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_11'), sk_eingangsname('WARN', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_12'), sk_eingangsname('ZUHAUSE', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_13'), sk_eingangsname('HEIMENTF', 'status', $nr)),
+            array(sk_t('BAUSTEIN.Z4_14'), sk_eingangsname('INSPTAGE', 'wartung', $nr)),
+            array(sk_t('BAUSTEIN.Z4_15'), sk_eingangsname('INSPKM', 'wartung', $nr)),
+            array(sk_t('BAUSTEIN.Z4_16'), sk_eingangsname('OELTAGE', 'wartung', $nr)),
+            array(sk_t('BAUSTEIN.Z4_17'), sk_eingangsname('OELKM', 'wartung', $nr)),
+            array(sk_t('BAUSTEIN.Z4_18')),
+            array(sk_t('BAUSTEIN.Z4_19')),
+            array(sk_t('BAUSTEIN.Z4_20')),
+            array(sk_t('BAUSTEIN.Z4_21')),
+            array(sk_t('BAUSTEIN.Z4_22')),
+            array(sk_t('BAUSTEIN.Z4_23')),
+            array(sk_t('BAUSTEIN.Z4_24')),
+            array(sk_t('BAUSTEIN.Z4_25')),
+            array(sk_t('BAUSTEIN.Z4_26')),
+            array(sk_t('BAUSTEIN.Z4_27')),
+            array(sk_t('BAUSTEIN.Z4_28')),
+            array(sk_t('BAUSTEIN.Z4_29')),
+            array(sk_t('BAUSTEIN.Z4_30')),
+            array(sk_t('BAUSTEIN.Z4_31')),
+            array(sk_t('BAUSTEIN.Z4_32')),
+            array(sk_t('BAUSTEIN.Z4_33')),
+            array(sk_t('BAUSTEIN.Z4_34')),
+            array(sk_t('BAUSTEIN.Z4_35')),
+            array(sk_t('BAUSTEIN.Z4_36')),
+        ), array(
+            'BAUSTEIN.SEITE4_SCHRITT1',
+            'BAUSTEIN.SEITE4_SCHRITT2',
+            'BAUSTEIN.SEITE4_SCHRITT3',
+            'BAUSTEIN.SEITE4_SCHRITT4',
+            'BAUSTEIN.SEITE4_SCHRITT5',
+        ), array(
+            'BAUSTEIN.SEITE4_H1',
+            'BAUSTEIN.SEITE4_H2',
+            'BAUSTEIN.SEITE4_H3',
+            'BAUSTEIN.SEITE4_H4',
+            'BAUSTEIN.SEITE4_H5',
+            'BAUSTEIN.SEITE4_H6',
+        )),
     );
+    $aus = array();
+    foreach ($seiten as $sk_s) {
+        $sk_zeilen = array();
+        foreach ($sk_s[2] as $sk_i => $sk_z) {
+            $sk_c = array_pad(explode(' | ', $sk_z[0], 4), 4, '');
+            if (isset($sk_z[1])) {
+                $sk_c[0] = str_replace('Skoda 1', 'Skoda ' . $nr, $sk_c[0]);
+                $sk_c[1] = $sk_z[1];
+            }
+            $sk_zeilen[] = array_merge(array($sk_i + 1), $sk_c);
+        }
+        $aus[] = array('seite' => $sk_s[0], 'bild' => $sk_s[1], 'zeilen' => $sk_zeilen,
+                       'schritte' => array_map('sk_t', $sk_s[3]), 'hinweise' => array_map('sk_t', $sk_s[4]));
+    }
+    return $aus;
 }
 ?>
 
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S8_TITEL')) ?></b><br>
 <?= sk_t('LOX.S8_TEXT') ?>
+<?php
+/* Welle Bild 17 (0.9.33): vier Seiten aus dem LoxBerry-Plugins Musterprojekt, je immer sichtbar mit
+ * Ueberschrift (= Seitenname in Config), Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweisen, Bild
+ * und Link. Die Namen tragen die Nummer des ersten Fahrzeugs ($sk_bnr), wie bisher. */
+foreach (sk_bausteinliste($sk_bnr) as $sk_bs) { ?>
+<h4 class="sm-h4"><?= sk_e($sk_bs['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= sk_e(sk_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($sk_bs['schritte'] as $sk_bx) { ?>
+<li><?= sk_e($sk_bx) ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= sk_e(sk_t('LOX.T_BAUSTEIN')) ?></th><th><?= sk_e(sk_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= sk_e(sk_t('LOX.T_PARAMETER')) ?></th><th><?= sk_e(sk_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (sk_bausteine($sk_bnr) as $sk_b) { ?>
-<!-- Ein Feld in der Namensspalte ist ein fertiger Name, ein String ein
-     Sprachschluessel. Ohne die Unterscheidung liefe ein Name durch sk_t()
-     und saehe bei einem Tippfehler wie ein fehlender Schluessel aus. -->
-<tr><td><?= (int) $sk_b[0] ?></td><td><?= sk_t($sk_b[1]) ?></td><td><?= is_array($sk_b[2]) ? sk_e($sk_b[2][0]) : sk_t($sk_b[2]) ?></td>
-    <td><?= $sk_b[3] !== '' ? sk_t($sk_b[3]) : '&mdash;' ?></td><td><?= $sk_b[4] ?></td></tr>
+<?php foreach ($sk_bs['zeilen'] as $sk_bz) { ?>
+<tr><td><?= (int) $sk_bz[0] ?></td><td><?= sk_e($sk_bz[1]) ?></td><td><?= sk_e($sk_bz[2]) ?></td>
+    <td><?= sk_e($sk_bz[3]) ?></td><td><?= sk_e($sk_bz[4]) ?></td></tr>
 <?php } ?>
 </table>
+<div class="sm-warnung"><b><?= sk_e(sk_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($sk_bs['hinweise'] as $sk_bx) { ?>
+<li><?= $sk_bx ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= sk_e($sk_bs['bild']) ?>" alt="<?= sk_e(sprintf(sk_t('LOX.BILD_ALT'), $sk_bs['seite'])) ?>" loading="lazy">
+<figcaption><?= sk_e(sprintf(sk_t('LOX.BILD_UNTERSCHRIFT'), $sk_bs['seite'])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= sk_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 <?php if (count($sk_fahrzeuge) > 1) { ?>
-<!-- Die Namen in der Spalte "Name (Vorschlag)" tragen fest die 1. Bei
-     mehreren Fahrzeugen erzeugt sk_vorlage() SKODA_2_..., SKODA_3_... - die
-     Adresstabelle in Schritt 3 zeigt das laengst je Fahrzeug, die
-     Baustein-Liste nicht. Statt eine Anleitung fuer EIN Fahrzeug als die
-     fuer alle auszugeben, sagt sie es seit 0.9.15. -->
+<!-- Die Namen tragen die Nummer des ersten Fahrzeugs. Bei mehreren Fahrzeugen
+     erzeugt sk_vorlage() SKODA_2_..., SKODA_3_... - die Adresstabelle in Schritt 3
+     zeigt das je Fahrzeug, die Baustein-Listen sagen es seit 0.9.15. -->
 <div class="sm-hinweis"><?= sprintf(sk_t('LOX.S8_MEHRERE'), count($sk_fahrzeuge)) ?></div>
 <?php } ?>
-<?= sk_t('LOX.S8_ERLAEUTERUNG') ?>
 </div>
 
 <div class="sm-step"><b><?= sk_e(sk_t('LOX.S9_TITEL')) ?></b><br>

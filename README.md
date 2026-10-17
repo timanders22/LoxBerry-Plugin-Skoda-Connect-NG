@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.32 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.33 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,45 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.33
+
+Einbindung in Loxone in Vollausstattung: vier Seiten aus dem LoxBerry-Plugins Musterprojekt mit vier Bildern
+und je einer Schritt-für-Schritt-Anleitung („So übernehmen Sie diese Seite“). Sie ersetzen die eine
+Baustein-Liste mit 36 Zeilen.
+
+* **Seite „Skoda-Connect-NG“** (31 Zeilen): Störung aus „keine frischen Daten“ ODER „Lebenszeichen fehlt“
+  (Analogwertvalidierung am Laufzähler ZAEHLER, Tmc 900 s) mit 600 s Bestätigung; Ladestand niedrig oder
+  Reichweite gering, nur ohne Ladekabel; Ladung beendet; zwei Status.
+* **Seite „Skoda-Connect-NG Laden“** (25 Zeilen): Ladegrenze per Schieberegler, Laden nach Ladeempfehlung
+  (Hauptschalter ab Werk aus, nur zu Hause, Empfehlung hält 10 Minuten an), Tasten Laden starten und anhalten,
+  zwei Status.
+* **Seite „Skoda-Connect-NG Klima und Befehle“** (26 Zeilen): Klima jetzt mit Zieltemperatur, Vorklimatisieren
+  Mo–Fr 06:40–07:00 per Schaltuhr nur bei Anwesenheit, Klima aus, Scheibenheizung, Standlüftung, Fahrzeug
+  wecken, Jetzt abrufen.
+* **Seite „Skoda-Connect-NG Fahrzeug“** (36 Zeilen): Fahrzeug offen (nur abgestellt, mit Kofferraum, Motorhaube
+  und Licht), Service fällig aus Warnleuchten, Inspektion und Ölservice, drei Status.
+* **Berichtigt – wer nach der bisherigen Liste gebaut hat, bitte ansehen:**
+  * Die Vorheizkette (#30–#35) konnte nie heizen: SKODA_1_KLIMA_START ist ein Analogbefehl mit der Temperatur,
+    ein Impuls schickte „1 Grad“ (vom Plugin abgewiesen); „Wochenuhr“ gibt es in Config nicht (Schaltuhr), und
+    der Impulsgeber taktet. Jetzt Formel IF(I1>0;I2;-1) mit der Zieltemperatur.
+  * Benachrichtigungen hingen direkt hinter Schwellwertschaltern – die geben bei jeder Abfrage einen kurzen
+    Impuls. Jetzt mit Einschaltverzögerung (600 s).
+  * „Abruf ausgefallen“ las ALTER und meldete bei stehendem LoxBerry nie. Jetzt Analogwertvalidierung am
+    Laufzähler; dort den Haken bei ‚En‘ im Eigenschaftsfenster entfernen.
+  * Nie gelieferte Werte (0 vor dem ersten Abruf, Tank und Ölservice beim Elektroauto) lösen keine Meldung mehr
+    aus (Formeln davor).
+* **Befehlsvorlage:** Zieltemperatur und Klimatisierung senden `temp=<v.1>`, die Ladegrenze `prozent=<v.0>`
+  statt des blanken `<v>` – der Endpunkt nimmt die Temperatur nur in halben Grad und die Ladegrenze nur
+  ganzzahlig. Wirkt erst nach neuem Import der Vorlage „Befehle (Virtueller Ausgang)“ – oder am vorhandenen
+  Befehl in Loxone Config `<v>` von Hand ersetzen.
+* **Wartungsvorlage:** Abfragezyklus = Takt × „Wartungswerte alle … Takte“ (ab Werk 7200 s) statt fest 300 s –
+  der Dienst holt die Wartungswerte nur jeden 24. Durchgang. Ein vorhandener Behälter bleibt gültig.
+* Reiter Einbindung: Schritt 1 nennt den Weg des Musterprojekts (HTTP), Schritt 4 den Wartungstakt, Schritt 5
+  `<v.1>`/`<v.0>`, Schritt 7 die Ausfallerkennung am Laufzähler. Reiter MQTT: die Vorklimatisierung zur
+  Abfahrtszeit gilt für Fahrzeug 1.
+* Englische Oberfläche: die Bausteinnamen stehen deutsch wie im Musterprojekt.
+* Dienst und Endpunkt unverändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.32
 
@@ -1299,6 +1338,13 @@ keine 0 gesendet — eine 0 wäre eine stille Falschaussage. Loxone behält dann
 den letzten gültigen Wert; deshalb gehören `ALTER` und `OK` immer mit
 ausgewertet. `OK` steht auf 0, sobald `ALTER` größer ist als das Dreifache
 des Abruftakts.
+
+**Fertig verbunden im Musterprojekt.** Die Bausteine der vier Baustein-Listen im Reiter
+*Einbindung in Loxone* stehen fertig verbunden auf den Seiten „Skoda-Connect-NG“,
+„Skoda-Connect-NG Laden“, „Skoda-Connect-NG Klima und Befehle“ und „Skoda-Connect-NG Fahrzeug“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen. Das Musterprojekt nutzt die vier
+HTTP-Vorlagen; analoge Befehle tragen `<v.1>` (Temperatur) bzw. `<v.0>` (Ladegrenze).
 
 Schaltende Aufrufe antworten mit `SET;OK=…`: `1` angenommen, `0` abgelehnt (mit
 Grund), `2` eingereiht, aber innerhalb der Wartezeit ohne Antwort — also
