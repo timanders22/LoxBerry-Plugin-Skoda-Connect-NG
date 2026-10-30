@@ -110,6 +110,20 @@ else
     echo "<WARNING> koennte den Dienst mitten in der Aktualisierung starten."
 fi
 
+# Gruppe 41 (0.9.34, Bauvorschrift G2): die Befehlsbruecke anhalten, bevor der bin-Ordner ersetzt wird.
+# Ihr Waechter in cron.01min startet sie nach dem Update wieder - nur mit dem Haken "Befehle ueber MQTT
+# annehmen", und nicht, solange die Marke oben liegt (sie liest dieselbe Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<INFO> Befehlsbruecke angehalten (der Waechter startet sie nach dem Update, wenn der Haken gesetzt ist)."
+    else
+        echo "<INFO> Befehlsbruecke: stop meldete einen Fehler - sie lief vermutlich nicht."
+    fi
+else
+    echo "<INFO> Keine Befehlsbruecke installiert (Fassung vor 0.9.34) - nichts anzuhalten."
+fi
+
 # ---------- Eine Rettung aus einem FRUEHEREN Lauf (I1, Durchgang 01.10.2026) ----------
 #
 # Entscheidung 1: preupgrade.sh raeumt einen alten Bestand weg, bevor es einen
@@ -301,7 +315,20 @@ NEU="$BASE/data/plugins/$PFOLDER.rettung.neu"
 rm -rf "$NEU"
 if [ -d "$PDATA" ]; then
     mkdir -p "$NEU" 2>/dev/null
-    for f in zustand.json ladungen.csv; do
+    # ladung_mitschrift.json (offene Ladung, Ladekosten) und vorklima.json (Merker der
+    # Vorklimatisierung und der Ankunft) seit dem Nachtrag 29.10.2026 - ohne sie bekam eine
+    # Ladung, ueber die ein Update lief, -1 "mitschrift_fehlt".
+    # Nachtrag 3 (29.10.2026, Bestandsaufnahme aller Laufzeitdateien): ladekosten.json (Kosten und
+    # Preis der letzten Ladung je Fahrzeug - ohne sie stand nach einem Update bis zur naechsten
+    # Ladung -1 im retained Thema) und ansage_sperre.json (Wiederholsperre der Ansagen und
+    # Signal-Nachrichten, soll einen Neustart ueberstehen). Bewusst NICHT: sitzung.json (siehe
+    # oben), loxone.json, cache.json, lebenszeichen, dienst.pid, dienst.bereit, .verlauf_ts_*,
+    # meldebremse.json (Bremse fuer Protokollzeilen - nach einem Update darf eine Dauerstoerung
+    # einmal neu im Protokoll stehen), befehle/ und antworten/ (ein Befehl von vor dem Update
+    # soll danach nicht mehr laufen), aussentemp.json (kommt mit dem naechsten Wert ueber die
+    # Bruecke), einmalmeldung.json, endpunktprobe.json, *_letzte.json.
+    for f in zustand.json ladungen.csv ladung_mitschrift.json vorklima.json ladekosten.json \
+             ansage_sperre.json; do
         [ -e "$PDATA/$f" ] && cp -p "$PDATA/$f" "$NEU/$f" 2>/dev/null
     done
     # Der Sollmerker nach dem Stand VOR dem Anhalten (siehe oben).
@@ -315,7 +342,7 @@ if [ -d "$PDATA" ]; then
         rm -rf "$RETTUNG"
         mv "$NEU" "$RETTUNG" 2>/dev/null
         echo "<INFO> $ANZ Eintrag/Eintraege aus dem Datenordner gerettet"
-        echo "<INFO> (Sollmerker, Verlauf, Ladeprotokoll) - der Installateur"
+        echo "<INFO> (Sollmerker, Verlauf, Ladeprotokoll, offene Ladung, Vorklima, Ladekosten, Ansagesperre) - der Installateur"
         echo "<INFO> raeumt data/plugins/$PFOLDER/ beim Upgrade vollstaendig ab."
     else
         rm -rf "$NEU"

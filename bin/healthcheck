@@ -1,0 +1,79 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Skoda Connect - Anschluss an den LoxBerry-Healthcheck (seit 0.9.34, Gruppe 41, Nachtrag 29.10.2026)
+ *
+ * sbin/healthcheck.pl ruft eine ausfuehrbare Datei bin/healthcheck des Plugins auf - einmal mit "title", einmal
+ * mit "check" (Regeln/03 :73; direkt, die Shebang-Zeile entscheidet - Regeln/02 :691). Antworten sind JSON:
+ *   title -> {"desc":"Skoda Connect"}
+ *   check -> {"desc", "status", "result", "url", "logfile"}; Status 0 unbekannt, 3 Fehler, 4 Warnung,
+ *            5 in Ordnung, 6 Hinweis. healthcheck.pl stellt das Ergebnis zusaetzlich retained nach MQTT
+ *            (<rechnername>/healthcheck/Skoda Connect).
+ * Form von Renault NG 2.1.20: das Urteil steht in sk_gesund_urteil() der Bibliothek, die Fakten sammelt
+ * sk_gesund_fakten() - NUR LESEND: kein Netz, kein Broker, keine Anmeldung beim Hersteller, kein Protokoll,
+ * keine Datei. Geurteilt wird ueber das ALTER, nie ueber einen einzelnen Abruf (Regeln/04 :809):
+ *   - Zugangsdaten leer -> 6 "nicht eingerichtet" (eine Neuinstallation ist kein Fehler);
+ *   - Dienst bewusst angehalten (kein Sollmerker, kein Prozess) -> 6;
+ *   - Dienst soll laufen, es laeuft keiner -> 3 ("laeuft" = ein Prozess, dessen /proc/<pid>/cmdline das Skript
+ *     des Plugins ist; die PID-Datei allein genuegt nicht);
+ *   - Lebenszeichen aelter als max(10 min, 3 x Takt) -> 3;
+ *   - letzter gelungener Abruf aelter als max(15 min, 3 x Takt) -> 4, als max(1 h, 6 x Takt) -> 3; nach einem
+ *     Neustart zaehlt die Zeit seit dem Start;
+ *   - MQTT an, aber kein Gateway mit UDP-Eingang oder kein Autostart -> 4; der Dienst meldet keine Verbindung
+ *     zum Broker (Haus-Themen) -> 4; Gateway V2: Haken fehlen -> 4; Befehle ueber MQTT an, Bruecke steht -> 4.
+ * Der Text nennt keine Zugangsdaten, VIN, Kennzeichen oder Fahrzeugnamen.
+ * Bis 0.9.33 gab es die Datei nicht, und healthcheck.pl uebersprang das Plugin.
+ * Aufruf wie LoxBerry: direkt, als loxberry, Eingabe aus /dev/null. Der Installer setzt bin/ 755.
+ * Kompatibel mit PHP 7.4 und PHP 8.x.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+function sk_hc_antwort(array $a)
+{
+    $j = json_encode($a, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    echo ($j !== false ? $j : '{"desc":"Skoda Connect","status":0,"result":"unlesbar"}') . "\n";
+    exit(0);
+}
+
+$sk_hc_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($sk_hc_was === 'title') {
+    sk_hc_antwort(array('desc' => 'Skoda Connect'));
+}
+
+/* Die Bibliothek: liegt diese Datei unter .../bin/plugins/<ordner>, ist sie installiert, sonst im Archiv. */
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $sk_hc_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/sk_lib.php';
+} else {
+    $sk_hc_lib = dirname(__DIR__) . '/webfrontend/html/sk_lib.php';
+}
+if (!is_file($sk_hc_lib)) {
+    sk_hc_antwort(array('desc' => 'Skoda Connect', 'status' => 3,
+        'result' => 'sk_lib.php nicht gefunden - das Plugin ist unvollstaendig installiert.'));
+}
+require_once $sk_hc_lib;
+
+$sk_hc_p = sk_paths();
+if ($sk_hc_p['home'] === '') {
+    /* Ohne LoxBerry-Wurzel wird nichts gelesen und nichts behauptet: 0 = unbekannt. */
+    sk_hc_antwort(array('desc' => 'Skoda Connect', 'status' => 0,
+        'result' => 'Kein LoxBerry-Wurzelverzeichnis gefunden (ausgepacktes Archiv oder Pruefordner) - nichts geprueft.'));
+}
+// Die Sprache des LoxBerry, wenn der Aufrufer keine setzt (nur gelesen) - fuer die Zeile "Gateway V2".
+if (!getenv('LBLANG')) {
+    $sk_hc_gen = json_decode((string) @file_get_contents($sk_hc_p['home'] . '/config/system/general.json'), true);
+    if (isset($sk_hc_gen['Base']['Lang']) && is_string($sk_hc_gen['Base']['Lang'])) {
+        putenv('LBLANG=' . $sk_hc_gen['Base']['Lang']);
+    }
+}
+
+list($sk_hc_status, $sk_hc_text) = sk_gesund_urteil(sk_gesund_fakten(sk_config()));
+
+sk_hc_antwort(array(
+    'desc' => 'Skoda Connect',
+    'status' => (int) $sk_hc_status,
+    'result' => (string) $sk_hc_text,
+    'url' => '/admin/plugins/' . $sk_hc_p['plugin'] . '/index.php',
+    'logfile' => $sk_hc_p['logdir'] . '/skoda.log',
+));

@@ -411,6 +411,28 @@ function sk_pruefungen($netz = true)
     // Reiter Test gefragt (selftest=1, spricht nicht); der Music Server nie.
     $zeilen[] = sk_ansage_zeile($netz);
 
+    /* Gruppe 41 (0.9.34): Gateway V2 (einheitliche Pruefzeile), Befehlsbruecke, HTTP-Endpunkt,
+     * Haus-Quellen und Vorklimatisierung. Grau (-1) heisst: nicht feststellbar oder bewusst aus. */
+    list($sk_v2ok, $sk_v2txt) = sk_v2_haken_lage($cfg);
+    $zeilen[] = sk_pruefzeile($sk_v2ok === 2 ? -1 : (int) $sk_v2ok, sk_t('PRUEF.V2_FRAGE'), sk_e($sk_v2txt));
+    list($sk_bbok, $sk_bbtxt) = sk_bruecke_lage();
+    $zeilen[] = sk_pruefzeile($sk_bbok === true ? 1 : ($sk_bbok === null ? -1 : 0), sk_t('BEFEHL.F_BRUECKE'), sk_e($sk_bbtxt));
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        list($sk_prc, $sk_paus) = sk_bruecke_pruefen();
+        $sk_pf = array_values(array_filter($sk_paus, function ($z) { return strpos($z, '[FEHL]') !== false; }));
+        $zeilen[] = sk_pruefzeile($sk_prc === 0 ? 1 : 0, sk_t('BEFEHL.F_PRUEFEN'),
+            $sk_prc === 0 ? sk_t('BEFEHL.T_PRUEFEN_OK') : sk_e(implode(' ', array_slice($sk_pf ? $sk_pf : $sk_paus, 0, 3))));
+    }
+    $zeilen[] = sk_pruefzeile(-1, sk_t('TEST.F_HTTP_ENDPUNKT'),
+        !empty($cfg['endpunkt_ein']) ? sk_t('TEST.A_HTTP_ENDPUNKT_EIN') : sk_t('TEST.A_HTTP_ENDPUNKT_AUS'));
+    foreach (sk_haus_pruefzeilen($cfg) as $sk_hz) {
+        $zeilen[] = sk_pruefzeile((int) $sk_hz[1], sk_e($sk_hz[0]), sk_e($sk_hz[2]));
+    }
+    $sk_vz = sk_vorklima_pruefzeile($cfg);
+    if ($sk_vz !== null) {
+        $zeilen[] = sk_pruefzeile($sk_vz[0] === 2 ? -1 : (int) $sk_vz[0], sk_t('HAUS.VK_FRAGE'), sk_e($sk_vz[1]));
+    }
+
     return $zeilen;
 }
 
@@ -614,32 +636,7 @@ function sk_formulare_lesen()
  * Rueckgabe: array('gezaehlt','fehlend','ueberzaehlig') oder null, wenn der
  * Dienst nicht lesbar ist - "nicht messbar" ist kein Haken.
  */
-/**
- * Die Zeichenketten eines Tupels NAME = ( ... ) aus bin/skoda.py, oder null.
- *
- * BERICHTIGT IN 0.9.21. Bis 0.9.20 suchte diese Stelle mit NAME\s*=\s*\((.*?)\)
- * das Tupel bis zur ERSTEN schliessenden Klammer. In MQTT_FELDER steht aber
- * ein Kommentar "(TEMPO, REICHWBAT)" - dort brach der Ausdruck ab, und die
- * vier Felder dahinter galten als nicht gesendet. Am Geraet gesehen
- * (17.09.2026, 0.9.20): rotes Kreuz "Die Tabelle nennt Themen, die der Dienst
- * nicht sendet: heim_entfernung_m, ladetempo_kmh, reichweite_batterie_km,
- * zuhause" - obwohl der Dienst alle vier sendet.
- *
- * Jetzt: Kommentare zeilenweise weg, dann bis zur Klammer am ZEILENANFANG,
- * mit der das Tupel in dieser Datei immer schliesst. Eine Zeichenkette mit
- * einer Raute darin gibt es in diesen Tupeln nicht.
- */
-function sk_py_tupel($quelle, $name)
-{
-    if (!preg_match('/^' . preg_quote($name, '/') . '\s*=\s*(?:frozenset\()?\((.*?)^\)/ms', $quelle, $m)) {
-        return null;
-    }
-    $rumpf = preg_replace('/#[^\n]*/', '', $m[1]);
-    if (!preg_match_all('/"([a-z0-9_]+)"/', $rumpf, $t)) {
-        return array();
-    }
-    return $t[1];
-}
+/* sk_py_tupel() steht seit 0.9.34 in sk_lib.php (Gruppe 41: die Hakenliste liest dieselben Tupel). */
 
 /**
  * Die Liste der fluechtigen Themen in PHP gegen die in bin/skoda.py.

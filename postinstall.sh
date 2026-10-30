@@ -207,7 +207,9 @@ fi
 
 if [ "$UPG_MARKE" = 1 ] && [ -d "$RETTUNG" ]; then
     ZURUECK=0
-    for f in soll_laufen zustand.json ladungen.csv; do
+    # ladekosten.json, ansage_sperre.json: Nachtrag 3 (29.10.2026), wie in preupgrade.sh.
+    for f in soll_laufen zustand.json ladungen.csv ladung_mitschrift.json vorklima.json ladekosten.json \
+             ansage_sperre.json; do
         if [ -e "$RETTUNG/$f" ] && [ ! -e "$PDATA/$f" ]; then
             cp -p "$RETTUNG/$f" "$PDATA/$f" 2>/dev/null && ZURUECK=$((ZURUECK+1))
         fi
@@ -265,6 +267,43 @@ if [ "$UPG_MARKE" = 1 ]; then   # Upgrade-Marke (upgrade_laeuft) lag beim Start
 fi
 # 0600 auch fuer skoda.json (C9): sie traegt das Aktionstoken.
 chmod 600 "$PCONFIG/zugang.json" "$PCONFIG/skoda.json"
+
+# ---------- endpunkt_ein beim Update (Gruppe 41, 0.9.34, Bauvorschrift G3) ----------
+# Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke; dort ist der HTTP-Endpunkt ab Werk
+# aus (sk_vorgaben()). Eine Anlage, die von einer Fassung vor 0.9.34 kommt, nutzt ihn vermutlich - fehlt
+# der Schluessel in der zurueckgespielten Konfiguration, wird er auf 1 gesetzt, in skoda.json und in der
+# Zweitschrift. Ein vorhandener Wert bleibt (auch 0). Unteilbar (Nebendatei, Rechte vor dem Umbenennen).
+# Eine Konfiguration ohne Inhalt ({}) bleibt unberuehrt: dort gilt die Vorgabe einer neuen Anlage.
+if [ "$UPG_MARKE" = 1 ] && command -v perl >/dev/null 2>&1; then
+    for f in "$PCONFIG/skoda.json" "$BASE/config/plugins/$PFOLDER.backup.skoda.json"; do
+        [ -s "$f" ] && [ ! -L "$f" ] || continue
+        perl -MJSON::PP -e '
+            my $f = shift; local $/;
+            open my $fh, "<", $f or exit 1; my $r = <$fh>; close $fh;
+            my $d = eval { JSON::PP->new->decode($r) };
+            exit 1 unless ref $d eq "HASH";
+            exit 3 unless %$d;
+            exit 3 if exists $d->{endpunkt_ein};
+            $d->{endpunkt_ein} = 1;
+            my $mode = (stat $f)[2] & 07777;
+            my $t = "$f.g41.$$";
+            umask 077;
+            open my $o, ">", $t or exit 1;
+            (print $o JSON::PP->new->pretty->canonical->encode($d)) or exit 1;
+            close $o or exit 1;
+            chmod $mode, $t;
+            rename $t, $f or exit 1;
+            exit 0;
+        ' "$f"
+        case $? in
+            0) echo "<OK> $(basename "$f"): HTTP-Endpunkt bleibt eingeschaltet (endpunkt_ein = 1, Bestand)." ;;
+            3) ;;
+            *) echo "<INFO> $(basename "$f"): endpunkt_ein liess sich nicht ergaenzen - der Endpunkt ist aus,"
+               echo "<INFO> bis er im Reiter MQTT eingeschaltet wird." ;;
+        esac
+    done
+fi
+chmod 600 "$PCONFIG/skoda.json" 2>/dev/null
 
 # ---------- Die S-PIN abraeumen, die es nicht mehr gibt (0.9.11) ----------
 #

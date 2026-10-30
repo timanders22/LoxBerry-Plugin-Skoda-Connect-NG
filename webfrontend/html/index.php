@@ -31,6 +31,10 @@
  * Die Liste steht nicht mehr hier drin, sondern in sk_befehle() - dieser
  * Kommentar beschreibt sie nur. Wer eine Aktion ergaenzt, aendert dort.
  *
+ * SEIT 0.9.34 (Gruppe 41): abschaltbar ueber endpunkt_ein (Reiter MQTT; neu ab Werk aus, beim Update an) -
+ * neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke. Die Pruefungen der schaltenden Aktionen
+ * stehen in sk_befehl_annehmen() (sk_lib.php), derselben Funktion, die die Bruecke ruft.
+ *
  * Der Endpunkt spricht NIE selbst mit der Skoda-Cloud. Lesende Aktionen
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
  * Warteschlange ab, die der Dienst abarbeitet.
@@ -157,6 +161,21 @@ if (!hash_equals($sk_soll, $sk_ist)) {
  */
 if (isset($_GET['selftest'])) {
     echo "SELFTEST;OK=1;TOKEN=OK\n";
+    exit;
+}
+
+/* ---------------- endpunkt_ein (Gruppe 41, 0.9.34; Hausform MGiSmart 1.1.28 E-E1 A) ----------------
+ * Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke; dieser Endpunkt ist dort ab Werk
+ * aus. Beim Update setzt postinstall.sh den Haken auf 1, wenn er in der Konfiguration fehlt - wer die
+ * HTTP-Vorlagen nutzt, merkt nichts. Ausgeschaltet antwortet JEDER lesende und schaltende Aufruf nach
+ * der Tokenpruefung mit 403. Die Tokenpruefung steht davor, damit ein Fremder nicht erfaehrt, ob der
+ * Weg an ist. ?selftest bleibt offen (Abweichung zur Vorschrift G3, die keinen Selbsttest kannte): er
+ * hat keine Wirkung, liest nichts und beantwortet nur, ob das Token stimmt. */
+if (empty($sk_cfg['endpunkt_ein'])) {
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der HTTP-Endpunkt ist ausgeschaltet (Reiter MQTT, Haken 'HTTP-Endpunkt fuer Loxone'). "
+       . "Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke.\n";
     exit;
 }
 
@@ -564,56 +583,22 @@ if ($sk_aktion === 'position') {
  * Dienst 503 DIENST_LAEUFT_NICHT statt 400 PROZENT_FEHLT - eine falsch
  * gebaute Adresse sah aus wie ein angehaltener Dienst (gemessen, Codebericht
  * Nr. 11). */
-$sk_befehl = array('aktion' => $sk_aktion, 'fahrzeug' => $sk_fahrzeug);
-
-$sk_zusatz = isset($sk_alle_befehle[$sk_aktion][2]) ? $sk_alle_befehle[$sk_aktion][2] : '';
-
-if ($sk_aktion === 'klima_start' || $sk_aktion === 'zieltemperatur') {
-    if ($sk_temp === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=TEMP_FEHLT\n";
-        echo "Der Parameter temp fehlt (Zieltemperatur in Grad Celsius).\n";
-        exit;
+/* Gruppe 41 (0.9.34): die Pruefungen stehen seit 0.9.34 in sk_befehl_annehmen() (sk_lib.php) - DERSELBEN
+ * Funktion, die die Befehlsbruecke (bin/befehle_zuordnung.php) ruft. Reihenfolge, Antwortzeilen und
+ * HTTP-Codes sind dieselben wie bis 0.9.33 (dort inline): Zusatzwert (TEMP_FEHLT/PROZENT_FEHLT),
+ * Steuerung, Dienst, Warteschlange mit Warten auf den Dienst. */
+$sk_erg = sk_befehl_annehmen($sk_aktion, array('temp' => $sk_temp, 'prozent' => $sk_prozent), $sk_fahrzeug, 'http');
+if ($sk_erg['art'] === 'abgewiesen') {
+    http_response_code((int) $sk_erg['http']);
+    foreach ($sk_erg['zeilen'] as $sk_zeile) {
+        echo $sk_zeile . "\n";
     }
-    $sk_befehl['temp'] = str_replace(',', '.', $sk_temp);
-} elseif ($sk_aktion === 'ladegrenze') {
-    if ($sk_prozent === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=PROZENT_FEHLT\n";
-        exit;
-    }
-    $sk_befehl['prozent'] = (int) $sk_prozent;
-}
-
-if (empty($sk_cfg['steuerung_ein'])) {
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
     exit;
 }
-if (sk_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
-    // und der Befehl laege bis zum naechsten Start in der Warteschlange.
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-
-list($sk_erg, $sk_meldung) = sk_befehl_absetzen($sk_befehl);
-/* 409, nicht 500.
- *
- * Bis 0.9.12 stand hier http_response_code(500) fuer JEDES ok = 0 - also auch
- * fuer "Zieltemperatur 35 Grad liegt ausserhalb der eingestellten Grenzen",
- * "Fahrzeug 5 gibt es nicht", "50 bis 100 Prozent zulaessig" und
- * "die Steuerung ist ausgeschaltet". Das sind fachliche Ablehnungen, keine
- * Serverfehler; wer den Endpunkt hinter einem Ueberwachungswerkzeug betreibt,
- * bekam fuer Bedienfehler Serveralarm. 409 Conflict sagt: die Anfrage war
- * verstanden, der Zustand laesst sie nicht zu.
- *
- * ok = 2 heisst "eingereiht, Ergebnis unbekannt" und bleibt bei 200 - der
- * Befehl ist ja angenommen. Die Zeile sagt es im Klartext mit. */
+$sk_meldung = $sk_erg['text'];
+$sk_erg = (int) $sk_erg['ok'];
+/* 409, nicht 500 (seit 0.9.13): eine fachliche Ablehnung ist kein Serverfehler. ok = 2 heisst
+ * "eingereiht, Ergebnis unbekannt" und bleibt bei 200 - der Befehl ist ja angenommen. */
 if ($sk_erg === 0) {
     http_response_code(409);
 }

@@ -194,6 +194,15 @@ function sk_eingaben_sammeln($formular, $felder, $falsch)
 {
     $werte = array();
     foreach ($felder as $f) {
+        $zt = explode('.', $f);
+        if (count($zt) === 2) {     // Welle Mehrfach-Ziele (0.9.34): die Tabelle kommt als name[N], reist als name.N
+            if (isset($_POST[$zt[0]]) && is_array($_POST[$zt[0]]) && isset($_POST[$zt[0]][$zt[1]])
+                && is_string($_POST[$zt[0]][$zt[1]]) && strlen($_POST[$zt[0]][$zt[1]]) <= 2100
+                && preg_match('//u', $_POST[$zt[0]][$zt[1]])) {
+                $werte[$f] = $_POST[$zt[0]][$zt[1]];
+            }
+            continue;
+        }
         if (!isset($_POST[$f]) || !is_string($_POST[$f])) {
             continue;
         }
@@ -333,6 +342,19 @@ if ($sk_post && !sk_formtoken_ok()) {
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
  * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
+/* Gruppe 41 (G2): Vorlage "Befehle ueber MQTT" aus der Befehlsbruecke (bb_vorlage(), CRLF). */
+if ($sk_post && isset($_POST['vorlage_befehle'])) {
+    list($sk_name, $sk_inhalt) = sk_vorlage_befehle();
+    if ($sk_inhalt !== '') {
+        header('Content-Type: application/xml; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $sk_name . '"');
+        header('Content-Length: ' . strlen($sk_inhalt));
+        echo $sk_inhalt;
+        exit;
+    }
+    $sk_fehler[] = sk_t('BEFEHL.T_NICHT_DA');
+    $sk_tab = 'tab-mqtt';
+}
 if ($sk_post && isset($_POST['vorlage'])) {
     $sk_nr = (isset($_POST['vorlage']) && is_string($_POST['vorlage'])
               && preg_match('/^[0-9]{1,2}$/', sk_post('vorlage')))
@@ -465,13 +487,14 @@ if ($sk_post && isset($_POST['speichern'])) {
     }
     $sk_tmangel = array();
     $sk_tbean = array();
-    $sk_cfg['tts'] = ansage_formular_lesen($_POST, sk_tts(), $sk_tmangel, $sk_tbean, sk_ansage_opt(),
-                                           sk_ansage_k());
+    $sk_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
+    $sk_cfg['tts'] = ansage_formular_lesen($_POST, sk_tts(), $sk_tmangel, $sk_tbean,
+        array('modi' => sk_ansage_modi(), 'ziele' => sk_mit_zielen()), sk_ansage_k(), $sk_thinw);
     foreach ($sk_tmangel as $sk_tm) {
         $sk_fehler[] = sk_e($sk_tm['text']);
     }
     foreach ($sk_tbean as $sk_tb) {
-        $sk_falsch[] = $sk_tb;
+        $sk_falsch[] = sk_ziele_x2_name($sk_tb);     // X-2 (0.9.34: name[N] der Tabelle -> name.N)
     }
 
     if ($sk_fehler) {
@@ -479,9 +502,10 @@ if ($sk_post && isset($_POST['speichern'])) {
          * (ansage_x2_felder() nennt die Token nicht). */
         $sk_eingaben = sk_eingaben_sammeln('einst', array_merge($sk_zahlfelder,
             array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken'),
-            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt())), $sk_falsch);
+            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt()), sk_ziele_x2_felder()), $sk_falsch);
     } elseif (sk_config_speichern($sk_cfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+        foreach ($sk_thinw as $sk_th) { $sk_warnungen[] = $sk_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
         foreach ($sk_leer as $sk_l) {
             $sk_meldungen[] = $sk_l;
         }
@@ -571,11 +595,52 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
             $sk_falsch[] = $sk_feld;
         }
     }
-    if ($sk_mcfg['abfahrt_ein'] && $sk_mcfg['abfahrt_thema'] === '' && !in_array('abfahrt_thema', $sk_falsch, true)) {
+    /* Gruppe 41 (0.9.34): Haus-Themen, Vorklimatisierung, Ankunft, Strompreis, SignalBot (G4-G8, G10).
+     * Dieselben Regeln wie sk_regeln(); eine Beanstandung speichert nichts (O2). */
+    foreach (array('haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein',
+                   'haus_strompreis_ein', 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch',
+                   'signal_offen', 'signal_ausfall', 'signal_vorklima') as $sk_feld) {
+        $sk_mcfg[$sk_feld] = isset($_POST[$sk_feld]) ? 1 : 0;
+    }
+    foreach (array('abfahrt_fahrzeug', 'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle',
+                   'ladeempf_quelle', 'signal_praefix') as $sk_feld) {
+        $sk_name = sk_t('EINST.L_' . strtoupper($sk_feld));
+        $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
+        if (!is_string($sk_roh)) {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_LISTE'), $sk_name);
+            $sk_falsch[] = $sk_feld;
+            continue;
+        }
+        list($sk_ok4, $sk_rein4) = sk_wert_pruefen($sk_feld, trim($sk_roh));
+        // 'jemand' und 'zaehler' sind unter haus/anwesenheit/ keine Personen (Regeln/07 Nr. 15).
+        if ($sk_ok4 && $sk_feld === 'ankunft_quelle' && preg_match('/(^|,)person:(jemand|zaehler)(,|$)/', (string) $sk_rein4)) {
+            $sk_ok4 = false;
+        }
+        if ($sk_ok4) {
+            $sk_mcfg[$sk_feld] = $sk_rein4;
+        } else {
+            $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_WERT'), $sk_name);
+            $sk_falsch[] = $sk_feld;
+        }
+    }
+    if (!array_intersect(array('vorklima_kalt_unter', 'vorklima_heiss_ueber'), $sk_falsch)
+        && (int) $sk_mcfg['vorklima_kalt_unter'] >= (int) $sk_mcfg['vorklima_heiss_ueber']) {
+        $sk_fehler[] = sk_t('EINST.FEHLER_KALT_HEISS');
+        $sk_falsch[] = 'vorklima_kalt_unter';
+        $sk_falsch[] = 'vorklima_heiss_ueber';
+    }
+    if ($sk_mcfg['ankunft_ein'] && trim((string) $sk_mcfg['ankunft_quelle']) === '' && !in_array('ankunft_quelle', $sk_falsch, true)) {
+        $sk_fehler[] = sk_t('EINST.FEHLER_ANKUNFT_LEER');
+        $sk_falsch[] = 'ankunft_quelle';
+    }
+    // Mit dem Haus-Thema braucht die Vorklimatisierung kein eigenes Thema mehr (E6).
+    if ($sk_mcfg['abfahrt_ein'] && $sk_mcfg['abfahrt_thema'] === '' && empty($sk_mcfg['haus_abfahrt_ein'])
+        && !in_array('abfahrt_thema', $sk_falsch, true)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_ABFAHRT_OHNE_THEMA');
         $sk_falsch[] = 'abfahrt_thema';
     }
-    if ($sk_mcfg['empf_thema'] !== '' && $sk_mcfg['empf_grenze'] === '' && !in_array('empf_grenze', $sk_falsch, true)) {
+    if (($sk_mcfg['empf_thema'] !== '' || $sk_mcfg['ladeempf_quelle'] === 'haus') && $sk_mcfg['empf_grenze'] === ''
+        && !in_array('empf_grenze', $sk_falsch, true)) {
         $sk_fehler[] = sk_t('EINST.FEHLER_EMPF_OHNE_GRENZE');
         $sk_falsch[] = 'empf_grenze';
     }
@@ -583,7 +648,11 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
     if ($sk_fehler) {
         $sk_eingaben = sk_eingaben_sammeln('mqtt', array('mqtt_ein', 'mqtt_topic', 'mqtt_retain',
             'empf_thema', 'empf_grenze', 'empf_kleiner', 'empf_alter', 'abfahrt_ein',
-            'abfahrt_thema', 'abfahrt_vorlauf', 'abfahrt_temp'), $sk_falsch);
+            'abfahrt_thema', 'abfahrt_vorlauf', 'abfahrt_temp',
+            'abfahrt_fahrzeug', 'haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein',
+            'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_ein', 'ankunft_quelle',
+            'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein', 'signal_praefix', 'signal_laden_fertig',
+            'signal_laden_abbruch', 'signal_offen', 'signal_ausfall', 'signal_vorklima'), $sk_falsch);
     } elseif (sk_config_speichern($sk_mcfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
         foreach ($sk_leer as $sk_l) {
@@ -597,6 +666,29 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
         if ($sk_vorher[0] && $sk_vorher[1]
             && (!$sk_mcfg['mqtt_ein'] || !$sk_mcfg['mqtt_retain'] || $sk_mcfg['mqtt_topic'] !== $sk_vorher[2])) {
             $sk_meldungen[] = sprintf(sk_t('MQTT.ABRAEUMEN_VORGEMERKT'), sk_e($sk_vorher[2]));
+        }
+    } else {
+        $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
+    }
+    $sk_tab = 'tab-mqtt';
+}
+
+/* ---------------- Befehle ueber MQTT und HTTP-Endpunkt (Gruppe 41, eigenes Formular) ----------------
+ * befehle_mqtt_ein (G2, E4) und endpunkt_ein (G3). Nach dem Speichern wird die Bruecke gestartet bzw.
+ * angehalten; ihr Waechter in cron.01min haelt den Zustand danach. Einen zweiten Haken fuer eingreifende
+ * Befehle gibt es bei Skoda nicht (keine eingreifenden Befehle). */
+if ($sk_post && isset($_POST['save_befehle'])) {
+    $sk_bcfg = sk_config();
+    $sk_bcfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $sk_bcfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (sk_config_speichern($sk_bcfg)) {
+        $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
+        sk_log_zeile('Befehle ueber MQTT ' . ($sk_bcfg['befehle_mqtt_ein'] ? 'an' : 'aus')
+            . ', HTTP-Endpunkt ' . ($sk_bcfg['endpunkt_ein'] ? 'an' : 'aus') . '.');
+        list($sk_brc, $sk_bwas, $sk_baus) = sk_bruecke_schalten($sk_bcfg);
+        if ($sk_bwas !== '' && $sk_brc !== null && (int) $sk_brc !== 0) {
+            $sk_fehler[] = sprintf(sk_t('BEFEHL.M_SCHALTEN_FEHL'), sk_e($sk_bwas),
+                sk_e(trim(is_array($sk_baus) ? implode(' ', $sk_baus) : (string) $sk_baus)));
         }
     } else {
         $sk_fehler[] = sprintf(sk_t('EINST.FEHLER_SPEICHERN'), $sk_p['config']);
@@ -688,19 +780,41 @@ if ($sk_post && isset($_POST['test'])) {
  * Spricht den Pruefsatz des Moduls ueber die eingestellte Ausgabeart - unabhaengig
  * von den Anlaessen. Ins Protokoll nur die Kurzform ohne Text und Token. F5 nach dem
  * Knopf spricht nicht erneut: der PRG-Block unten leitet um. */
-if ($sk_post && isset($_POST['ansage_test'])) {
-    $sk_ak = sk_ansage_k();
-    $sk_ar = ansage_testansage(sk_tts(), $sk_ak);
-    sk_log_zeile('Testansage: ' . ansage_kurz($sk_ar));
-    if ($sk_ar['stand'] === 1) {
+/* ---------------- Testmeldung an SignalBot (Gruppe 41, Ruecktragen aus VW 0.9.33; ab Werk wirkungslos) ---------------- */
+if ($sk_post && isset($_POST['signal_test'])) {
+    list($sk_sl, $sk_st) = sk_signal_test();
+    sk_log_zeile('Testmeldung an SignalBot: ' . $sk_sl . '.');
+    if ($sk_sl === 'angenommen') {
+        $sk_meldungen[] = sk_e($sk_st);
+    } elseif ($sk_sl === 'aus') {
+        $sk_warnungen[] = sk_e($sk_st);
+    } else {
+        $sk_stoerungen[] = sk_e($sk_st);
+    }
+    $sk_tab = 'tab-mqtt';
+}
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($sk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $sk_tk = sk_ansage_k();
+    $sk_tnur = (isset($_POST['ansage_test_ziel']) && sk_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $sk_tnur === 0) {
+        $sk_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($sk_tnur >= 1) {
+        $sk_tr = ansage_testansage(sk_tts(), $sk_tk, $sk_tnur);
+    } else {
+        $sk_tr = ansage_testansage(sk_tts(), $sk_tk);
+    }
+    sk_log('Testansage' . ($sk_tnur >= 1 ? ' an Ziel ' . $sk_tnur : '') . ': ' . ansage_kurz($sk_tr));
+    if ($sk_tr['stand'] === 1) {
         $sk_meldungen[] = sk_e(sk_t('TEST.M_ANSAGE_TEST_OK'));
-    } elseif ($sk_ar['stand'] === -1) {
+    } elseif ($sk_tr['stand'] === -1) {
         /* Nichts gesendet ohne Fehler (Ausgabe aus): eine Auskunft, kein Speicherhinweis. */
         $sk_meldungen[] = sk_e(sprintf(sk_t('TEST.M_ANSAGE_TEST_NICHTS'),
-                                       ansage_kennung_text($sk_ar['kennung'], $sk_ak)));
+                                       ansage_kennung_text($sk_tr['kennung'], $sk_tk)));
     } else {
         $sk_stoerungen[] = sk_e(sprintf(sk_t('TEST.M_ANSAGE_TEST_FEHL'),
-                                        ansage_kennung_text($sk_ar['kennung'], $sk_ak)));
+                                        ansage_kennung_text($sk_tr['kennung'], $sk_tk)));
     }
     $sk_tab = 'tab-test';
 }
@@ -1076,9 +1190,16 @@ if ($sk_rahmen) {
        stand dort gruen "MQTT - ein", waehrend dieses Plugin nichts
        veroeffentlicht. Eine Statuskachel ganz oben ist die Zusammenfassung,
        und die darf nicht besser aussehen als ihr schlechtester Punkt. -->
+  <!-- E11 (Gruppe 41, 0.9.34): Hausform wie alle anderen Linien (Gedaechtnis "MQTT-Kachel: Hausform"):
+       gross, ob DIESES Plugin veroeffentlicht (mqtt_ein); klein Autostart und Fassung des Gateways.
+       Bis 0.9.33 stand "ein" nur bei Plugin UND Autostart - die Auskunft steht jetzt in der kleinen
+       Zeile; bei Autostart aus bleibt die Warnung im Reiter MQTT. -->
   <div class="sm-kachel">MQTT
-    <b class="<?= ($sk_mqtt['autostart'] && !empty($sk_cfg['mqtt_ein'])) ? 'sm-an' : 'sm-aus' ?>"><?= ($sk_mqtt['autostart'] && !empty($sk_cfg['mqtt_ein'])) ? sk_e(sk_t('ALLG.EIN')) : sk_e(sk_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= empty($sk_cfg['mqtt_ein']) ? sk_e(sk_t('ALLG.MQTT_PLUGIN_AUS')) : sk_e(sk_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($sk_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($sk_cfg['mqtt_ein']) ? sk_e(sk_t('ALLG.EIN')) : sk_e(sk_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= sk_e(sprintf(sk_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$sk_mqtt['gefunden'] ? sk_t('ALLG.NICHT_FESTSTELLBAR') : ($sk_mqtt['autostart'] ? sk_t('ALLG.EIN') : sk_t('ALLG.AUS')),
+        (!$sk_mqtt['gefunden'] || (int) $sk_mqtt['fassung'] <= 0) ? sk_t('ALLG.NICHT_FESTSTELLBAR')
+        : 'V' . (int) $sk_mqtt['fassung'])) ?></span>
   </div>
 </div>
 
@@ -1283,9 +1404,12 @@ if ($sk_rahmen) {
 <div class="sm-hinweis"><?= sk_t('EINST.ANSAGE_ERKLAERUNG') ?></div>
 <?= ansage_formular_html(sk_tts(), array(
     'w' => function ($n, $g) { return sk_fw('einst', $n, $g); },
-    'm' => function ($n) { return sk_fm($n); },
+    'm' => function ($n) { return sk_fm(sk_ziele_x2_name($n)); },     // 0.9.34: name[N] -> name.N
     'c' => function ($n, $g) { return sk_fh('einst', $n, $g); },
-    'modi' => sk_ansage_modi()), sk_ansage_k()) ?>
+    'modi' => sk_ansage_modi(),
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+'ziele' => sk_mit_zielen(),
+'ziele_post' => (sk_fa('einst') && isset($sk_eingaben['werte']) && is_array($sk_eingaben['werte'])) ? sk_ziele_x2_post($sk_eingaben['werte']) : null), sk_ansage_k()); ?>
 <h3><?= sk_e(sk_t('EINST.H_ANSAGE_ANLAESSE')) ?></h3>
 <?php foreach (sk_ansage_anlaesse() as $sk_a) { ?>
 <div class="sm-feld">
@@ -1338,14 +1462,17 @@ if (!$sk_ladungen) { ?>
 <table class="sm-tbl">
 <tr><th><?= sk_e(sk_t('EINST.T_LAD_BEGINN')) ?></th><th><?= sk_e(sk_t('ALLG.FAHRZEUG')) ?></th>
     <th><?= sk_e(sk_t('EINST.T_LAD_DAUER')) ?></th><th><?= sk_e(sk_t('EINST.T_LAD_SOC')) ?></th>
-    <th><?= sk_e(sk_t('EINST.T_LAD_KW')) ?></th><th><?= sk_e(sk_t('EINST.T_LAD_ORT')) ?></th></tr>
+    <th><?= sk_e(sk_t('EINST.T_LAD_KW')) ?></th><th><?= sk_e(sk_t('EINST.T_LAD_ORT')) ?></th>
+    <th><?= sk_e(sk_t('EINST.T_LAD_KOSTEN')) ?></th><th><?= sk_e(sk_t('EINST.T_LAD_PREIS')) ?></th></tr>
 <?php foreach ($sk_ladungen as $sk_l) { ?>
 <tr><td><?= sk_e(date('d.m.Y H:i', $sk_l['beginn'])) ?></td>
     <td><?= (int) $sk_l['fahrzeug'] ?></td>
     <td><?= (int) $sk_l['dauer_min'] ?> min</td>
     <td><?= $sk_l['soc_von'] === '' ? '&mdash;' : sk_e($sk_l['soc_von']) ?> &rarr; <?= $sk_l['soc_bis'] === '' ? '&mdash;' : sk_e($sk_l['soc_bis']) ?> %</td>
     <td><?= $sk_l['kw_max'] === '' ? '&mdash;' : sk_e($sk_l['kw_max']) . ' kW' ?></td>
-    <td><?= sk_e($sk_l['ort']) ?></td></tr>
+    <td><?= sk_e($sk_l['ort']) ?></td>
+    <td><?= !is_numeric($sk_l['kosten']) ? '&mdash;' : sk_e(number_format((float) $sk_l['kosten'], 2, ',', '')) . ' &euro;' ?></td>
+    <td><?= !is_numeric($sk_l['preis']) ? '&mdash;' : sk_e(number_format((float) $sk_l['preis'], 1, ',', '')) . ' ct' ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= sk_t('EINST.LADUNGEN_HINWEIS') ?></p>
@@ -1464,11 +1591,135 @@ if ($sk_x3) { ?>
   <input data-role="none" type="<?= sk_ftyp('abfahrt_temp') ?>" id="abfahrt_temp" name="abfahrt_temp" value="<?= sk_e(sk_fw('mqtt', 'abfahrt_temp', (int) $sk_cfg['abfahrt_temp'])) ?>"<?= sk_fm('abfahrt_temp') ?> min="<?= (int) $sk_regeln_anz['abfahrt_temp'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_temp'][2] ?>">
 </div>
 
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION') ?></span></div>
+<!-- Gruppe 41 (0.9.34): Hausform - Vorklimatisierung nach MG-Regeln, Haus-Themen, Ankunft, Strompreis,
+     SignalBot. Alles ab Werk aus. -->
+<div class="sm-feld">
+  <label for="abfahrt_fahrzeug"><?= sk_e(sk_t('EINST.L_ABFAHRT_FAHRZEUG')) ?></label>
+  <input data-role="none" type="<?= sk_ftyp('abfahrt_fahrzeug') ?>" id="abfahrt_fahrzeug" name="abfahrt_fahrzeug" value="<?= sk_e(sk_fw('mqtt', 'abfahrt_fahrzeug', (int) $sk_cfg['abfahrt_fahrzeug'])) ?>"<?= sk_fm('abfahrt_fahrzeug') ?> min="<?= (int) $sk_regeln_anz['abfahrt_fahrzeug'][1] ?>" max="<?= (int) $sk_regeln_anz['abfahrt_fahrzeug'][2] ?>">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_ABFAHRT_FAHRZEUG') ?></div>
+</div>
+<h3><?= sk_e(sk_t('EINST.H_HAUS')) ?></h3>
+<div class="sm-warnung"><?= sk_t('EINST.HAUS_EINE_QUELLE') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_abfahrt_ein" value="1" <?= sk_fh('mqtt', 'haus_abfahrt_ein', !empty($sk_cfg['haus_abfahrt_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_HAUS_ABFAHRT_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_HAUS_ABFAHRT_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="vorklima_anwesend_ein" value="1" <?= sk_fh('mqtt', 'vorklima_anwesend_ein', !empty($sk_cfg['vorklima_anwesend_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_VORKLIMA_ANWESEND_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_VORKLIMA_ANWESEND_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="vorklima_wetter_ein" value="1" <?= sk_fh('mqtt', 'vorklima_wetter_ein', !empty($sk_cfg['vorklima_wetter_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_VORKLIMA_WETTER_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_VORKLIMA_WETTER_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="vorklima_kalt_unter"><?= sk_e(sk_t('EINST.L_VORKLIMA_KALT_UNTER')) ?></label>
+  <input data-role="none" type="<?= sk_ftyp('vorklima_kalt_unter') ?>" id="vorklima_kalt_unter" name="vorklima_kalt_unter" value="<?= sk_e(sk_fw('mqtt', 'vorklima_kalt_unter', (int) $sk_cfg['vorklima_kalt_unter'])) ?>"<?= sk_fm('vorklima_kalt_unter') ?> min="<?= (int) $sk_regeln_anz['vorklima_kalt_unter'][1] ?>" max="<?= (int) $sk_regeln_anz['vorklima_kalt_unter'][2] ?>">
+</div>
+<div class="sm-feld">
+  <label for="vorklima_heiss_ueber"><?= sk_e(sk_t('EINST.L_VORKLIMA_HEISS_UEBER')) ?></label>
+  <input data-role="none" type="<?= sk_ftyp('vorklima_heiss_ueber') ?>" id="vorklima_heiss_ueber" name="vorklima_heiss_ueber" value="<?= sk_e(sk_fw('mqtt', 'vorklima_heiss_ueber', (int) $sk_cfg['vorklima_heiss_ueber'])) ?>"<?= sk_fm('vorklima_heiss_ueber') ?> min="<?= (int) $sk_regeln_anz['vorklima_heiss_ueber'][1] ?>" max="<?= (int) $sk_regeln_anz['vorklima_heiss_ueber'][2] ?>">
+</div>
+<h3><?= sk_e(sk_t('EINST.H_ANKUNFT')) ?></h3>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ankunft_ein" value="1" <?= sk_fh('mqtt', 'ankunft_ein', !empty($sk_cfg['ankunft_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_ANKUNFT_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_ANKUNFT_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="ankunft_quelle"><?= sk_e(sk_t('EINST.L_ANKUNFT_QUELLE')) ?></label>
+  <input data-role="none" type="text" id="ankunft_quelle" name="ankunft_quelle" value="<?= sk_e(sk_fw('mqtt', 'ankunft_quelle', (string) $sk_cfg['ankunft_quelle'])) ?>"<?= sk_fm('ankunft_quelle') ?> placeholder="tag:schluessel_anna,person:anna">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_ANKUNFT_QUELLE') ?></div>
+</div>
+<h3><?= sk_e(sk_t('EINST.H_STROMPREIS')) ?></h3>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_strompreis_ein" value="1" <?= sk_fh('mqtt', 'haus_strompreis_ein', !empty($sk_cfg['haus_strompreis_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_HAUS_STROMPREIS_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_HAUS_STROMPREIS_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="ladeempf_quelle"><?= sk_e(sk_t('EINST.L_LADEEMPF_QUELLE')) ?></label>
+  <select data-role="none" id="ladeempf_quelle" name="ladeempf_quelle"<?= sk_fm('ladeempf_quelle') ?>>
+<?php foreach (array('thema' => 'EINST.O_LADEEMPF_THEMA', 'haus' => 'EINST.O_LADEEMPF_HAUS') as $sk_q => $sk_qt) { ?>
+    <option value="<?= $sk_q ?>"<?= sk_fw('mqtt', 'ladeempf_quelle', (string) $sk_cfg['ladeempf_quelle']) === $sk_q ? ' selected' : '' ?>><?= sk_e(sk_t($sk_qt)) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_LADEEMPF_QUELLE') ?></div>
+</div>
+<h3><?= sk_e(sk_t('EINST.H_SIGNAL')) ?></h3>
+<p class="sm-hilfe"><?= sk_t('EINST.SIGNAL_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_ein" value="1" <?= sk_fh('mqtt', 'signal_ein', !empty($sk_cfg['signal_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_SIGNAL_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="signal_praefix"><?= sk_e(sk_t('EINST.L_SIGNAL_PRAEFIX')) ?></label>
+  <input data-role="none" type="text" id="signal_praefix" name="signal_praefix" value="<?= sk_e(sk_fw('mqtt', 'signal_praefix', (string) $sk_cfg['signal_praefix'])) ?>"<?= sk_fm('signal_praefix') ?> placeholder="signalbot">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_SIGNAL_PRAEFIX') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_laden_fertig" value="1" <?= sk_fh('mqtt', 'signal_laden_fertig', !empty($sk_cfg['signal_laden_fertig'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_LADEN_FERTIG')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_laden_abbruch" value="1" <?= sk_fh('mqtt', 'signal_laden_abbruch', !empty($sk_cfg['signal_laden_abbruch'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_LADEN_ABBRUCH')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_offen" value="1" <?= sk_fh('mqtt', 'signal_offen', !empty($sk_cfg['signal_offen'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_OFFEN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_ausfall" value="1" <?= sk_fh('mqtt', 'signal_ausfall', !empty($sk_cfg['signal_ausfall'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_AUSFALL')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_vorklima" value="1" <?= sk_fh('mqtt', 'signal_vorklima', !empty($sk_cfg['signal_vorklima'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_VORKLIMA')) ?>
+  </label>
+</div>
+
+
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION') ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= sk_t('LEGENDE.TECHNIK') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= sk_e(sk_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<h3><?= sk_e(sk_t('SIGNAL.H_TEST')) ?></h3>
+<p class="sm-hilfe"><?= sk_t('SIGNAL.H_TEST_TEXT') ?></p>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?= sk_formfeld() ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="signal_test" value="1"><?= sk_e(sk_t('SIGNAL.K_TEST')) ?></button>
+  </form>
+</div>
 <h2><?= sk_e(sk_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 
@@ -1534,12 +1785,75 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
     $sk_zu['empfehlung'] === null ? sk_t('ALLG.KEIN_WERT') : (int) $sk_zu['empfehlung']) ?></div>
 <?php } ?>
 
+<?php if ((int) $sk_mqtt['fassung'] !== 1) { /* Gruppe 41 (G1): Gateway V2 - Hakenliste; bei unbekannter Fassung beides */ ?>
+<h2><?= sk_e(sk_t('MQTT.H_V2')) ?></h2>
+<p class="sm-hilfe"><?= sk_t('MQTT.V2_ERKLAERUNG') ?></p>
+<?php list($sk_v2ok, $sk_v2txt) = sk_v2_haken_lage($sk_cfg); ?>
+<div class="<?= $sk_v2ok === 1 ? 'sm-hinweis' : ($sk_v2ok === 0 ? 'sm-fehler' : 'sm-warnung') ?>"><?= sk_e($sk_v2txt) ?></div>
+<table class="sm-tbl">
+<tr><th><?= sk_e(sk_t('MQTT.T_THEMA')) ?></th><th><?= sk_e(sk_t('MQTT.T_GATEWAYNAME')) ?></th>
+    <th><?= sk_e(sk_t('MQTT.T_NONCACHED')) ?></th><th><?= sk_e(sk_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (sk_v2_haken($sk_cfg) as $sk_h) { ?>
+<tr><td><span class="sm-mono"><?= sk_e($sk_h['thema']) ?></span></td><td><span class="sm-mono"><?= sk_e($sk_h['name']) ?></span></td>
+    <td><?= $sk_h['noncached'] ? sk_e(sk_t('ALLG.JA')) : sk_e(sk_t('ALLG.NEIN')) ?></td><td><?= $sk_h['bez'] !== '' ? sk_t($sk_h['bez']) : '' ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+<?php if ((int) $sk_mqtt['fassung'] !== 2) { ?>
 <h2><?= sk_e(sk_t('MQTT.H_ABO')) ?></h2>
 <?= sk_abo_kasten() ?>
 <div class="sm-step">
 <?= sk_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= sk_e($sk_cfg['mqtt_topic']) ?>/#</span></p>
 </div>
+<?php } ?>
+
+<h2><?= sk_e(sk_t('BEFEHL.H_TITEL')) ?></h2>
+<div class="sm-warnung"><?= sk_t('BEFEHL.UDP_HINWEIS') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_befehle" value="1">
+<?= sk_formfeld() ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= !empty($sk_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('BEFEHL.L_ANNEHMEN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('BEFEHL.H_ANNEHMEN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= !empty($sk_cfg['endpunkt_ein']) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('BEFEHL.L_ENDPUNKT')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('BEFEHL.H_ENDPUNKT') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= sk_e(sk_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+<?php list($sk_bbok, $sk_bbtxt) = sk_bruecke_lage(); ?>
+<div class="<?= $sk_bbok === true ? 'sm-hinweis' : ($sk_bbok === null ? 'sm-warnung' : 'sm-fehler') ?>"><b><?= sk_e(sk_t('BEFEHL.F_BRUECKE')) ?>:</b> <?= sk_e($sk_bbtxt) ?></div>
+<?php list($sk_bl, $sk_blf) = sk_bruecke_liste(); ?>
+<?php if ($sk_bl === null) { ?>
+<div class="sm-fehler"><?= sk_e($sk_blf) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= sk_e(sk_t('MQTT.T_THEMA')) ?></th><th><?= sk_e(sk_t('BEFEHL.T_ART')) ?></th><th><?= sk_e(sk_t('BEFEHL.T_TITEL')) ?></th></tr>
+<?php foreach ($sk_bl['befehle'] as $sk_b) { ?>
+<tr><td><span class="sm-mono"><?= sk_e($sk_b['thema']) ?></span></td>
+    <td><?= sk_e($sk_b['art']) ?></td>
+    <td><?= sk_e($sk_b['titel']) ?></td></tr>
+<?php } ?>
+</table>
+<form action="index.php" method="post">
+    <?= sk_formfeld() ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_befehle" value="1"><?= sk_e(sk_t('BEFEHL.K_VORLAGE')) ?></button>
+</div>
+</form>
+<?php } ?>
 
 <h2><?= sk_e(sk_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= sk_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
@@ -1557,6 +1871,8 @@ if (($sk_cfg['empf_thema'] !== '' || !empty($sk_cfg['abfahrt_ein']))
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $sk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
+<div class="<?= !empty($sk_cfg['endpunkt_ein']) ? 'sm-hinweis' : 'sm-warnung' ?>"><?= sk_t('LOX.G41_NEUER_WEG') ?><?php
+    if (empty($sk_cfg['endpunkt_ein'])) { ?> <?= sk_t('LOX.G41_ENDPUNKT_AUS') ?><?php } ?></div>
 <h2><?= sk_e(sk_t('LOX.H_TITEL')) ?></h2>
 <p><?= sk_t('LOX.EINLEITUNG') ?></p>
 
@@ -2059,6 +2375,9 @@ foreach (sk_bausteinliste($sk_bnr) as $sk_bs) { ?>
     <?= sk_formfeld() ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= sk_e(sk_t('TEST.K_ANSAGE_TEST')) ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (sk_mit_zielen()) { echo ansage_testknoepfe_html(sk_tts(), sk_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
 </div>
 
@@ -2124,6 +2443,14 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 <?php } else { ?>
 <div class="sm-hinweis"><?= sk_t('LOG.LEER') ?></div>
 <?php } ?>
+<?php /* Gruppe 41 (0.9.34): Startprotokoll der Befehlsbruecke und Fehlerausgabe des Minutenwaechters. */
+foreach (array('befehle_start.log', 'cron.err') as $sk_ld) {
+    $sk_lf = $sk_p['logdir'] . '/' . $sk_ld;
+    $sk_lz = is_file($sk_lf) ? sk_log_ende($sk_lf, 40) : array();
+    if ($sk_lz) { ?>
+<h3><span class="sm-mono"><?= sk_e($sk_ld) ?></span></h3>
+<div class="sm-log"><?= sk_e(implode("\n", $sk_lz)) ?></div>
+<?php } } ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= sk_t('LEGENDE.AKTION_LOG') ?></span>
 </div>

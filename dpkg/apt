@@ -14,3 +14,8 @@
 # Anwender auf, "apt install python3-venv" von Hand zu tippen - obwohl
 # LoxBerry das Paket selbst ziehen kann.
 python3-venv
+#
+# Gruppe 41 (0.9.34): mosquitto_sub/_pub fuer die Befehlsbruecke (im LoxBerry-Grundabbild ohnehin
+# vorhanden; Hausform wie AudiConnect 0.9.30 und MGiSmart 1.1.28). Die Haus-Themen liest der Dienst ueber
+# seine eigene Verbindung (paho in der virtuellen Umgebung) - dafuer braucht es das Paket nicht.
+mosquitto-clients

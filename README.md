@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.33 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.34 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,53 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.34
+
+Hausform der LoxBerry-Plugins (Gruppe 41, wie AudiConnect 0.9.30 und MGiSmart 1.1.28). Alles Neue ist
+**ab Werk aus**; herstellerseitig nur mit Attrappen geprüft – weiter BETA.
+
+- **MQTT-Gateway V2:** der Reiter *MQTT* zeigt die Datenpunkte zum Anhaken (Thema, Name in Loxone,
+  *Noncached*); der Reiter *Test* prüft, ob alles angehakt ist. Die Liste kommt aus den Themen, nach denen
+  der Dienst sendet – Texte und Zeitstempel stehen absichtlich nicht darin.
+- **Befehle aus Loxone über MQTT** (Befehlsbrücke 1.0.2): `skoda/befehl/laden`, `klima_an`, `klima_aus`,
+  `zieltemperatur`, `ladegrenze`, `scheibe`, `lueftung`, `wecken`, `auffrischen`, `aussentemp`
+  (Fahrzeug 2–9 unter `skoda/befehl/<n>/…`). Haken „Befehle über MQTT annehmen“, wirkt nur mit
+  *Schreibende Befehle zulassen*. Vorlage zum Import im Reiter *MQTT*.
+- **HTTP-Endpunkt abschaltbar** (`endpunkt_ein`): wer die HTTP-Vorlage nutzt, ändert nichts – beim Update
+  bleibt der Endpunkt an; eine Neuinstallation hat ihn aus.
+- **Vorklimatisierung nach Hausregeln:** Minuten bis zur Abfahrt aus `haus/abfahrt` (Abfahrts-Assistent),
+  höchstens zwei „Klima ein“ je Abfahrt (Senden – Abruf – Senden), erledigt erst, wenn Skoda den Auftrag
+  angenommen hat; der Merker übersteht einen Neustart. Wählbares Fahrzeug (bis 0.9.33 immer Fahrzeug 1).
+  Wahlweise nur, wenn jemand zu Hause ist, und nur bei Kälte oder Hitze (Außentemperatur aus Loxone).
+- **Behaltene (retained) Werte gelten nicht mehr als frisch** – nach einem Neustart rechnete die
+  Ladeempfehlung bis 0.9.33 mit einem beliebig alten Wert.
+- **Abruf bei Ankunft** (Person oder BLE-Tag), **Ladekosten je Ladung** aus `haus/strompreis` (nie
+  geschätzt: fehlt der Preis für mehr als 10 % der Energie, bleibt es -1; eine laufende Ladung übersteht
+  einen Neustart des Dienstes samt Zeile im Ladeprotokoll), **Ladeempfehlung aus `haus/strompreis`** als
+  zweite Quelle, **Meldungen an SignalBot** mit Knopf „Testmeldung an SignalBot“ (Reiter MQTT).
+- **LoxBerry-Healthcheck** (`bin/healthcheck`): läuft der Dienst, sind Lebenszeichen und letzter gelungener
+  Abruf frisch, stehen MQTT-Gateway, Broker-Verbindung, Datenpunkte V2 und Befehlsbrücke; ohne Zugangsdaten
+  „nicht eingerichtet“ (Hinweis, kein Fehler). Keine Zugangsdaten, VIN oder Kennzeichen in der Ausgabe.
+- **Update mitten in einer Ladung:** die offene Mitschrift der Ladekosten, die Kosten der letzten
+  Ladung, der Merker der Vorklimatisierung und die Wiederholsperre der Ansagen werden mitgerettet.
+- Sprachausgabe: Modul 1.2.1, Sonos4Lox und SonoX wählbar, Sprechfrist 20 s.
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 20 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  0.9.33. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 0.9.33 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+- Kopfkachel MQTT in Hausform: groß, ob dieses Plugin veröffentlicht; klein Autostart und Fassung des
+  Gateways.
+- **Restminuten der Klimatisierung über MQTT:** `fahrzeug<n>/klima_restzeit_min`, ganze Minuten bis die
+  Zieltemperatur erreicht sein soll, je Minute nachgeführt; 0 erreicht, −1 ohne Aussage (gleich benannt wie
+  bei AudiConnect und VolkswagenID). Die Restminuten fürs Laden kommen weiter als `restzeit_min`.
+- **−1-Regel:** ein Messwert (nicht zurückbehalten) ohne Aussage geht über MQTT als −1 hinaus statt gar
+  nicht (Außentemperatur −999). Die HTTP-Antworten bleiben unverändert.
 
 ## Neu in 0.9.33
 
@@ -1105,7 +1152,7 @@ Alle Suchtexte tragen jetzt das Semikolon: `\i;KM=\i\v`, und sie entstehen an
 
 Das Formular nahm eine vierstellige S-PIN an und legte sie in `zugang.json`
 ab. Benutzt wurde sie **nie**: MySkoda verlangt sie nur für Ver- und
-Entriegeln, und das bietet dieses Plugin nicht an. Der Hilfetext sagte das
+Entriegeln, und das kann dieses Plugin nicht. Der Hilfetext sagte das
 selbst — „das Feld ist für eine spätere Fassung vorbereitet".
 
 Diese Vorbereitung kostete die Ziffernfolge, mit der sich das Fahrzeug

@@ -25,7 +25,8 @@ if (!function_exists('sk_e')) {
 }
 
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b, seit
- * 0.9.30). Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
+ * 0.9.30; seit 0.9.34 Stamm 1.2.1 mit weiteren Ausgabezielen, sk_mit_zielen(), Welle Mehrfach-Ziele).
+ * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
 
@@ -197,6 +198,30 @@ function sk_vorgaben()
         'ansage_licht'         => 1,
         'ansage_klima'         => 1,
         'ansage_ausfall'       => 1,
+        /* Gruppe 41 (0.9.34): Hausform - dieselben Werte wie VORGABEN in bin/skoda.py, alles ab Werk aus.
+         * endpunkt_ein: neue Anlagen 0 (Gateway V2 und Befehlsbruecke); beim Update setzt postinstall.sh 1,
+         * wenn der Schluessel fehlt (Bestand nutzt den HTTP-Weg). Skoda kennt keine eingreifenden Befehle,
+         * deshalb kein zweiter Haken (befehle_mqtt_steuern). */
+        'befehle_mqtt_ein'      => 0,
+        'endpunkt_ein'          => 0,
+        // B5: Fahrzeug fuer die Vorklimatisierung (bis 0.9.33 fest "1").
+        'abfahrt_fahrzeug'      => 1,
+        'haus_abfahrt_ein'      => 0,
+        'vorklima_anwesend_ein' => 0,
+        'vorklima_wetter_ein'   => 0,
+        'vorklima_kalt_unter'   => 5,
+        'vorklima_heiss_ueber'  => 25,
+        'ankunft_ein'           => 0,
+        'ankunft_quelle'        => '',
+        'haus_strompreis_ein'   => 0,
+        'ladeempf_quelle'       => 'thema',
+        'signal_ein'            => 0,
+        'signal_praefix'        => 'signalbot',
+        'signal_laden_fertig'   => 1,
+        'signal_laden_abbruch'  => 1,
+        'signal_offen'          => 1,
+        'signal_ausfall'        => 1,
+        'signal_vorklima'       => 1,
         'tts'            => ansage_vorgaben('aus'),
         'aktionstoken'   => '',
         'wartezeit'      => 8,
@@ -276,6 +301,26 @@ function sk_regeln()
          * Zugelassen ist, was ohne Kodierung in eine Adresse passt. */
         'aktionstoken'   => array('text', '#^[A-Za-z0-9_.\-]{0,64}$#', 64),
         'wartezeit'      => array('ganz', 0, 30),
+        /* Gruppe 41 (0.9.34) */
+        'befehle_mqtt_ein'      => array('schalt'),
+        'endpunkt_ein'          => array('schalt'),
+        'abfahrt_fahrzeug'      => array('ganz', 1, 99),
+        'haus_abfahrt_ein'      => array('schalt'),
+        'vorklima_anwesend_ein' => array('schalt'),
+        'vorklima_wetter_ein'   => array('schalt'),
+        'vorklima_kalt_unter'   => array('ganz', -30, 45),
+        'vorklima_heiss_ueber'  => array('ganz', -30, 45),
+        'ankunft_ein'           => array('schalt'),
+        'ankunft_quelle'        => array('text', '#^$|^(tag|person):[A-Za-z0-9_-]{1,40}(,(tag|person):[A-Za-z0-9_-]{1,40}){0,3}$#', 200),
+        'haus_strompreis_ein'   => array('schalt'),
+        'ladeempf_quelle'       => array('text', '#^(thema|haus)$#', 8),
+        'signal_ein'            => array('schalt'),
+        'signal_praefix'        => array('text', '#^[A-Za-z0-9_-]{1,40}$#', 40),
+        'signal_laden_fertig'   => array('schalt'),
+        'signal_laden_abbruch'  => array('schalt'),
+        'signal_offen'          => array('schalt'),
+        'signal_ausfall'        => array('schalt'),
+        'signal_vorklima'       => array('schalt'),
     );
 }
 
@@ -1327,6 +1372,54 @@ function sk_dienst($befehl)
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
+/* ---------------- G8-Zusatz: Testmeldung an SignalBot (Ruecktragen aus VW 0.9.33) ---------------- */
+
+/**
+ * Die Zeile des Dienstes "SIGNAL_TEST;ERGEBNIS=<e>;TEXT=<t>" lesen (Rein). Rueckgabe
+ * array(Ergebnis, Text) mit Ergebnis angenommen|abgelehnt|keine_antwort|aus|nicht_moeglich.
+ * Unbekanntes oder fehlendes Ergebnis zaehlt als nicht_moeglich - nie als angenommen.
+ */
+function sk_signal_test_lesen(array $zeilen)
+{
+    foreach ($zeilen as $z) {
+        if (preg_match('/^SIGNAL_TEST;ERGEBNIS=([a-z_]+);TEXT=(.*)$/', trim((string) $z), $m)
+            && in_array($m[1], array('angenommen', 'abgelehnt', 'keine_antwort', 'aus', 'nicht_moeglich'), true)) {
+            return array($m[1], substr($m[2], 0, 200));
+        }
+    }
+    return array('nicht_moeglich', '');
+}
+
+/**
+ * Testmeldung an SignalBot: der Dienst (skoda.py --signal-test) sendet einen festen Satz an
+ * <signal_praefix>/befehl/senden und wartet bis 5 s auf die Quittung der SignalBot-Bruecke.
+ * Ab Werk wirkungslos: ist "Meldungen an SignalBot" aus, wird nichts gesendet.
+ * Rueckgabe array(Ergebnis, Satz fuer die Oberflaeche).
+ */
+function sk_signal_test($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = sk_config();
+    }
+    if (empty($cfg['signal_ein'])) {
+        return array('aus', sk_t('SIGNAL.T_AUS'));
+    }
+    $p = sk_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/skoda.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return array('nicht_moeglich', sk_t('SIGNAL.T_NICHT_MOEGLICH'));
+    }
+    $aus = array();
+    @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --signal-test 2>/dev/null', $aus);
+    list($e, $text) = sk_signal_test_lesen($aus);
+    $schl = array('angenommen' => 'SIGNAL.T_ANGENOMMEN', 'abgelehnt' => 'SIGNAL.T_ABGELEHNT',
+                  'keine_antwort' => 'SIGNAL.T_KEINE_ANTWORT', 'aus' => 'SIGNAL.T_AUS',
+                  'nicht_moeglich' => 'SIGNAL.T_NICHT_MOEGLICH');
+    $satz = sk_t($schl[$e]);
+    return array($e, $e === 'abgelehnt' ? sprintf($satz, $text) : $satz);
+}
+
 /** Fassung der Python-Bibliothek in der virtuellen Umgebung, oder ''. */
 function sk_bibliothek_fassung()
 {
@@ -1592,6 +1685,8 @@ function sk_ladungen_lesen($nummer = 0, $hoechstens = 200)
             'beginn' => (int) $c[0], 'ende' => (int) $c[1], 'fahrzeug' => (int) $c[2],
             'vin' => $c[3], 'soc_von' => $c[4], 'soc_bis' => $c[5],
             'dauer_min' => (int) $c[6], 'kw_max' => $c[7], 'ort' => $c[8],
+            /* Gruppe 41 (0.9.34): Kosten und Preis hinten - fehlt die Spalte oder ist sie leer: unbekannt. */
+            'kosten' => isset($c[9]) ? $c[9] : '', 'preis' => isset($c[10]) ? $c[10] : '',
         );
     }
     $aus = array_reverse($aus);
@@ -1726,6 +1821,10 @@ function sk_mqtt_ohne_retain()
         /* Aussagen des Dienstes ueber sich selbst - nie (Regeln/07 Abschnitt
          * 3, Entscheidungen 18./19.09.2026; seit 0.9.24, messe_retain.sh R9) */
         'fehler_folge', 'fehlertext',
+        /* Gruppe 41 (0.9.34): Zustand der Vorklimatisierung - eine Dienstaussage (G5). */
+        'vorklima',
+        /* Nachtrag 4 (29.10.2026): Restminuten der Klimatisierung - eine Restzeit. */
+        'klima_restzeit_min',
     );
 }
 
@@ -1806,6 +1905,16 @@ function sk_mqtt_themen()
         'fahrzeugN/reichweite_batterie_km' => 'SK_MQTT.REICHWBAT',
         'fahrzeugN/zuhause'           => 'SK_MQTT.ZUHAUSE',
         'fahrzeugN/heim_entfernung_m' => 'SK_MQTT.HEIMENTF',
+        /* Gruppe 41 (0.9.34): Vorklimatisierung (fluechtig) und Ladekosten der letzten Ladung zu
+         * Hause (behalten, -1 ohne Aussage). */
+        'fahrzeugN/vorklima'          => 'SK_MQTT.VORKLIMA',
+        'fahrzeugN/ladung_kosten'     => 'SK_MQTT.LADUNG_KOSTEN',
+        'fahrzeugN/ladung_preis'      => 'SK_MQTT.LADUNG_PREIS',
+        /* Nachtrag 4 (29.10.2026): Restminuten bis die Klimatisierung die Zieltemperatur erreicht
+         * (fluechtig; -1 ohne Aussage, 0 erreicht). */
+        'fahrzeugN/klima_restzeit_min' => 'SK_MQTT.KLIMA_RESTZEIT',
+        /* Das Lebenszeichen der Befehlsbruecke (nur mit "Befehle ueber MQTT annehmen"). */
+        'status/befehle'              => 'SK_MQTT.STATUS_BEFEHLE',
         /* Texte. Sie werden nur gesendet, wenn sie etwas enthalten: eine
          * leere Nutzlast loescht mit Retain ein behaltenes Thema. */
         'fahrzeugN/modell'            => 'SK_MQTT.MODELL',
@@ -2313,10 +2422,70 @@ function sk_t($schluessel)
  * gemeinsamen Sprachausgabe (sprachausgabe.php). Ab Werk ist die Ausgabe aus.
  * ================================================================== */
 
-/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). */
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). Weitere
+ *  Ausgabeziele (Tabelle, 'ziele') seit 0.9.34 mit Stamm 1.2.1 - sk_mit_zielen() unten; ohne Tabelle wie bisher. */
 function sk_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Gruppe 41 (0.9.34, Sprachmodul 1.2.1, E10): aus ansage_modi() abgeleitet statt abgeschrieben -
+     * damit kommen sonos4lox und (ab Modul 1.1.4) sonox dazu. Bis 0.9.33 stand hier eine feste
+     * Liste, und Sonos4Lox liess sich nicht waehlen. audioserver bleibt draussen (wie bisher). */
+    $m = function_exists('ansage_modi') ? ansage_modi()
+        : array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    $aus = array();
+    foreach ($m as $x) {
+        if ($x === 'audioserver') {
+            continue;
+        }
+        if ($x === 'sonox' && (!defined('ANSAGE_FASSUNG') || version_compare(ANSAGE_FASSUNG, '1.1.4', '<'))) {
+            continue;
+        }
+        $aus[] = $x;
+    }
+    return $aus;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function sk_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). sk_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), sk_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function sk_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function sk_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (0.9.34): die Felder der Tabelle in der Einmalmeldung (X-2), flach name.N fuer N = 2..6 -
+ *  nur, wenn die geladene Abschrift die Tabelle kann. */
+function sk_ziele_x2_felder()
+{
+    $f = array();
+    if (sk_mit_zielen()) {
+        for ($i = 2; $i <= 6; $i++) {
+            foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein',
+                           'tts_ziel_loeschen') as $n) {
+                $f[] = $n . '.' . $i;
+            }
+        }
+    }
+    return $f;
+}
+
+/** Welle Mehrfach-Ziele (0.9.34): das gemeinsame Stueck e2 protokolliert die Testansage ueber sk_log() - eine Zeile
+ *  der Oberflaeche (sk_log_zeile(), Kurzform ohne Text und Token). */
+function sk_log($text)
+{
+    sk_log_zeile($text);
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
@@ -2369,6 +2538,9 @@ function sk_ansage_k()
         'kopf'   => array('User-Agent: LoxBerry SkodaConnect'),
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
         't'      => function ($s) { return sk_t($s); },
+        /* B7 (Gruppe 41): Sprechfrist an das Modul 20 s = Frist des Dienstes (ANSAGE_FRIST_S 25 s in
+         * bin/skoda.py) minus 5 s. Das Modul wendet sie seit 1.2.1 in jedem Weg an (ansage_frist()). */
+        'frist'  => 20,
         /* K_TTS_EINTRAG: den Satz bringt das Modul seit 1.1.2 selbst mit; die Umlenkung auf
          * EINST.SICH_TTS_EINTRAG ist seit 0.9.32 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
     );
@@ -2512,7 +2684,24 @@ function sk_sicherung_lesen($roh)
                 continue;
             }
             $sk_tj = sk_tts();
-            list($sk_tv) = ansage_vervollstaendigen($sk_tp + $sk_tj, 'aus');
+            /* Welle Mehrfach-Ziele (0.9.34): "$sk_tp + $sk_tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
+            $sk_tneu = array('tts' => $sk_tp);
+            $sk_tjetzt = array('tts' => $sk_tj);
+            $sk_spaet = array();
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $sk_spaete = array();
+            if (is_array($sk_tneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($sk_tneu['tts'], $sk_spaete) = ansage_sicherung_spaet($sk_tneu['tts'],
+                    (isset($sk_tjetzt['tts']) && is_array($sk_tjetzt['tts'])) ? $sk_tjetzt['tts'] : null);
+            }
+            foreach ($sk_spaete as $sk_sn) { $sk_spaet[] = $sk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            if ($sk_spaet) {
+                $hinweise[] = sprintf(sk_t('EINST.SICH_SPAET'), htmlspecialchars(implode(', ', $sk_spaet), ENT_QUOTES, 'UTF-8'));
+            }
+            list($sk_tv) = ansage_vervollstaendigen($sk_tneu['tts'] + $sk_tj, 'aus');
             $neu['tts'] = ansage_sicherung_tokens_behalten($sk_tv, $sk_tj);
             $anzahl++;
             continue;
@@ -2590,6 +2779,13 @@ function sk_sicherung_lesen($roh)
     $sk_ohne_ansage = false;
     foreach (array_keys(sk_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Gruppe 41 (0.9.34): eine Sicherung von 0.9.33 oder frueher kennt die neuen Schluessel nicht.
+             * Sie bleibt zurueckspielbar; die Anlage behaelt den jetzigen Wert (auch endpunkt_ein). */
+            if (in_array($fk, sk_neue_schluessel_0934(), true)) {
+                $sk_jetzt = sk_config();
+                $neu[$fk] = $sk_jetzt[$fk];
+                continue;
+            }
             /* Nr. 36 b: eine Sicherung von 0.9.29 oder frueher kennt die Sprachausgabe noch
              * nicht. Sie bleibt zurueckspielbar; die Sprachausgabe behaelt ihren jetzigen Stand,
              * und die Seite sagt es. */
@@ -2736,4 +2932,759 @@ function sk_flash_lesen()
         return array();
     }
     return $d;
+}
+
+/* ==================================================================
+ * Gruppe 41 (0.9.34): Hausform - Gateway V2, Befehlsbruecke 1.0.2,
+ * endpunkt_ein, Haus-Themen. Bauvorschrift
+ * Pruefung-Durchgang-2026-09-29/wz_bild/GRUPPE41_BAUVORSCHRIFT.md (G1-G3, 2.2),
+ * Vorlage AudiConnect 0.9.30 (au_v2_*, au_befehl_annehmen(), au_bruecke_*),
+ * MGiSmart 1.1.28 und Renault NG 2.1.20.
+ * ================================================================== */
+
+/** Die Schluessel, die mit 0.9.34 dazukamen - eine aeltere Sicherung kennt sie nicht; die Anlage behaelt ihren Wert. */
+function sk_neue_schluessel_0934()
+{
+    return array('befehle_mqtt_ein', 'endpunkt_ein', 'abfahrt_fahrzeug', 'haus_abfahrt_ein',
+                 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'vorklima_kalt_unter', 'vorklima_heiss_ueber',
+                 'ankunft_ein', 'ankunft_quelle', 'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein',
+                 'signal_praefix', 'signal_laden_fertig', 'signal_laden_abbruch', 'signal_offen',
+                 'signal_ausfall', 'signal_vorklima');
+}
+
+/** Sind Zugangsdaten eingetragen? (E-Mail und Passwort.) */
+function sk_zugang_da()
+{
+    $z = sk_zugang();
+    return $z['email'] !== '' && $z['laenge'] > 0;
+}
+
+/**
+ * Die Zeichenketten eines Tupels NAME = ( ... ) aus bin/skoda.py, oder null.
+ * Seit 0.9.34 hier (vorher in sk_test.php): die Hakenliste (G1) liest dieselben
+ * Tupel, nach denen der Dienst sendet. Kommentare zeilenweise weg, dann bis zur
+ * Klammer am ZEILENANFANG (Berichtigung 0.9.21: ein "(TEMPO, REICHWBAT)" im
+ * Kommentar brach den Ausdruck ab). Seit 0.9.34 mit '/' (MQTT_OBEN: status/ok).
+ */
+function sk_py_tupel($quelle, $name)
+{
+    if (!preg_match('/^' . preg_quote($name, '/') . '\s*=\s*(?:frozenset\()?\((.*?)^\)/ms', $quelle, $m)) {
+        return null;
+    }
+    $rumpf = preg_replace('/#[^\n]*/', '', $m[1]);
+    if (!preg_match_all('#"([a-z0-9_/]+)"#', $rumpf, $t)) {
+        return array();
+    }
+    return $t[1];
+}
+
+/** bin/skoda.py - installiert oder neben der Oberflaeche (Proben, Linienpruefer). '' = nicht gefunden. */
+function sk_dienst_quelle()
+{
+    foreach (array(sk_paths()['bindir'] . '/skoda.py', dirname(dirname(__DIR__)) . '/bin/skoda.py') as $f) {
+        if (is_file($f)) {
+            return $f;
+        }
+    }
+    return '';
+}
+
+/* ---------------- G1: MQTT-Gateway V2 ---------------- */
+
+/** Der Name, den das MQTT-Gateway vergibt: '/', '%' und Leerzeichen werden '_' (Regeln/07 :69). Rein. */
+function sk_gateway_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/**
+ * Die Themen des Dienstes aus bin/skoda.py: array('dienst' => [...], 'fahrzeug' => [...], 'text' => [...])
+ * oder array() (nicht lesbar). EINE Quelle (Bauvorschrift 2.2): die Tupel MQTT_OBEN, MQTT_FELDER,
+ * MQTT_SIGNALFELDER und MQTT_TEXTFELDER, nach denen der Dienst sendet - keine zweite Liste.
+ */
+function sk_themen_dienst()
+{
+    $f = sk_dienst_quelle();
+    $q = $f !== '' ? @file_get_contents($f) : false;
+    if (!is_string($q) || $q === '') {
+        return array();
+    }
+    $oben = sk_py_tupel($q, 'MQTT_OBEN');
+    $zahl = sk_py_tupel($q, 'MQTT_FELDER');
+    $sig = sk_py_tupel($q, 'MQTT_SIGNALFELDER');
+    $text = sk_py_tupel($q, 'MQTT_TEXTFELDER');
+    if (!$oben || !$zahl || $sig === null || $text === null) {
+        return array();
+    }
+    return array('dienst' => $oben, 'fahrzeug' => array_merge($sig, $zahl), 'text' => $text);
+}
+
+/** Die Fahrzeugnummern fuer die Hakenliste: aus dem Abbild, ohne Abbild Fahrzeug 1. */
+function sk_v2_fahrzeugnummern()
+{
+    $n = array();
+    foreach (array_keys(sk_fahrzeuge()) as $k) {
+        if (preg_match('/^[0-9]{1,2}$/', (string) $k) && (int) $k >= 1) {
+            $n[] = (int) $k;
+        }
+    }
+    sort($n);
+    return $n ? array_values(array_unique($n)) : array(1);
+}
+
+/**
+ * Namenstabelle und V2-Hakenliste - EINE Quelle fuer Reiter MQTT, Reiter Test,
+ * Linienpruefer und Messskript (G1). Aus den Tupeln in bin/skoda.py, nach denen
+ * der Dienst sendet (sk_themen_dienst()): keine Textthemen (MQTT_TEXTFELDER und
+ * status/fehlertext - das Musterprojekt hat keinen Texteingang, nie kennzeichen/
+ * adresse), nicht status/ts und fahrzeug<n>/ts (Zeitstempel, wechseln mit jedem
+ * Durchgang; Regeln/07 :267), nicht das alte 'ok' (gleichlautend mit status/ok,
+ * bleibt nur fuer Bestandsanlagen), dazu status/befehle der Bruecke. Noncached
+ * genau: status/ok, status/zaehler, fahrzeug<n>/ok, status/befehle.
+ * Rueckgabe Liste von array(thema, name, noncached, bez).
+ */
+function sk_v2_haken($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = sk_config();
+    }
+    $pf = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''), '/ ');
+    if ($pf === '') {
+        $pf = 'skoda';
+    }
+    $d = sk_themen_dienst();
+    $aus = array();
+    if (!$d || !$d['fahrzeug']) {
+        return $aus;   // leer -> "nicht feststellbar", nie "0 von 0"
+    }
+    $bez = sk_mqtt_themen();
+    foreach ($d['dienst'] as $th) {
+        if (in_array($th, array('status/ts', 'status/fehlertext', 'ok'), true) || in_array($th, $d['text'], true)) {
+            continue;
+        }
+        $t = $pf . '/' . $th;
+        $aus[] = array('thema' => $t, 'name' => sk_gateway_name($t),
+                       'noncached' => in_array($th, array('status/ok', 'status/zaehler'), true),
+                       'bez' => isset($bez[$th]) ? $bez[$th] : '');
+    }
+    foreach (sk_v2_fahrzeugnummern() as $nr) {
+        foreach ($d['fahrzeug'] as $feld) {
+            if ($feld === 'ts' || in_array($feld, $d['text'], true)) {
+                continue;
+            }
+            $t = $pf . '/fahrzeug' . $nr . '/' . $feld;
+            $aus[] = array('thema' => $t, 'name' => sk_gateway_name($t), 'noncached' => $feld === 'ok',
+                           'bez' => isset($bez['fahrzeugN/' . $feld]) ? $bez['fahrzeugN/' . $feld] : '');
+        }
+    }
+    $t = $pf . '/status/befehle';
+    $aus[] = array('thema' => $t, 'name' => sk_gateway_name($t), 'noncached' => true, 'bez' => 'SK_MQTT.STATUS_BEFEHLE');
+    return $aus;
+}
+
+/** Die angehakten Datenpunkte aus subscriptions.json (Rein): Id => noncached. null = unlesbar. Abschrift mg_v2_abos(). */
+function sk_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/** Soll gegen Ist (Rein): array(1|0, fehlt[], noncached_falsch[], da, soll). Abschrift mg_v2_haken_abgleich(). */
+function sk_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ((bool) $abo[$e['thema']] !== (bool) $e['noncached']) {
+            $nc[] = $e['name'] . ($e['noncached'] ? ' (Noncached fehlt)' : ' (Noncached zu viel)');
+        }
+    }
+    return array(($fehlt || $nc) ? 0 : 1, $fehlt, $nc, $da, count($soll));
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: alle Datenpunkte angehakt?" (einheitliche Pruefzeile, Nachtwelle 29.10.):
+ * array(1|0|2, Text) - 2 = grau (nicht feststellbar, Gateway V1, noch nicht eingerichtet). Liest nur.
+ * Die Argumente nach $cfg nur fuer Proben; sonst aus Tupeln, general.json und subscriptions.json.
+ */
+function sk_v2_haken_lage($cfg = null, $soll = null, $abo = false, $fassung = null, $eingerichtet = null)
+{
+    if ($cfg === null) {
+        $cfg = sk_config();
+    }
+    if ($fassung === null) {
+        $m = sk_mqtt_zustand();
+        $fassung = !empty($m['gefunden']) ? (int) $m['fassung'] : 0;
+    }
+    if ((int) $fassung <= 0) {
+        return array(2, sk_t('PRUEF.V2_UNKLAR'));
+    }
+    if ((int) $fassung < 2) {
+        return array(2, sk_t('PRUEF.V2_V1'));
+    }
+    if ($soll === null) {
+        $soll = sk_v2_haken($cfg);
+    }
+    if (!$soll) {
+        return array(2, sk_t('PRUEF.V2_LEER'));
+    }
+    if ($eingerichtet === null) {
+        $eingerichtet = sk_zugang_da();
+    }
+    if (!$eingerichtet) {
+        return array(2, sk_t('PRUEF.V2_NICHT_EINGERICHTET'));
+    }
+    if ($abo === false) {
+        $p = sk_paths();
+        $f = $p['home'] !== '' ? $p['home'] . '/config/system/subscriptions.json' : '';
+        $abo = ($f !== '' && is_file($f)) ? sk_v2_abos(json_decode((string) @file_get_contents($f), true)) : null;
+    }
+    if ($abo === null) {
+        return array(2, sk_t('PRUEF.V2_UNKLAR'));
+    }
+    list($ok, $fehlt, $nc, $da, $zahl) = sk_v2_haken_abgleich($soll, $abo);
+    $txt = sprintf(sk_t('PRUEF.V2_ZAHL'), $da, $zahl);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(sk_t('PRUEF.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' ...' : ''));
+    }
+    if ($nc) {
+        $txt .= ' ' . sprintf(sk_t('PRUEF.V2_NC'), implode(', ', $nc));
+    }
+    return array($ok, $txt);
+}
+
+/* ---------------- G2: eine Annahmefunktion fuer HTTP und MQTT ---------------- */
+
+/** Fahrzeug zur Nummer oder VIN - dieselbe Suche wie sk_waehlen() im Endpunkt (auch "01"). null = unbekannt. */
+function sk_fahrzeug_suchen(array $alle, $schluessel)
+{
+    if (isset($alle[$schluessel])) {
+        return $alle[$schluessel];
+    }
+    if (preg_match('/^0[0-9]{1,2}$/', (string) $schluessel)) {
+        $n = (string) (int) $schluessel;
+        if (isset($alle[$n])) {
+            return $alle[$n];
+        }
+    }
+    foreach ($alle as $f) {
+        if (isset($f['vin']) && strcasecmp((string) $f['vin'], (string) $schluessel) === 0) {
+            return $f;
+        }
+    }
+    return null;
+}
+
+/** Die Muster der Zusatzwerte - dieselben wie sk_param() im Endpunkt (abweisen, nie zurechtbiegen). */
+function sk_befehl_muster()
+{
+    return array('fahrzeug' => '/^([0-9]{1,2}|[A-Za-z0-9]{17})$/', 'temp' => '/^[0-9]{1,2}([.,][05])?$/',
+                 'prozent' => '/^[0-9]{1,3}$/');
+}
+
+/**
+ * Einen schaltenden Befehl annehmen - DIESELBE Funktion fuer den HTTP-Endpunkt und
+ * die Befehlsbruecke (Bauvorschrift G41 G2, Regeln/07 Abschnitt 3a). Pruefreihenfolge
+ * wie der Endpunkt bis 0.9.33 (dort inline): Aktion bekannt -> Muster -> Fahrzeug im
+ * Abbild (ausser abruf) -> Zusatzwert vorhanden (TEMP_FEHLT/PROZENT_FEHLT, C5: die
+ * Anfrage vor dem Dienst) -> Steuerung -> Dienst laeuft -> Einreihen. Skoda kennt
+ * keine eingreifenden Befehle (kein zweiter Haken) und keine Gleichwert-Bremse in PHP:
+ * die Entprellung des Dienstes (gleicher Befehl, gleicher Wert binnen 'entprellung' s)
+ * und die Stundenbremse gelten danach fuer alle Wege gemeinsam (eine Warteschlange).
+ * HTTP wartet auf den Dienst wie bisher; MQTT wartet nie (Quittung "uebergeben", E3).
+ *
+ * Rueckgabe array('ok' => 0|1|2, 'grund', 'http' => Code, 'zeilen' => Antwortzeilen des
+ * Endpunkts bei einer Abweisung, 'text' => Satz, 'art' => abgewiesen|gesetzt).
+ */
+function sk_befehl_annehmen($aktion, array $param, $fahrzeug, $quelle)
+{
+    $mqtt = ($quelle === 'mqtt');
+    $aktion = is_string($aktion) ? $aktion : '';
+    $raus = function ($grund, $http, array $zeilen) {
+        return array('ok' => 0, 'grund' => $grund, 'http' => $http, 'zeilen' => $zeilen,
+                     'text' => isset($zeilen[1]) ? $zeilen[1] : '', 'art' => 'abgewiesen');
+    };
+    $alle_befehle = sk_befehle();
+    if (!isset($alle_befehle[$aktion])) {
+        return $raus('UNBEKANNTE_AKTION', 400, array('FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION',
+            'Erlaubt sind: ' . implode(', ', array_merge(sk_lesende(), array_keys($alle_befehle)))));
+    }
+    $muster = sk_befehl_muster();
+    $fahrzeug = is_scalar($fahrzeug) ? (string) $fahrzeug : '';
+    if ($fahrzeug === '') {
+        $fahrzeug = '1';
+    }
+    $w = function ($k) use ($param) {
+        return (isset($param[$k]) && is_scalar($param[$k])) ? (string) $param[$k] : '';
+    };
+    foreach (array('fahrzeug' => $fahrzeug, 'temp' => $w('temp'), 'prozent' => $w('prozent')) as $k => $v) {
+        if ($v !== '' && !preg_match($muster[$k], $v)) {
+            return $raus('PARAMETER', 400, array('FEHLER;OK=0;GRUND=PARAMETER',
+                'Der Wert von ' . $k . ' passt nicht ins erlaubte Muster.'));
+        }
+    }
+    $alle = sk_fahrzeuge();
+    if ($aktion !== 'abruf' && sk_fahrzeug_suchen($alle, $fahrzeug) === null) {
+        // Nie auf Fahrzeug 1 zurueckfallen (0.9.12: eine fremde VIN klimatisierte das erste Auto).
+        $alter = sk_alter();
+        $alter = $alter < 0 ? 999999 : min(999999, $alter);
+        return $raus('FAHRZEUG_UNBEKANNT', 404, array(sprintf('SET;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d',
+            count($alle), $alter)));
+    }
+    $befehl = array('aktion' => $aktion, 'fahrzeug' => $fahrzeug);
+    if ($aktion === 'klima_start' || $aktion === 'zieltemperatur') {
+        if ($w('temp') === '') {
+            return $raus('TEMP_FEHLT', 400, array('SET;OK=0;GRUND=TEMP_FEHLT',
+                'Der Parameter temp fehlt (Zieltemperatur in Grad Celsius).'));
+        }
+        $befehl['temp'] = str_replace(',', '.', $w('temp'));
+    } elseif ($aktion === 'ladegrenze') {
+        if ($w('prozent') === '') {
+            return $raus('PROZENT_FEHLT', 400, array('SET;OK=0;GRUND=PROZENT_FEHLT'));
+        }
+        $befehl['prozent'] = (int) $w('prozent');
+    }
+    $cfg = sk_config();
+    if (empty($cfg['steuerung_ein'])) {
+        return $raus('STEUERUNG_AUS', 403, array('SET;OK=0;GRUND=STEUERUNG_AUS',
+            "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'."));
+    }
+    if (sk_dienst_pid() === 0) {
+        // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
+        return $raus('DIENST_LAEUFT_NICHT', 503, array('SET;OK=0;GRUND=DIENST_LAEUFT_NICHT',
+            "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'."));
+    }
+    // MQTT wartet nie (E3, Quittung "uebergeben"); HTTP wie bisher (Einstellung 'wartezeit').
+    list($erg, $meldung) = sk_befehl_absetzen($befehl, $mqtt ? 0 : null);
+    if ($mqtt && (int) $erg === 2) {
+        $meldung = 'Eingereiht - der Dienst arbeitet den Befehl ab; das Ergebnis steht im Protokoll und im Reiter Test.';
+    }
+    return array('ok' => (int) $erg, 'grund' => (int) $erg === 0 ? 'ABGELEHNT' : '', 'http' => (int) $erg === 0 ? 409 : 200,
+                 'zeilen' => array(), 'text' => (string) $meldung, 'art' => 'gesetzt');
+}
+
+/** Quittung der Bruecke: array(true, '') bei ok >= 1 (eingereiht), sonst array(false, Grund). */
+function sk_befehl_quittung($erg)
+{
+    if (is_array($erg) && isset($erg['ok']) && (int) $erg['ok'] >= 1) {
+        return array(true, '');
+    }
+    return array(false, (is_array($erg) && isset($erg['grund']) && $erg['grund'] !== '') ? (string) $erg['grund'] : 'FEHLER');
+}
+
+/** G5/E-E4: die Aussentemperatur aus Loxone merken (Bruecke <p>/befehl/aussentemp). Datei 0600, atomar. */
+function sk_aussentemp_merken($wert)
+{
+    $p = sk_paths();
+    if (!is_numeric($wert) || (float) $wert < -40 || (float) $wert > 60) {
+        return array('ok' => 0, 'grund' => 'WERT', 'http' => 400, 'text' => '', 'art' => 'abgewiesen');
+    }
+    if (!is_dir($p['datadir'])) {
+        return array('ok' => 0, 'grund' => 'DATENORDNER_FEHLT', 'http' => 503, 'text' => '', 'art' => 'abgewiesen');
+    }
+    if (!sk_json_schreiben($p['datadir'] . '/aussentemp.json', array('wert' => round((float) $wert, 1), 't' => time()), 0600)) {
+        return array('ok' => 0, 'grund' => 'MERKER', 'http' => 503, 'text' => '', 'art' => 'abgewiesen');
+    }
+    return array('ok' => 1, 'grund' => '', 'http' => 200, 'text' => 'gemerkt', 'art' => 'gesetzt');
+}
+
+/* ---------------- G2: Befehlsbruecke fuer die Oberflaeche (Abschrift au_bruecke_*) ---------------- */
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN). Rueckgabe true, wenn bb_waechter() danach da ist. */
+function sk_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $p = sk_paths();
+    $kand = array();
+    if ($p['home'] !== '') {
+        $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php';
+    }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) {
+                define('BB_NUR_LADEN', true);
+            }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste()). array(Liste oder null, Fehlertext). */
+function sk_bruecke_liste()
+{
+    if (!sk_bruecke_laden()) {
+        return array(null, sk_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) {
+        return array(null, $fehler);
+    }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) {
+        return array(null, $fehl[0]);
+    }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/** Nach dem Speichern im Reiter MQTT: start (Haken an) bzw. stop. array(rc|null, start|stop|'', Ausgabe). */
+function sk_bruecke_schalten($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = sk_config();
+    }
+    if (!sk_bruecke_laden()) {
+        return array(1, '', sk_t('BEFEHL.T_NICHT_DA'));
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array(1, '', 'keine LoxBerry-Installation erkannt');
+    }
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) {
+        return array(null, '', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/** Lage der Bruecke (Reiter Test, Reiter MQTT): array(true|false|null, Text); null = aus (Haken). */
+function sk_bruecke_lage()
+{
+    if (!sk_bruecke_laden()) {
+        return array(false, sk_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) {
+        return array(null, sk_t('BEFEHL.T_AUS'));
+    }
+    if ($soll !== 0) {
+        return array(false, sprintf(sk_t('BEFEHL.T_DEFEKT'), $grund));
+    }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(sk_t('BEFEHL.T_LAEUFT'), count($pids),
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = isset($zu['letzter']) && is_array($zu['letzter']) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(sk_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . sk_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo'));
+    return array(false, sprintf(sk_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/** befehlsbruecke.php --pruefen: array(rc, Zeilen). */
+function sk_bruecke_pruefen()
+{
+    if (!sk_bruecke_laden()) {
+        return array(1, array(sk_t('BEFEHL.T_NICHT_DA')));
+    }
+    $p = bb_pfade();
+    $skript = $p ? $p['bin'] . '/befehlsbruecke.php' : dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '') ? PHP_BINARY : 'php';
+    $aus = array();
+    $rc = 1;
+    @exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --pruefen 2>&1', $aus, $rc);
+    return array((int) $rc, $aus);
+}
+
+/** Der Rechnername fuer UDP-Adressen: nie die Rueckschleife (Regeln/07). */
+function sk_rechnername()
+{
+    $h = sk_host();
+    if (substr_count($h, ':') === 1) {
+        $h = substr($h, 0, strpos($h, ':'));
+    }
+    if (in_array(strtolower($h), array('', '127.0.0.1', 'localhost', '::1', '[::1]'), true)) {
+        $g = gethostname();
+        $h = ($g !== false && $g !== '') ? $g : 'loxberry';
+    }
+    return $h;
+}
+
+/** Die Vorlage "Skoda MQTT-Befehle" aus bb_vorlage() (CRLF, /dev/udp/<rechner>/<Udpinport>). array(Name, Inhalt|''). */
+function sk_vorlage_befehle()
+{
+    list($l) = sk_bruecke_liste();
+    if ($l === null) {
+        return array('VQ_skodaconnect_mqtt.xml', '');
+    }
+    $bp = bb_pfade();
+    $port = $bp ? bb_broker($bp)['udpin'] : 11884;
+    return array('VQ_skodaconnect_mqtt.xml', bb_vorlage($l, sk_rechnername(), $port));
+}
+
+/* ---------------- G4/G5: Haus-Quellen fuer den Reiter Test ---------------- */
+
+/** Welche Haus-Quellen liest der Dienst bei dieser Konfiguration? Name => Satz des Rueckfalls. Dieselbe Bedingung wie haus_themen() in bin/skoda.py. */
+function sk_haus_quellen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = sk_config();
+    }
+    $q = array();
+    if (!empty($cfg['abfahrt_ein']) && !empty($cfg['haus_abfahrt_ein'])) {
+        $q['abfahrt'] = 'HAUS.RUECK_ABFAHRT';
+    }
+    if ((!empty($cfg['abfahrt_ein']) && !empty($cfg['vorklima_anwesend_ein']))
+        || (!empty($cfg['ankunft_ein']) && trim((string) $cfg['ankunft_quelle']) !== '')) {
+        $q['anwesenheit'] = 'HAUS.RUECK_ANWESENHEIT';
+    }
+    if (!empty($cfg['haus_strompreis_ein'])
+        || ($cfg['ladeempf_quelle'] === 'haus' && (string) $cfg['empf_grenze'] !== '')) {
+        $q['strompreis'] = 'HAUS.RUECK_STROMPREIS';
+    }
+    return $q;
+}
+
+/**
+ * Die Zeilen der Haus-Quellen aus dem Zustand des Dienstes (zustand.json 'haus'):
+ * Liste von array(Bezeichnung, 1|0, Text). Die Oberflaeche liest nur, was der Dienst
+ * gesehen hat (dieselbe Regel wie beim Horcher).
+ */
+function sk_haus_pruefzeilen($cfg = null)
+{
+    $z = sk_zustand();
+    $h = isset($z['haus']) && is_array($z['haus']) ? $z['haus'] : array();
+    $aus = array();
+    foreach (sk_haus_quellen($cfg) as $q => $rueck) {
+        $e = isset($h[$q]) && is_array($h[$q]) ? $h[$q] : array();
+        $bez = sprintf(sk_t('HAUS.ZEILE'), 'haus/' . $q);
+        if (!empty($e['frisch'])) {
+            $aus[] = array($bez, 1, sprintf(sk_t('HAUS.FRISCH'), isset($e['alter']) ? (int) $e['alter'] : 0));
+        } elseif (isset($e['seit']) && (int) $e['seit'] > 0) {
+            $aus[] = array($bez, 0, sprintf(sk_t('HAUS.SCHWEIGT'), max(0, (int) round((time() - (int) $e['seit']) / 60)))
+                . ' ' . sk_t($rueck));
+        } else {
+            $aus[] = array($bez, 0, sk_t('HAUS.NIE') . ' ' . sk_t($rueck));
+        }
+    }
+    return $aus;
+}
+
+/** G5: Zeile Vorklimatisierung im Reiter Test aus vorklima.json des Dienstes: array(1|0|2, Text) oder null (aus). */
+function sk_vorklima_pruefzeile($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = sk_config();
+    }
+    if (empty($cfg['abfahrt_ein'])) {
+        return null;
+    }
+    $nr = (string) max(1, (int) $cfg['abfahrt_fahrzeug']);
+    $d = sk_json_lesen(sk_paths()['datadir'] . '/vorklima.json');
+    $m = (isset($d['vorklima'][$nr]) && is_array($d['vorklima'][$nr])) ? $d['vorklima'][$nr] : array();
+    if (!sk_fahrzeug_suchen(sk_fahrzeuge(), $nr) && sk_fahrzeuge()) {
+        return array(0, sprintf(sk_t('HAUS.VK_FZ_FEHLT'), $nr));
+    }
+    if (!isset($m['kennung'])) {
+        return array(2, sprintf(sk_t('HAUS.VK_NICHTS'), $nr));
+    }
+    $st = !empty($m['aufgegeben']) ? 0 : 1;
+    return array($st, sprintf(sk_t('HAUS.VK_STAND'), $nr, date('H:i', (int) $m['kennung']),
+        isset($m['versuche']) ? (int) $m['versuche'] : 0,
+        !empty($m['erfolg']) ? sk_t('HAUS.VK_ERFOLG') : (!empty($m['mild']) ? sk_t('HAUS.VK_MILD')
+            : (!empty($m['aufgegeben']) ? sk_t('HAUS.VK_AUFGEGEBEN') : sk_t('HAUS.VK_OFFEN')))));
+}
+
+
+/* ---------------- Healthcheck (Nachtrag 29.10.2026, bin/healthcheck) ---------------- */
+
+/**
+ * Das Urteil des LoxBerry-Healthchecks (bin/healthcheck), rein - Form von Renault NG 2.1.20
+ * (rn_gesund_urteil/rn_gesund_fakten). Regeln/03 :73 (Skala 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis),
+ * Regeln/04 :809 (nie auf einen einzelnen Abruf: geurteilt wird ueber das ALTER von Lebenszeichen und letztem
+ * gelungenem Abruf), Regeln/04 :826 (ein Text nennt nur Zustaende, die in derselben Verzweigung gemessen sind).
+ * $f: eingerichtet (bool), soll (bool, Sollmerker), pid (int; 0 = kein Prozess des Plugins - gefunden ueber
+ * /proc/<pid>/cmdline, die PID-Datei allein genuegt nicht), start_alter_s (int, -1 = unbekannt),
+ * leben_alter_s (int, -1 = keins), takt_s (int), erfolg_alter_s (int, -1 = noch nie), fehler_folge (int),
+ * fahrzeuge (int), mqtt_ein (bool), gateway (array gefunden/autostart/udpport), broker_fehler (bool|null,
+ * null = keine Aussage), v2 (array(lage, Text)), bruecke_soll (bool), bruecke_laeuft (bool|null).
+ * Rueckgabe array(status, Text); der Text traegt keine Zugangsdaten, VIN, Kennzeichen oder Fahrzeugnamen.
+ */
+function sk_gesund_urteil(array $f)
+{
+    $f += array('eingerichtet' => false, 'soll' => false, 'pid' => 0, 'start_alter_s' => -1, 'leben_alter_s' => -1,
+                'takt_s' => 300, 'erfolg_alter_s' => -1, 'fehler_folge' => 0, 'fahrzeuge' => 0, 'mqtt_ein' => false,
+                'gateway' => array(), 'broker_fehler' => null, 'v2' => array(null, ''), 'bruecke_soll' => false,
+                'bruecke_laeuft' => null);
+    if (!$f['eingerichtet']) {
+        return array(6, 'nicht eingerichtet - Zugangsdaten im Reiter Einstellungen eintragen');
+    }
+    $pid = (int) $f['pid'];
+    if (!$f['soll'] && $pid <= 0) {
+        return array(6, 'Abrufdienst angehalten (so eingestellt, kein Fehler) - Start im Reiter Einstellungen');
+    }
+    $befunde = array();
+    $status = 5;
+    $setze = function ($s, $t) use (&$status, &$befunde) {
+        if ($s < $status) {
+            $status = $s;
+        }
+        $befunde[] = $t;
+    };
+    $takt = max(60, (int) $f['takt_s']);
+    if ($pid <= 0) {
+        $setze(3, 'Abrufdienst soll laufen, es laeuft aber keiner');
+    } else {
+        $a = (int) $f['leben_alter_s'];
+        $g = max(600, 3 * $takt);
+        if ($a < 0) {
+            $setze(4, 'Abrufdienst laeuft, hat aber noch kein Lebenszeichen geschrieben');
+        } elseif ($a > $g) {
+            $setze(3, sprintf('Abrufdienst laeuft, meldet sich aber seit %d min nicht mehr (erwartet hoechstens %d min)',
+                (int) round($a / 60), (int) round($g / 60)));
+        }
+    }
+    /* Nach einem Neustart (auch cron.reboot) zaehlt die Zeit SEIT DEM START: ein Erfolg von vor dem Herunterfahren
+     * ist kein Befund ueber den laufenden Dienst. */
+    $e = (int) $f['erfolg_alter_s'];
+    $s0 = (int) $f['start_alter_s'];
+    $seit_start = $pid > 0 && $s0 >= 0 && ($e < 0 || $e > $s0);
+    $e_eff = $seit_start ? $s0 : $e;
+    $folge = (int) $f['fehler_folge'] > 0 ? sprintf(' (%d Fehlversuche in Folge)', (int) $f['fehler_folge']) : '';
+    $satz = $seit_start ? 'seit dem Start vor %d min kein gelungener Abruf' : 'letzter gelungener Abruf vor %d min';
+    if ($e_eff < 0) {
+        $setze(4, 'noch kein gelungener Abruf' . $folge);
+    } elseif ($e_eff > max(3600, 6 * $takt)) {
+        $setze(3, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    } elseif ($e_eff > max(900, 3 * $takt)) {
+        $setze(4, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    }
+    if ($f['mqtt_ein']) {
+        $gw = is_array($f['gateway']) ? $f['gateway'] : array();
+        if (empty($gw['gefunden']) || empty($gw['udpport'])) {
+            $setze(4, 'MQTT eingeschaltet, aber kein MQTT-Gateway mit UDP-Eingang eingerichtet - es wird nichts gesendet');
+        } elseif (empty($gw['autostart'])) {
+            $setze(4, 'MQTT eingeschaltet, aber das MQTT-Gateway steht nicht auf Autostart');
+        }
+    }
+    if ($f['broker_fehler'] === true) {
+        $setze(4, 'keine Verbindung zum MQTT-Broker - Haus-Themen (Abfahrt, Anwesenheit, Strompreis) kommen nicht an');
+    }
+    if (is_array($f['v2']) && isset($f['v2'][0]) && $f['v2'][0] === 0) {
+        $setze(4, 'Gateway V2: ' . (isset($f['v2'][1]) ? (string) $f['v2'][1] : ''));
+    }
+    if ($f['bruecke_soll'] && $f['bruecke_laeuft'] === false) {
+        $setze(4, 'Befehle ueber MQTT eingeschaltet, aber die Befehlsbruecke steht');
+    }
+    if (!$befunde) {
+        if ($seit_start) {
+            return array(5, sprintf('in Ordnung - Abrufdienst laeuft seit %d min, %d Fahrzeug(e), seit dem Start noch '
+                . 'kein gelungener Abruf', (int) round($s0 / 60), (int) $f['fahrzeuge']));
+        }
+        return array(5, sprintf('in Ordnung - Abrufdienst laeuft, %d Fahrzeug(e), letzter gelungener Abruf vor %d min',
+            (int) $f['fahrzeuge'], (int) round($e / 60)));
+    }
+    return array($status, implode('; ', $befunde));
+}
+
+/** Die Fakten des Healthchecks - nur lesend: kein Netz, kein Broker, keine Anmeldung, keine Datei, kein Protokoll. */
+function sk_gesund_fakten(array $cfg)
+{
+    clearstatcache();
+    $p = sk_paths();
+    $jetzt = time();
+    $f = array();
+    $f['eingerichtet'] = (bool) sk_zugang_da();
+    $f['soll'] = (int) sk_dienst_soll() === 1;
+    $f['pid'] = (int) sk_dienst_pid();
+    /* Der Start des laufenden Dienstes: die PID-Datei, wenn sie genau diesen Prozess nennt. */
+    $start = 0;
+    $pf = $p['datadir'] . '/dienst.pid';
+    if ($f['pid'] > 0 && is_file($pf) && (int) trim((string) @file_get_contents($pf)) === $f['pid']) {
+        $start = (int) @filemtime($pf);
+    }
+    $f['start_alter_s'] = $start > 0 ? max(0, $jetzt - $start) : -1;
+    $zu = json_decode((string) @file_get_contents($p['datadir'] . '/zustand.json'), true);
+    $zu = is_array($zu) ? $zu : array();
+    $zts = isset($zu['ts']) && is_numeric($zu['ts']) ? (int) $zu['ts'] : 0;
+    $zu_frisch = $zts > 0 && $zts >= $start;          // vom laufenden Dienst geschrieben, nicht von einem frueheren
+    $lox = json_decode((string) @file_get_contents($p['datadir'] . '/loxone.json'), true);
+    $lox = is_array($lox) ? $lox : array();
+    $f['takt_s'] = isset($cfg['intervall']) && is_numeric($cfg['intervall']) ? (int) $cfg['intervall'] : 300;
+    if ($zu_frisch && isset($zu['intervall']) && is_numeric($zu['intervall'])) {
+        $f['takt_s'] = (int) $zu['intervall'];
+    }
+    $lts = max($zts, $start);
+    $f['leben_alter_s'] = $lts > 0 ? max(0, $jetzt - $lts) : -1;
+    $ts = isset($lox['ts']) && is_numeric($lox['ts']) ? (int) $lox['ts'] : 0;
+    $f['erfolg_alter_s'] = $ts > 0 ? max(0, $jetzt - $ts) : -1;
+    $f['fahrzeuge'] = isset($lox['fahrzeuge']) && is_array($lox['fahrzeuge']) ? count($lox['fahrzeuge']) : 0;
+    $f['fehler_folge'] = ($zu_frisch && isset($zu['fehler_folge']) && is_numeric($zu['fehler_folge']))
+        ? (int) $zu['fehler_folge'] : 0;
+    $f['mqtt_ein'] = !empty($cfg['mqtt_ein']);
+    $f['gateway'] = sk_mqtt_zustand();
+    $f['broker_fehler'] = null;
+    if ($f['pid'] > 0 && $zu_frisch) {
+        $gr = (isset($zu['horcher']) && is_string($zu['horcher'])) ? trim($zu['horcher']) : '';
+        if (array_key_exists('horcher_verbunden', $zu)) {
+            $f['broker_fehler'] = $gr !== '' && empty($zu['horcher_verbunden']);
+        }
+    }
+    $f['v2'] = sk_v2_haken_lage($cfg);
+    $f['bruecke_soll'] = !empty($cfg['befehle_mqtt_ein']);
+    $f['bruecke_laeuft'] = null;
+    if ($f['bruecke_soll'] && sk_bruecke_laden()) {
+        $l = sk_bruecke_lage();
+        $f['bruecke_laeuft'] = $l[0] === true;
+    }
+    return $f;
 }
