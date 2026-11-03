@@ -428,6 +428,8 @@ function sk_pruefungen($netz = true)
     foreach (sk_haus_pruefzeilen($cfg) as $sk_hz) {
         $zeilen[] = sk_pruefzeile((int) $sk_hz[1], sk_e($sk_hz[0]), sk_e($sk_hz[2]));
     }
+    list($sk_sfs, $sk_sft) = sk_sammel_lage($cfg);
+    $zeilen[] = sk_pruefzeile($sk_sfs, sk_t('EINST.F_HAUS_FAHRZEUG'), sk_e($sk_sft));
     $sk_vz = sk_vorklima_pruefzeile($cfg);
     if ($sk_vz !== null) {
         $zeilen[] = sk_pruefzeile($sk_vz[0] === 2 ? -1 : (int) $sk_vz[0], sk_t('HAUS.VK_FRAGE'), sk_e($sk_vz[1]));
@@ -711,7 +713,7 @@ function sk_themen_vergleich()
 function sk_ansage_zeile($netz)
 {
     $cfg = sk_config();
-    list($st, $html) = ansage_pruefzeile(sk_tts(), (bool) $netz, sk_ansage_k());
+    list($st, $html) = ansage_pruefzeile(sk_ansage_pruefblock(), (bool) $netz, sk_ansage_k());
     $an = array();
     foreach (sk_ansage_anlaesse() as $a) {
         if (!empty($cfg[$a[0]])) {

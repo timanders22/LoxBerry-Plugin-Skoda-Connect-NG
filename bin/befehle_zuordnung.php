@@ -102,7 +102,8 @@ return array(
                      'mqtt_ein'    => !empty($c['mqtt_ein']));
     },
     'protokoll' => function ($stufe, $text) {
-        sk_log_zeile('Befehlsbruecke: ' . ($stufe === 'INFO' ? '' : $stufe . ' ') . $text);
+        // 0.9.36: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 0.9.35 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        sk_log_zeile(($stufe === 'INFO' ? '' : $stufe . ' ') . $text);
     },
     'teile' => array('nr' => '[2-9]'),
     'befehle' => $sk_befehle_mqtt,

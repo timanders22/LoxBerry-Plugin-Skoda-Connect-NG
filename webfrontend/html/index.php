@@ -78,11 +78,13 @@ if ($sk_lage_datei['lage'] === 'kaputt') {
     $sk_ist0 = isset($_GET['token']) && is_string($_GET['token']) ? (string) $_GET['token'] : '';
     if ($sk_zt !== '' && ($sk_ist0 === '' || !hash_equals($sk_zt, $sk_ist0))) {
         http_response_code(403);
-        echo isset($_GET['selftest']) ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
+        /* 0.9.36 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 0.9.35 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+         * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+        echo !empty($_GET['selftest']) ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
         exit;
     }
     http_response_code(503);
-    if (isset($_GET['selftest'])) {
+    if (!empty($_GET['selftest'])) {
         echo "SELFTEST;OK=0;ERR=KONFIG_KAPUTT\n";
         exit;
     }
@@ -122,7 +124,7 @@ if ($sk_soll === '') {
         exit;
     }
     http_response_code(403);
-    if (isset($_GET['selftest'])) {
+    if (!empty($_GET['selftest'])) {
         echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
         exit;
     }
@@ -132,7 +134,7 @@ if ($sk_soll === '') {
 }
 if (!hash_equals($sk_soll, $sk_ist)) {
     http_response_code(403);
-    if (isset($_GET['selftest'])) {
+    if (!empty($_GET['selftest'])) {
         echo "SELFTEST;OK=0;ERR=TOKEN\n";
         exit;
     }
@@ -159,7 +161,7 @@ if (!hash_equals($sk_soll, $sk_ist)) {
  *   - Kein Geraetekontakt, kein Schreibzugriff, kein Protokolleintrag. Er
  *     beantwortet genau eine Frage: stimmt das Token.
  */
-if (isset($_GET['selftest'])) {
+if (!empty($_GET['selftest'])) {
     echo "SELFTEST;OK=1;TOKEN=OK\n";
     exit;
 }

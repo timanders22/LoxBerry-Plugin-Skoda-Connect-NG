@@ -489,7 +489,8 @@ if ($sk_post && isset($_POST['speichern'])) {
     $sk_tbean = array();
     $sk_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $sk_cfg['tts'] = ansage_formular_lesen($_POST, sk_tts(), $sk_tmangel, $sk_tbean,
-        array('modi' => sk_ansage_modi(), 'ziele' => sk_mit_zielen()), sk_ansage_k(), $sk_thinw);
+        array('modi' => sk_ansage_modi(), 'ziele' => sk_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), sk_ansage_k(), $sk_thinw);
+    list($sk_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, sk_ansage_regeln($sk_cfg), array(), $sk_tmangel, $sk_tbean, sk_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($sk_tmangel as $sk_tm) {
         $sk_fehler[] = sk_e($sk_tm['text']);
     }
@@ -502,7 +503,7 @@ if ($sk_post && isset($_POST['speichern'])) {
          * (ansage_x2_felder() nennt die Token nicht). */
         $sk_eingaben = sk_eingaben_sammeln('einst', array_merge($sk_zahlfelder,
             array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken'),
-            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt()), sk_ziele_x2_felder()), $sk_falsch);
+            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt()), ansage_regeln_x2_felder(), sk_ziele_x2_felder()), $sk_falsch);
     } elseif (sk_config_speichern($sk_cfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
         foreach ($sk_thinw as $sk_th) { $sk_warnungen[] = $sk_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
@@ -552,6 +553,7 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
     $sk_leer = array();
     $sk_vorher = array((int) $sk_mcfg['mqtt_ein'], (int) $sk_mcfg['mqtt_retain'], (string) $sk_mcfg['mqtt_topic']);
     $sk_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $sk_mcfg['haus_fahrzeug_ein'] = isset($_POST['haus_fahrzeug_ein']) ? 1 : 0;
     $sk_mcfg['mqtt_retain'] = isset($_POST['mqtt_retain']) ? 1 : 0;
     $sk_roh = isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '';
     if (!is_string($sk_roh)) {
@@ -599,11 +601,11 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
      * Dieselben Regeln wie sk_regeln(); eine Beanstandung speichert nichts (O2). */
     foreach (array('haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein',
                    'haus_strompreis_ein', 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch',
-                   'signal_offen', 'signal_ausfall', 'signal_vorklima') as $sk_feld) {
+                   'signal_offen', 'signal_ausfall', 'signal_vorklima', 'signal_kabel', 'vorklima_nur_kabel') as $sk_feld) {
         $sk_mcfg[$sk_feld] = isset($_POST[$sk_feld]) ? 1 : 0;
     }
     foreach (array('abfahrt_fahrzeug', 'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle',
-                   'ladeempf_quelle', 'signal_praefix') as $sk_feld) {
+                   'ladeempf_quelle', 'signal_praefix', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $sk_feld) {
         $sk_name = sk_t('EINST.L_' . strtoupper($sk_feld));
         $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
         if (!is_string($sk_roh)) {
@@ -652,7 +654,8 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
             'abfahrt_fahrzeug', 'haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein',
             'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_ein', 'ankunft_quelle',
             'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein', 'signal_praefix', 'signal_laden_fertig',
-            'signal_laden_abbruch', 'signal_offen', 'signal_ausfall', 'signal_vorklima'), $sk_falsch);
+            'signal_laden_abbruch', 'signal_offen', 'signal_ausfall', 'signal_vorklima', 'haus_fahrzeug_ein',
+            'signal_kabel', 'vorklima_nur_kabel', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc'), $sk_falsch);
     } elseif (sk_config_speichern($sk_mcfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
         foreach ($sk_leer as $sk_l) {
@@ -801,9 +804,9 @@ if ($sk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $sk_tnur === 0) {
         $sk_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($sk_tnur >= 1) {
-        $sk_tr = ansage_testansage(sk_tts(), $sk_tk, $sk_tnur);
+        $sk_tr = ansage_testansage(sk_ansage_vor_ort(), $sk_tk, $sk_tnur);
     } else {
-        $sk_tr = ansage_testansage(sk_tts(), $sk_tk);
+        $sk_tr = ansage_testansage(sk_ansage_vor_ort(), $sk_tk);
     }
     sk_log('Testansage' . ($sk_tnur >= 1 ? ' an Ziel ' . $sk_tnur : '') . ': ' . ansage_kurz($sk_tr));
     if ($sk_tr['stand'] === 1) {
@@ -1060,6 +1063,8 @@ if ($sk_rahmen) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -1410,6 +1415,11 @@ if ($sk_rahmen) {
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => sk_mit_zielen(),
 'ziele_post' => (sk_fa('einst') && isset($sk_eingaben['werte']) && is_array($sk_eingaben['werte'])) ? sk_ziele_x2_post($sk_eingaben['werte']) : null), sk_ansage_k()); ?>
+<?= ansage_regeln_html(sk_ansage_regeln($sk_cfg), array(), array(), array(
+    'w' => function ($n, $g) { return sk_fw('einst', $n, $g); },
+    'm' => function ($n) { return sk_fm(sk_ziele_x2_name($n)); },
+    'c' => function ($n, $g) { return sk_fh('einst', $n, $g); },
+    'token_vor_ort' => true), sk_ansage_k()) ?>
 <h3><?= sk_e(sk_t('EINST.H_ANSAGE_ANLAESSE')) ?></h3>
 <?php foreach (sk_ansage_anlaesse() as $sk_a) { ?>
 <div class="sm-feld">
@@ -1544,6 +1554,13 @@ if ($sk_x3) { ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_MQTT_RETAIN') ?></div>
 </div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_fahrzeug_ein" value="1" <?= sk_fh('mqtt', 'haus_fahrzeug_ein', !empty($sk_cfg['haus_fahrzeug_ein'])) ? 'checked' : '' ?>>
+    <?= sk_e(sk_t('EINST.L_HAUS_FAHRZEUG_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_HAUS_FAHRZEUG_EIN') ?></div>
+</div>
 <h2><?= sk_e(sk_t('MQTT.H_HORCHER')) ?></h2>
 <div class="sm-warnung"><?= sk_t('MQTT.HORCHER_WARNUNG') ?></div>
 <h3><?= sk_e(sk_t('MQTT.H_EMPFEHLUNG')) ?></h3>
@@ -1628,6 +1645,39 @@ if ($sk_x3) { ?>
 <div class="sm-feld">
   <label for="vorklima_heiss_ueber"><?= sk_e(sk_t('EINST.L_VORKLIMA_HEISS_UEBER')) ?></label>
   <input data-role="none" type="<?= sk_ftyp('vorklima_heiss_ueber') ?>" id="vorklima_heiss_ueber" name="vorklima_heiss_ueber" value="<?= sk_e(sk_fw('mqtt', 'vorklima_heiss_ueber', (int) $sk_cfg['vorklima_heiss_ueber'])) ?>"<?= sk_fm('vorklima_heiss_ueber') ?> min="<?= (int) $sk_regeln_anz['vorklima_heiss_ueber'][1] ?>" max="<?= (int) $sk_regeln_anz['vorklima_heiss_ueber'][2] ?>">
+</div>
+<div class="sm-feld">
+  <label for="vorklima_min_soc"><?= sk_e(sk_t('EINST.L_VORKLIMA_MIN_SOC')) ?></label>
+  <input data-role="none" type="number" id="vorklima_min_soc" name="vorklima_min_soc" value="<?= sk_e(sk_fw('mqtt', 'vorklima_min_soc', (string) $sk_cfg['vorklima_min_soc'])) ?>"<?= sk_fm('vorklima_min_soc') ?> min="0" max="100">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_VORKLIMA_MIN_SOC') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="vorklima_nur_kabel" value="1" <?= sk_fh('mqtt', 'vorklima_nur_kabel', !empty($sk_cfg['vorklima_nur_kabel'])) ? 'checked' : '' ?><?= sk_fm('vorklima_nur_kabel') ?>>
+    <?= sk_e(sk_t('EINST.L_VORKLIMA_NUR_KABEL')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sk_t('EINST.H_VORKLIMA_NUR_KABEL') ?></div>
+</div>
+<h3><?= sk_e(sk_t('EINST.H_SAMMEL_KABEL')) ?></h3>
+<p class="sm-hilfe"><?= sk_t('EINST.SAMMEL_KABEL_HILFE') ?></p>
+<div class="sm-feld">
+  <label for="kabel_soc"><?= sk_e(sk_t('EINST.L_KABEL_SOC')) ?></label>
+  <input data-role="none" type="number" id="kabel_soc" name="kabel_soc" value="<?= sk_e(sk_fw('mqtt', 'kabel_soc', (string) $sk_cfg['kabel_soc'])) ?>"<?= sk_fm('kabel_soc') ?> min="1" max="100">
+</div>
+<div class="sm-feld">
+  <label for="kabel_uhr"><?= sk_e(sk_t('EINST.L_KABEL_UHR')) ?></label>
+  <input data-role="none" type="time" id="kabel_uhr" name="kabel_uhr" value="<?= sk_e(sk_fw('mqtt', 'kabel_uhr', (string) $sk_cfg['kabel_uhr'])) ?>"<?= sk_fm('kabel_uhr') ?>>
+</div>
+<div class="sm-feld">
+  <label for="kabel_abfahrt_min"><?= sk_e(sk_t('EINST.L_KABEL_ABFAHRT_MIN')) ?></label>
+  <input data-role="none" type="number" id="kabel_abfahrt_min" name="kabel_abfahrt_min" value="<?= sk_e(sk_fw('mqtt', 'kabel_abfahrt_min', (string) $sk_cfg['kabel_abfahrt_min'])) ?>"<?= sk_fm('kabel_abfahrt_min') ?> min="0" max="720">
+  <div class="sm-hilfe"><?= sk_t('EINST.H_KABEL_ABFAHRT_MIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_kabel" value="1" <?= sk_fh('mqtt', 'signal_kabel', !empty($sk_cfg['signal_kabel'])) ? 'checked' : '' ?><?= sk_fm('signal_kabel') ?>>
+    <?= sk_e(sk_t('EINST.L_SIGNAL_KABEL')) ?>
+  </label>
 </div>
 <h3><?= sk_e(sk_t('EINST.H_ANKUNFT')) ?></h3>
 <div class="sm-feld">
@@ -2379,6 +2429,7 @@ foreach (sk_bausteinliste($sk_bnr) as $sk_bs) { ?>
    ohne weitere Ziele nichts. */
 if (sk_mit_zielen()) { echo ansage_testknoepfe_html(sk_tts(), sk_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+<?= sk_ansage_lage_html() ?>
 </div>
 
 <h3><?= sk_e(sk_t('TEST.H_SCHALTEN')) ?></h3>

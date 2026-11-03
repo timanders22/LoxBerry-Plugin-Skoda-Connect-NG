@@ -222,7 +222,18 @@ function sk_vorgaben()
         'signal_offen'          => 1,
         'signal_ausfall'        => 1,
         'signal_vorklima'       => 1,
-        'tts'            => ansage_vorgaben('aus'),
+        // Sammelthemen und Kabel-Warnung (0.9.36, Regeln/07): dieselben Werte wie VORGABEN im Dienst.
+        'haus_fahrzeug_ein'      => 1,
+        'kabel_soc'              => 30,
+        'kabel_uhr'              => '20:00',
+        'kabel_abfahrt_min'      => 60,
+        'signal_kabel'           => 1,
+        'vorklima_min_soc'       => 20,
+        'vorklima_nur_kabel'     => 0,
+        'ansage_kabel_vergessen' => 1,
+        'tts'            => ansage_werk_block(),     // Stamm 1.3.2: ab Werk an, nur fuer einen nie gespeicherten Block
+        'ansage_regeln' => ansage_regeln_vorgaben(),
+        'ansage_token_herkunft' => array(),
         'aktionstoken'   => '',
         'wartezeit'      => 8,
     );
@@ -321,6 +332,15 @@ function sk_regeln()
         'signal_offen'          => array('schalt'),
         'signal_ausfall'        => array('schalt'),
         'signal_vorklima'       => array('schalt'),
+        /* 0.9.36: Sammelthemen, Kabel-Warnung, Mindest-Akku */
+        'haus_fahrzeug_ein'      => array('schalt'),
+        'kabel_soc'              => array('ganz', 1, 100),
+        'kabel_uhr'              => array('text', '#^([01][0-9]|2[0-3]):[0-5][0-9]$#', 5),
+        'kabel_abfahrt_min'      => array('ganz', 0, 720),
+        'signal_kabel'           => array('schalt'),
+        'vorklima_min_soc'       => array('ganz', 0, 100),
+        'vorklima_nur_kabel'     => array('schalt'),
+        'ansage_kabel_vergessen' => array('schalt'),
     );
 }
 
@@ -561,6 +581,17 @@ function sk_config_lage()
     foreach ($datei as $k => $w) {
         if (!array_key_exists($k, $vorgaben)) {
             $fremd[] = (string) $k;
+            continue;
+        }
+        /* Stamm 1.3.2: die Regeln nach dem Stamm, der Vermerk als Liste. */
+        if ($k === 'ansage_regeln') {
+            $s4_g = '';
+            $s4_r = ansage_regeln_wert($w, $s4_g);
+            if ($s4_r !== null) { $cfg['ansage_regeln'] = $s4_r; } else { $abgewiesen[] = 'ansage_regeln'; }
+            continue;
+        }
+        if ($k === 'ansage_token_herkunft') {
+            $cfg['ansage_token_herkunft'] = is_array($w) ? $w : array();
             continue;
         }
         if ($k === 'tts') {
@@ -2507,13 +2538,14 @@ function sk_ansage_anlaesse()
         'licht'         => array('ansage_licht', 'EINST.L_ANSAGE_LICHT', 'SK_ANSAGE.S_LICHT'),
         'klima'         => array('ansage_klima', 'EINST.L_ANSAGE_KLIMA', 'SK_ANSAGE.S_KLIMA'),
         'ausfall'       => array('ansage_ausfall', 'EINST.L_ANSAGE_AUSFALL', 'SK_ANSAGE.S_AUSFALL'),
+        'kabel_vergessen' => array('ansage_kabel_vergessen', 'EINST.L_ANSAGE_KABEL', 'SK_ANSAGE.S_KABEL'),
     );
 }
 
 /** Die Schluessel, die mit 0.9.30 dazukamen - eine aeltere Sicherung kennt sie nicht. */
 function sk_ansage_neue_schluessel()
 {
-    $s = array('tts');
+    $s = array('tts', 'ansage_regeln', 'ansage_token_herkunft');
     foreach (sk_ansage_anlaesse() as $a) {
         $s[] = $a[0];
     }
@@ -2529,10 +2561,189 @@ function sk_tts()
 }
 
 /** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte. */
+/** Der Block tts aus einer schon gelesenen Konfiguration (Stamm 1.3.2): Ein gespeicherter bleibt, auch 'aus'; ein nie gespeicherter kommt aus den Vorgaben, also ab Werk an. */
+function sk_tts_von($cfg)
+{
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : ansage_werk_block(), 'aus');
+    return $t;
+}
+
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (0.9.36, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('SK_ANSAGE_HOECHSTALTER')) { define('SK_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function sk_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = sk_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function sk_ansage_warte($fn)
+{
+    $d = sk_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function sk_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    sk_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; sk_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function sk_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = sk_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(sk_tts_von($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), sk_ansage_k());
+    if (!$g) { return false; }
+    $cfg = sk_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!sk_config_speichern($cfg)) { return false; }
+    sk_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function sk_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = sk_config(); }
+    return ansage_token_fuer_lauf(sk_tts_von($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), sk_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function sk_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = sk_config(); }
+    $t = sk_tts_von($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(sk_ansage_vor_ort($cfg), sk_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function sk_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = sk_config(); }
+    $k = sk_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(sk_tts_von($cfg), sk_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function sk_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function sk_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = sk_config();
+    $k = sk_ansage_k();
+    $t = $tts === null ? sk_tts_von($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, sk_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function sk_ansage_senden($jetzt = null)
+{
+    $d = sk_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = sk_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= SK_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = sk_config();
+        sk_ansage_token_pflegen($conf);
+        $conf = sk_config();
+        $a = ansage_regel_sprechen($frisch, sk_tts_von($conf), sk_ansage_regeln($conf), sk_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { sk_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            sk_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/** Der Kontext des Moduls. */
 function sk_ansage_k()
 {
     $p = sk_paths();
     return array(
+        'werk' => ansage_werk_modus(),
         'port'   => ansage_webport(($p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__)))
                                    . '/config/system/general.json'),
         'kopf'   => array('User-Agent: LoxBerry SkodaConnect'),
@@ -2560,6 +2771,9 @@ function sk_ansage_satz($anlass, $nr, $name, $soc = null, $grenze = null)
     $wer = ($name !== '') ? $name : sprintf(sk_t('SK_ANSAGE.FAHRZEUG_NR'), (int) $nr);
     if ($anlass === 'ausfall') {
         return sk_t('SK_ANSAGE.S_AUSFALL');
+    }
+    if ($anlass === 'kabel_vergessen') {
+        return sprintf(sk_t('SK_ANSAGE.S_KABEL'), $wer, (int) $soc);
     }
     if ($anlass === 'laden_fertig') {
         $s = sprintf(sk_t('SK_ANSAGE.S_LADEN_FERTIG'), $wer);
@@ -2706,6 +2920,15 @@ function sk_sicherung_lesen($roh)
             $anzahl++;
             continue;
         }
+        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
+            $s2_g = '';
+            $s2_r = ansage_regeln_wert($w, $s2_g);
+            if ($s2_r === null) { $mangel[] = sk_t('EINST.SICH_REGELN'); $namen[] = 'ansage_regeln'; continue; }
+            $neu['ansage_regeln'] = $s2_r;
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
@@ -2848,6 +3071,7 @@ function sk_sicherung_schreiben($mit_zugang = false, $pruefen = true)
     if (isset($aus['tts']) && is_array($aus['tts'])) {
         $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']);
     }
+    unset($aus['ansage_token_herkunft']);     // Stamm 1.3.2: der Vermerk geht nie in eine Sicherung
     if ($mit_zugang) {
         $z = sk_json_lesen(sk_paths()['zugang']);
         $aus['zugang'] = array(
@@ -2943,13 +3167,40 @@ function sk_flash_lesen()
  * ================================================================== */
 
 /** Die Schluessel, die mit 0.9.34 dazukamen - eine aeltere Sicherung kennt sie nicht; die Anlage behaelt ihren Wert. */
+/* ---------------- Sammelthemen haus/fahrzeug (Regeln/07, Vorbild MGiSmart 1.1.31) ---------------- */
+
+/** Die Zeile im Reiter Test: array(Stand 1|0|-1, Text). Liest nur die Merker des Dienstes, nennt keinen Wert. 0: fremder Zaehler unter einem eigenen Stamm. */
+function sk_sammel_lage($cfg)
+{
+    if (empty($cfg['haus_fahrzeug_ein'])) {
+        return array(-1, sk_t('EINST.A_HAUS_FAHRZEUG_AUS'));
+    }
+    $fr = array();
+    foreach (array_keys(sk_json_lesen(sk_paths()['datadir'] . '/haus_fahrzeug_fremd.json')) as $s) {
+        if (is_string($s) && strpos($s, 'haus/fahrzeug/') === 0) { $fr[] = substr($s, strlen('haus/fahrzeug/')); }
+    }
+    if ($fr) {
+        return array(0, sprintf(sk_t('EINST.A_HAUS_FAHRZEUG_FREMD'), implode(', ', $fr)));
+    }
+    $m = sk_json_lesen(sk_paths()['datadir'] . '/haus_fahrzeug.json');
+    $namen = array();
+    if (isset($m['fahrzeuge']) && is_array($m['fahrzeuge'])) {
+        foreach ($m['fahrzeuge'] as $e) {
+            if (is_array($e) && isset($e['stamm']) && is_string($e['stamm'])) { $namen[] = substr($e['stamm'], strlen('haus/fahrzeug/')); }
+        }
+    }
+    return $namen ? array(1, sprintf(sk_t('EINST.A_HAUS_FAHRZEUG'), implode(', ', $namen))) : array(-1, sk_t('EINST.A_HAUS_FAHRZEUG_NOCH'));
+}
+
 function sk_neue_schluessel_0934()
 {
     return array('befehle_mqtt_ein', 'endpunkt_ein', 'abfahrt_fahrzeug', 'haus_abfahrt_ein',
                  'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'vorklima_kalt_unter', 'vorklima_heiss_ueber',
                  'ankunft_ein', 'ankunft_quelle', 'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein',
                  'signal_praefix', 'signal_laden_fertig', 'signal_laden_abbruch', 'signal_offen',
-                 'signal_ausfall', 'signal_vorklima');
+                 'signal_ausfall', 'signal_vorklima',
+                 /* 0.9.36 */ 'haus_fahrzeug_ein', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'signal_kabel',
+                 'vorklima_min_soc', 'vorklima_nur_kabel');
 }
 
 /** Sind Zugangsdaten eingetragen? (E-Mail und Passwort.) */
