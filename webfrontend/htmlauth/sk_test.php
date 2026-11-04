@@ -535,7 +535,7 @@ function sk_endpunkt_probe()
         $curlfehler = curl_error($ch);
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($antwort === false) {
-            $erg['text'] = $curlfehler !== '' ? $curlfehler : 'keine Antwort';
+            $erg['text'] = $curlfehler !== '' ? $curlfehler : sk_t('TEST.E_KEINE_ANTWORT');
             sk_json_schreiben($marke, $erg);
             return $erg;
         }
@@ -554,7 +554,7 @@ function sk_endpunkt_probe()
         $antwort = file_get_contents($url, false, $ctx);
         restore_error_handler();
         if ($antwort === false) {
-            $erg['text'] = 'keine Antwort';
+            $erg['text'] = sk_t('TEST.E_KEINE_ANTWORT');
             sk_json_schreiben($marke, $erg);
             return $erg;
         }
