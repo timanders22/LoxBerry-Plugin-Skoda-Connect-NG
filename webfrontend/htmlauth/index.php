@@ -346,6 +346,7 @@ if ($sk_post && !sk_formtoken_ok()) {
 if ($sk_post && isset($_POST['vorlage_befehle'])) {
     list($sk_name, $sk_inhalt) = sk_vorlage_befehle();
     if ($sk_inhalt !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $sk_name . '"');
         header('Content-Length: ' . strlen($sk_inhalt));
@@ -368,6 +369,7 @@ if ($sk_post && isset($_POST['vorlage'])) {
                && array_key_exists(sk_post('vorlage_art'), sk_vorlagenarten()))
         ? sk_post('vorlage_art') : 'status';
     list($sk_name, $sk_inhalt) = sk_vorlage($sk_nr, $sk_art);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $sk_name . '"');
     header('Content-Length: ' . strlen($sk_inhalt));
@@ -865,6 +867,7 @@ if ($sk_post && isset($_POST['sk_sichern'])) {
     $sk_mit_zugang = isset($_POST['mit_zugang']);
     $sk_js = sk_sicherung_schreiben($sk_mit_zugang);
     if ($sk_js !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="skoda_einstellungen'
                . ($sk_mit_zugang ? '_mit_zugang' : '') . '_'
