@@ -19,6 +19,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
 # Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
@@ -69,7 +73,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
     echo "<WARNING> config/plugins und data/plugins."
     echo "<WARNING> Es wurde NICHTS gesichert und kein Dienst angehalten."
-    exit 1
+    exit 2
 fi
 
 # ---------- Die Upgrade-Marke, als ERSTES ----------
@@ -106,9 +110,34 @@ else
     # Die Wirkung pruefen, nicht den Rueckgabewert (Kernschicht 2). Ohne
     # Marke laeuft die Aktualisierung weiter, nur eben mit dem alten Risiko.
     rm -f "$MARKE" 2>/dev/null
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen; der Minutentakt"
-    echo "<WARNING> koennte den Dienst mitten in der Aktualisierung starten."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 
 # Gruppe 41 (0.9.34, Bauvorschrift G2): die Befehlsbruecke anhalten, bevor der bin-Ordner ersetzt wird.
 # Ihr Waechter in cron.01min startet sie nach dem Update wieder - nur mit dem Haken "Befehle ueber MQTT
@@ -329,18 +358,23 @@ if [ -d "$PDATA" ]; then
     # Bruecke), einmalmeldung.json, endpunktprobe.json, *_letzte.json.
     for f in zustand.json ladungen.csv ladung_mitschrift.json vorklima.json ladekosten.json \
              ansage_sperre.json; do
-        [ -e "$PDATA/$f" ] && cp -p "$PDATA/$f" "$NEU/$f" 2>/dev/null
+        [ -e "$PDATA/$f" ] || continue
+        if ! { cp -p "$PDATA/$f" "$NEU/$f" 2>/dev/null && cmp -s "$PDATA/$f" "$NEU/$f"; }; then
+            ZS_FEHL="$ZS_FEHL $f"
+        fi
     done
     # Der Sollmerker nach dem Stand VOR dem Anhalten (siehe oben).
     [ "$SOLL_VORHER" = 1 ] && : > "$NEU/soll_laufen"
-    [ -d "$PDATA/verlauf" ] && cp -a "$PDATA/verlauf" "$NEU/verlauf" 2>/dev/null
+    if [ -d "$PDATA/verlauf" ] && ! { cp -a "$PDATA/verlauf" "$NEU/verlauf" 2>/dev/null && diff -rq "$PDATA/verlauf" "$NEU/verlauf" >/dev/null 2>&1; }; then
+        ZS_FEHL="$ZS_FEHL verlauf"
+    fi
     # Gezaehlt, nicht behauptet: eine Rettung, die nichts gerettet hat,
     # sagt das - sonst steht in der Installationsmeldung eine Zusage, die
     # niemand geprueft hat.
     ANZ=$(find "$NEU" -mindepth 1 2>/dev/null | wc -l)
     if [ "$ANZ" -gt 0 ]; then
         rm -rf "$RETTUNG"
-        mv "$NEU" "$RETTUNG" 2>/dev/null
+        mv "$NEU" "$RETTUNG" 2>/dev/null || ZS_FEHL="$ZS_FEHL Rettung"
         echo "<INFO> $ANZ Eintrag/Eintraege aus dem Datenordner gerettet"
         echo "<INFO> (Sollmerker, Verlauf, Ladeprotokoll, offene Ladung, Vorklima, Ladekosten, Ansagesperre) - der Installateur"
         echo "<INFO> raeumt data/plugins/$PFOLDER/ beim Upgrade vollstaendig ab."
@@ -395,13 +429,13 @@ for f in skoda.json zugang.json; do
         continue
     fi
     rm -f "$ZIEL.neu"
-    if cp -p "$QUELLE" "$ZIEL.neu" 2>/dev/null && chmod 600 "$ZIEL.neu" \
-       && { [ "$sk_rc" = 2 ] || json_objekt "$ZIEL.neu"; } && mv -f "$ZIEL.neu" "$ZIEL"; then
+    if zs_hinlegen "$QUELLE" "$ZIEL"; then
         [ "$sk_rc" = 2 ] && echo "<WARNING> python3 fehlt - $f wurde ungeprueft gesichert ($ZIEL)."
     else
-        rm -f "$ZIEL.neu"
         echo "<WARNING> $f liess sich nicht sichern - die vorhandene Zweitschrift bleibt unberuehrt ($ZIEL)."
+        ZS_FEHL="$ZS_FEHL $f"
     fi
 done
+zs_schluss
 echo "<OK> preupgrade abgeschlossen."
 exit 0

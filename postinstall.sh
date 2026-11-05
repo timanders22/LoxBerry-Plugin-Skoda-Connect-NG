@@ -422,13 +422,13 @@ if [ ! -x "$VENV/bin/python3" ]; then
     exit 1
 fi
 
-"$VENV/bin/python3" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || \
+timeout 900 "$VENV/bin/python3" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel >/dev/null 2>&1 || \
     echo "<INFO> pip liess sich nicht aktualisieren - wird mit der vorhandenen Fassung versucht."
 
 echo "<INFO> Installiere myskoda $LIBVERSION (benoetigt eine Internetverbindung) ..."
-if ! "$VENV/bin/python3" -m pip install --no-cache-dir "myskoda==$LIBVERSION"; then
+if ! timeout 2400 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir "myskoda==$LIBVERSION"; then
     echo "<INFO> Feste Fassung $LIBVERSION nicht installierbar - versuche die neueste."
-    if ! "$VENV/bin/python3" -m pip install --no-cache-dir "myskoda"; then
+    if ! timeout 2400 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir "myskoda"; then
         echo "<FAIL> myskoda konnte nicht installiert werden."
         echo "<FAIL> Haeufigste Ursachen: keine Internetverbindung, oder PyPI war"
         echo "<FAIL> nicht erreichbar."
@@ -471,7 +471,7 @@ echo "<OK> myskoda geladen, Fassung $IST"
 # nicht erst installiert wird, ist am schlimmsten.
 # ---------------------------------------------------------------------------
 echo "<INFO> Installiere paho-mqtt (freiwillig, nur fuer das Mithoeren fremder Themen) ..."
-if "$VENV/bin/python3" -m pip install --no-cache-dir "paho-mqtt" >/dev/null 2>&1; then
+if timeout 900 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir "paho-mqtt" >/dev/null 2>&1; then
     echo "<OK> paho-mqtt installiert - Ladeempfehlung und Abfahrtszeit sind verfuegbar."
 else
     echo "<INFO> paho-mqtt liess sich nicht installieren. Das ist kein Fehler:"

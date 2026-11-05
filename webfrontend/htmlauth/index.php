@@ -493,6 +493,8 @@ if ($sk_post && isset($_POST['speichern'])) {
     $sk_cfg['tts'] = ansage_formular_lesen($_POST, sk_tts(), $sk_tmangel, $sk_tbean,
         array('modi' => sk_ansage_modi(), 'ziele' => sk_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), sk_ansage_k(), $sk_thinw);
     list($sk_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, sk_ansage_regeln($sk_cfg), array(), $sk_tmangel, $sk_tbean, sk_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.39: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.38 ueberschrieb es der naechste Abgleich.
+    $sk_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($sk_cfg['ansage_token_herkunft']) ? $sk_cfg['ansage_token_herkunft'] : array());
     foreach ($sk_tmangel as $sk_tm) {
         $sk_fehler[] = sk_e($sk_tm['text']);
     }
@@ -505,7 +507,7 @@ if ($sk_post && isset($_POST['speichern'])) {
          * (ansage_x2_felder() nennt die Token nicht). */
         $sk_eingaben = sk_eingaben_sammeln('einst', array_merge($sk_zahlfelder,
             array('heim_breite', 'heim_laenge', 'email', 'steuerung_ein', 'sitzung_merken'),
-            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt()), ansage_regeln_x2_felder(), sk_ziele_x2_felder()), $sk_falsch);
+            $sk_anlass_felder, ansage_x2_felder(sk_ansage_opt()), ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'), sk_ziele_x2_felder()), $sk_falsch);     // 0.9.39: Tafel und HomePod dazu
     } elseif (sk_config_speichern($sk_cfg)) {
         $sk_meldungen[] = sk_t('EINST.GESPEICHERT');
         foreach ($sk_thinw as $sk_th) { $sk_warnungen[] = $sk_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
