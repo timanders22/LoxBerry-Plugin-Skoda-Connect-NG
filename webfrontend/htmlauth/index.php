@@ -433,6 +433,15 @@ if ($sk_post && isset($_POST['speichern'])) {
     $sk_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $sk_cfg['sitzung_merken'] = isset($_POST['sitzung_merken']) ? 1 : 0;
 
+    // 0.9.40: beide Zahlen aus der Karte zusammen ins Feld Breitengrad kopiert ("50.123, 8.456") - hier aufteilen,
+    // wenn Laengengrad leer ist oder schon die zweite Zahl traegt. Eine Kommazahl allein ("51,3") bleibt eine Zahl.
+    if (isset($_POST['heim_breite']) && is_string($_POST['heim_breite'])
+        && !preg_match('/^\s*-?\d+,\d+\s*\z/', $_POST['heim_breite'])
+        && preg_match('/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;\/ ]\s*(-?\d{1,3}(?:\.\d+)?)\s*\z/', $_POST['heim_breite'], $sk_pm)
+        && (!isset($_POST['heim_laenge']) || !is_string($_POST['heim_laenge']) || trim($_POST['heim_laenge']) === ''
+            || str_replace(',', '.', trim($_POST['heim_laenge'])) === $sk_pm[2])) {
+        $_POST['heim_breite'] = $sk_pm[1]; $_POST['heim_laenge'] = $sk_pm[2];
+    }
     /* Die Heimatkoordinaten duerfen LEER bleiben (kein Geofence). Ein
      * unbrauchbarer Wert wird abgewiesen, nicht gekappt. */
     foreach (array('heim_breite', 'heim_laenge') as $sk_feld) {
@@ -1398,6 +1407,7 @@ if ($sk_rahmen) {
 <div class="sm-feld">
   <label for="heim_breite"><?= sk_e(sk_t('EINST.L_HEIM_BREITE')) ?></label>
   <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= sk_e(sk_fw('einst', 'heim_breite', $sk_cfg['heim_breite'])) ?>"<?= sk_fm('heim_breite') ?> placeholder="51.318339">
+  <div class="sm-hilfe"><a href="<?= sk_e('https://mapatlas.eu/' . (sk_sprache() === 'de' ? 'de' : 'en') . '/tools/coordinates') ?>" target="_blank" rel="noopener"><?= sk_e(sk_t('EINST.KARTE')) ?></a>. <?= sk_e(sk_t('EINST.KARTE_ZUSAMMEN')) ?></div>
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= sk_e(sk_t('EINST.L_HEIM_LAENGE')) ?></label>
