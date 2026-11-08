@@ -147,8 +147,10 @@ def _lb_wurzel():
     Lehre fuer alle H1-Linien"). Ohne Wurzel wird gemeldet und abgebrochen.
     """
     umgebung = os.environ.get("LBHOMEDIR") or ""
+    # 0.9.43: auch general.json, wie lb_wurzel_ermitteln() und bin/dienst.sh (Regeln/06).
     if umgebung and os.path.isdir(os.path.join(umgebung, "config", "plugins")) \
-            and os.path.isdir(os.path.join(umgebung, "data", "plugins")):
+            and os.path.isdir(os.path.join(umgebung, "data", "plugins")) \
+            and os.path.isfile(os.path.join(umgebung, "config", "system", "general.json")):
         # aufgeloest wie SELF, sonst stuenden fuer dieselbe Datei zwei
         # Schreibweisen nebeneinander (Wurzel als Verweis)
         return Path(umgebung).resolve()
@@ -712,6 +714,15 @@ def config() -> dict:
     c["abfahrt_fahrzeug"] = in_grenzen(c.get("abfahrt_fahrzeug"), 1, 99, 1)
     c["vorklima_kalt_unter"] = in_grenzen(c.get("vorklima_kalt_unter"), -30, 45, 5)
     c["vorklima_heiss_ueber"] = in_grenzen(c.get("vorklima_heiss_ueber"), -30, 45, 25)
+    # 0.9.43: dieselbe Regel wie das Formular (index.php: kalt muss unter heiss liegen) - bis 0.9.42 rechnete der Dienst
+    # mit einer von Hand vertauschten Datei weiter. Wie bei temp_min/temp_max: beide auf ihre Vorgabe, nie getauscht.
+    if c["vorklima_kalt_unter"] >= c["vorklima_heiss_ueber"]:
+        c["vorklima_kalt_unter"] = VORGABEN["vorklima_kalt_unter"]
+        c["vorklima_heiss_ueber"] = VORGABEN["vorklima_heiss_ueber"]
+    # 0.9.43: kabel_uhr mit dem Muster der Oberflaeche (sk_regeln: HH:MM) - kabel_entscheiden() pruefte nur Laenge und
+    # Doppelpunkt, "99:99" oder "ab:cd" liefen durch, und die Abendwarnung kam nie.
+    if not re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", str(c.get("kabel_uhr") or "")):
+        c["kabel_uhr"] = VORGABEN["kabel_uhr"]
     # 0.9.36: Kabel-Warnung, Mindest-Akku
     c["kabel_soc"] = in_grenzen(c.get("kabel_soc"), 1, 100, 30)
     c["kabel_abfahrt_min"] = in_grenzen(c.get("kabel_abfahrt_min"), 0, 720, 60)
@@ -4765,6 +4776,10 @@ async def dienst(einmal: bool = False) -> int:
             if _NEU_ANMELDEN and _LAUF:
                 _NEU_ANMELDEN = False
                 sitzung_loeschen()
+                # 0.9.43: der Zugang wird auch hier frisch gelesen (wie in anmelden_mit_geduld()). Bis 0.9.42 nahm die
+                # Neuanmeldung das z vom Dienststart - ein inzwischen berichtigtes Passwort kam nicht an, und war
+                # zugang.json beim Start noch leer, scheiterte jede Neuanmeldung bis zum naechsten Neustart.
+                z = zugang()
                 try:
                     weg = await anmelden(ms, z, cfg)
                     _LOG.info("Neu angemeldet ueber %s.", weg)
@@ -5117,11 +5132,15 @@ def selbsttest() -> int:
                       "(System -> MQTT Gateway). Ohne das kommt am Miniserver nichts an.")
         fehler += 1
 
-    if c.get("empf_thema") or (c.get("abfahrt_ein") and c.get("abfahrt_thema")):
+    # 0.9.43: dieselbe Quelle wie der Horcher selbst (_HORCHER.gewuenscht(), samt Haus-Themen seit Gruppe 41). Bis 0.9.42
+    # stand hier noch die Bedingung aus 0.9.33 - mit nur Haus-Themen hiess es "Kein fremdes MQTT-Thema abonniert", und
+    # paho-mqtt wurde nicht geprueft, obwohl der Dienst darauf wartete.
+    sk_abo = _HORCHER.gewuenscht(c)
+    if sk_abo:
         moeglich, grund = _HORCHER.moeglich()
         if moeglich:
             zeilen.append("[OK]   paho-mqtt ist vorhanden - der Horcher kann sich mit dem "
-                          "Broker verbinden")
+                          "Broker verbinden; abonniert: " + ", ".join(sk_abo))
         else:
             zeilen.append("[FEHL] " + grund)
             fehler += 1
@@ -5135,8 +5154,8 @@ def selbsttest() -> int:
                           + ("" if c.get("steuerung_ein")
                              else " - WIRKUNGSLOS, solange schreibende Befehle gesperrt sind"))
     else:
-        zeilen.append("[INFO] Kein fremdes MQTT-Thema abonniert (Ladeempfehlung und "
-                      "Abfahrtszeit sind aus)")
+        zeilen.append("[INFO] Kein fremdes MQTT-Thema abonniert (Ladeempfehlung, Abfahrtszeit und "
+                      "Haus-Themen sind aus)")
 
     if DATEI_LADUNGEN.exists():
         try:

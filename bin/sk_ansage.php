@@ -58,7 +58,9 @@ if (!function_exists('lb_wurzel_ermitteln')) {
 }
 
 $sk_home = getenv('LBHOMEDIR');
-if (!$sk_home || !is_dir($sk_home . '/config/plugins') || !is_dir($sk_home . '/data/plugins')) {
+// 0.9.43: auch general.json, wie lb_wurzel_ermitteln() und bb_wurzel_ok() (Regeln/06).
+if (!$sk_home || !is_dir($sk_home . '/config/plugins') || !is_dir($sk_home . '/data/plugins')
+    || !is_file($sk_home . '/config/system/general.json')) {
     $sk_home = lb_wurzel_ermitteln();
 }
 $sk_paket = isset($argv[1]) ? preg_replace('/[^A-Za-z0-9_\-]/', '', (string) $argv[1]) : '';
@@ -135,5 +137,6 @@ if ((string) $sk_ausgabe['mode'] === 'aus') {
 }
 sk_ansage_token_pflegen($sk_kf);
 sk_ansage_legen(array(array('schluessel' => $sk_d['anlass'] . '|' . $sk_d['nr'], 'text' => $sk_text)));
-echo 'ANSAGE;STAND=1;ART=gelegt;KENNUNG=GELEGT;HTTP=0;ZEICHEN=' . strlen((string) $sk_text) . "\n";
+// 0.9.43: Zeichen wie das Sprachmodul zaehlt (ansage_zeichen(), UTF-8) - bis 0.9.42 Bytes; ein Umlaut zaehlte doppelt.
+echo 'ANSAGE;STAND=1;ART=gelegt;KENNUNG=GELEGT;HTTP=0;ZEICHEN=' . ansage_zeichen((string) $sk_text) . "\n";
 exit(0);

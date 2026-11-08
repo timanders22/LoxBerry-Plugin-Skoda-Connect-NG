@@ -35,6 +35,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
+# 0.9.43: ein Ordnername mit "/" oder "." waere ein Pfad hinaus - wie preupgrade.sh (bis 0.9.42 hier ungeprueft).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
 # Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
@@ -62,7 +66,7 @@ sk_wurzel_suchen() {
 BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
-       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+       && [ -d "$LBHOMEDIR/data/plugins" ] && [ -f "$LBHOMEDIR/config/system/general.json" ]; then
         BASE="$LBHOMEDIR"
     else
         BASE=$(sk_wurzel_suchen) || BASE=""
@@ -76,7 +80,8 @@ fi
 # abgeschlossen". In WSL gemessen (24.09.2026,
 # Pruefung-Skoda-Connect-NG-0.9.24, messe_haken.sh, Fall Ha3: im fremden Baum
 # war die Marke weg, der Rueckgabewert 0).
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then     # 0.9.43: general.json wie preinstall.sh (Regeln/06)
     echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
     echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
     echo "<WARNING> die Suche oberhalb des eigenen Ablageorts fuehrten auf einen"
@@ -120,6 +125,19 @@ if [ -f "$MARKE" ]; then
     else
         echo "<OK> Aktualisierung abgemeldet."
     fi
+fi
+
+# 0.9.43: die Befehlsbruecke gleich wieder starten (Bauart Saugroboter 1.1.22) - preupgrade.sh hat sie angehalten.
+# Bis 0.9.42 holte erst der Minutentakt (bb_waechter()) den Start nach, also bis zu einer Minute ohne Befehle. Startet
+# nur mit Haken "Befehle ueber MQTT annehmen" und nie als root; scheitert der Start, versucht es der Minutentakt erneut.
+# Erst nach der Marke - mit liegender Marke sagt befehlsbruecke.sh "Aktualisierung im Gang" und startet nicht.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ] && [ ! -f "$MARKE" ]; then
+    SK_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+    case "$SK_BB" in
+        *gestartet*|*laeuft*) echo "<OK> $SK_BB" ;;
+        *) echo "<INFO> Befehlsbruecke: $SK_BB (der Minutentakt versucht es erneut)" ;;
+    esac
 fi
 
 echo "<OK> postupgrade abgeschlossen."

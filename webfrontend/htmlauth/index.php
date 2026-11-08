@@ -759,11 +759,29 @@ if ($sk_post && isset($_POST['log_leeren'])) {
     /* Ohne is_dir davor meldet PHP bei jedem Handgriff
      * "mkdir(): File exists" ins Fehlerprotokoll - unterdrueckt
      * durch das @, aber bei log_errors=On steht es trotzdem dort. */
-    if (!is_dir(dirname($sk_p['log']))) {
-        @mkdir(dirname($sk_p['log']), 0775, true);
+    /* 0.9.43 (Bauart Saugroboter 1.1.23, Entscheidung 1): ein Haekchen zur Bestaetigung, sonst passiert nichts; geleert
+     * werden skoda.log UND die beiden Dateien, die der Reiter ebenfalls zeigt (befehle_start.log, cron.err), je mit
+     * gepruefter Rueckgabe. Bis 0.9.42 blieben die beiden nach "Logdatei leeren" stehen. */
+    if (empty($_POST['log_leeren_ok'])) {
+        $sk_fehler[] = sk_t('LOG.HAKEN_FEHLT');
+    } else {
+        if (!is_dir(dirname($sk_p['log']))) {
+            @mkdir(dirname($sk_p['log']), 0775, true);
+        }
+        $sk_lweg = array(); $sk_lbleibt = array();
+        if (@file_put_contents($sk_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . sk_t('LOG.GELEERT') . "\n") !== false) {
+            $sk_lweg[] = basename($sk_p['log']);
+        } else {
+            $sk_lbleibt[] = basename($sk_p['log']);
+        }
+        foreach (array('befehle_start.log', 'cron.err') as $sk_ld) {
+            $sk_lf = $sk_p['logdir'] . '/' . $sk_ld;
+            if (!is_file($sk_lf)) { continue; }
+            if (@file_put_contents($sk_lf, '') !== false) { $sk_lweg[] = $sk_ld; } else { $sk_lbleibt[] = $sk_ld; }
+        }
+        if ($sk_lweg) { $sk_meldungen[] = sprintf(sk_t('LOG.GELEERT_DATEIEN'), sk_e(implode(', ', $sk_lweg))); }
+        if ($sk_lbleibt) { $sk_fehler[] = sprintf(sk_t('LOG.NICHT_GELEERT'), sk_e(implode(', ', $sk_lbleibt))); }
     }
-    @file_put_contents($sk_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . sk_t('LOG.GELEERT') . "\n");
-    $sk_meldungen[] = sk_t('LOG.GELEERT');
     $sk_tab = 'tab-log';
 }
 
@@ -1261,10 +1279,13 @@ if ($sk_rahmen) {
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. So bleibt jeder
      Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
      faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
+<?php /* 0.9.43: ausgeschrieben statt als Schleife (CLAUDE.md 9 und 13, "Reiterleiste als Schleife") - gleiche Ausgabe. */ ?>
 <div class="sm-tabs">
-<?php foreach ($sk_reiter as $sk_r => $sk_beschriftung) { ?>
-	<a class="sm-tab<?= $sk_tab === 'tab-' . $sk_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $sk_r ?>" href="index.php?form=<?= $sk_r ?>"><?= sk_e($sk_beschriftung) ?></a>
-<?php } ?>
+	<a class="sm-tab<?= $sk_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= sk_e($sk_reiter['settings']) ?></a>
+	<a class="sm-tab<?= $sk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt"><?= sk_e($sk_reiter['mqtt']) ?></a>
+	<a class="sm-tab<?= $sk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone"><?= sk_e($sk_reiter['loxone']) ?></a>
+	<a class="sm-tab<?= $sk_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test"><?= sk_e($sk_reiter['test']) ?></a>
+	<a class="sm-tab<?= $sk_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log" href="index.php?form=log"><?= sk_e($sk_reiter['log']) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -1663,7 +1684,7 @@ if ($sk_x3) { ?>
 </div>
 <div class="sm-feld">
   <label for="vorklima_min_soc"><?= sk_e(sk_t('EINST.L_VORKLIMA_MIN_SOC')) ?></label>
-  <input data-role="none" type="number" id="vorklima_min_soc" name="vorklima_min_soc" value="<?= sk_e(sk_fw('mqtt', 'vorklima_min_soc', (string) $sk_cfg['vorklima_min_soc'])) ?>"<?= sk_fm('vorklima_min_soc') ?> min="0" max="100">
+  <input data-role="none" type="<?= sk_ftyp('vorklima_min_soc') ?>" id="vorklima_min_soc" name="vorklima_min_soc" value="<?= sk_e(sk_fw('mqtt', 'vorklima_min_soc', (string) $sk_cfg['vorklima_min_soc'])) ?>"<?= sk_fm('vorklima_min_soc') ?> min="0" max="100">
   <div class="sm-hilfe"><?= sk_t('EINST.H_VORKLIMA_MIN_SOC') ?></div>
 </div>
 <div class="sm-feld">
@@ -1677,7 +1698,7 @@ if ($sk_x3) { ?>
 <p class="sm-hilfe"><?= sk_t('EINST.SAMMEL_KABEL_HILFE') ?></p>
 <div class="sm-feld">
   <label for="kabel_soc"><?= sk_e(sk_t('EINST.L_KABEL_SOC')) ?></label>
-  <input data-role="none" type="number" id="kabel_soc" name="kabel_soc" value="<?= sk_e(sk_fw('mqtt', 'kabel_soc', (string) $sk_cfg['kabel_soc'])) ?>"<?= sk_fm('kabel_soc') ?> min="1" max="100">
+  <input data-role="none" type="<?= sk_ftyp('kabel_soc') ?>" id="kabel_soc" name="kabel_soc" value="<?= sk_e(sk_fw('mqtt', 'kabel_soc', (string) $sk_cfg['kabel_soc'])) ?>"<?= sk_fm('kabel_soc') ?> min="1" max="100">
 </div>
 <div class="sm-feld">
   <label for="kabel_uhr"><?= sk_e(sk_t('EINST.L_KABEL_UHR')) ?></label>
@@ -1685,7 +1706,7 @@ if ($sk_x3) { ?>
 </div>
 <div class="sm-feld">
   <label for="kabel_abfahrt_min"><?= sk_e(sk_t('EINST.L_KABEL_ABFAHRT_MIN')) ?></label>
-  <input data-role="none" type="number" id="kabel_abfahrt_min" name="kabel_abfahrt_min" value="<?= sk_e(sk_fw('mqtt', 'kabel_abfahrt_min', (string) $sk_cfg['kabel_abfahrt_min'])) ?>"<?= sk_fm('kabel_abfahrt_min') ?> min="0" max="720">
+  <input data-role="none" type="<?= sk_ftyp('kabel_abfahrt_min') ?>" id="kabel_abfahrt_min" name="kabel_abfahrt_min" value="<?= sk_e(sk_fw('mqtt', 'kabel_abfahrt_min', (string) $sk_cfg['kabel_abfahrt_min'])) ?>"<?= sk_fm('kabel_abfahrt_min') ?> min="0" max="720">
   <div class="sm-hilfe"><?= sk_t('EINST.H_KABEL_ABFAHRT_MIN') ?></div>
 </div>
 <div class="sm-feld">
@@ -2524,6 +2545,8 @@ foreach (array('befehle_start.log', 'cron.err') as $sk_ld) {
   <form action="index.php" method="post">
     <?= sk_formfeld() ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-right:12px;">
+    <input data-role="none" type="checkbox" name="log_leeren_ok" value="1"> <?= sk_e(sk_t('LOG.HAKEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= sk_e(sk_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>
@@ -2541,7 +2564,12 @@ foreach (array('befehle_start.log', 'cron.err') as $sk_ld) {
 		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
 	}
 	reiter.forEach(function (r) {
-		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
+		r.addEventListener('click', function (e) {
+			/* 0.9.43: der Reiter Test misst nur beim Laden (sk_pruefungen($sk_tab === 'tab-test')) - der Klick laedt
+			 * deshalb index.php?form=test vom Server, wie im Saugroboter. Bis 0.9.42 zeigte er die Platzhalter. */
+			if (r.dataset.ziel === 'tab-test') { return; }
+			e.preventDefault(); zeige(r.dataset.ziel);
+		});
 	});
 	zeige(<?= json_encode($sk_tab) ?>);
 })();

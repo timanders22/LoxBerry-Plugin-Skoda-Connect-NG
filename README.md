@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.42 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.43 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,16 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.43
+
+- **Neuanmeldung mit dem aktuellen Passwort:** Läuft die Sitzung bei MySkoda im Betrieb ab, meldet sich der Dienst jetzt mit dem Zugang an, der gerade gespeichert ist. Bisher nahm er den Stand vom Start des Dienstes – ein inzwischen berichtigtes Passwort kam nicht an.
+- **Reiter *Test*:** Ein Klick auf den Reiter lädt die Seite neu, damit die Prüfungen wirklich laufen. Bisher zeigte er nach einem Wechsel aus einem anderen Reiter nur die Platzhalter.
+- **Selbsttest des Dienstes:** nennt jetzt auch die Haus-Themen (Abfahrt, Anwesenheit, Strompreis) als Abonnement und prüft dafür, ob paho-mqtt vorhanden ist. Bisher meldete er dann „Kein fremdes MQTT-Thema abonniert“.
+- **Logdateien:** „Logdatei leeren“ verlangt ein Häkchen und leert auch `befehle_start.log` und `cron.err`, die der Reiter ebenfalls zeigt.
+- **Vorlage MQTT-Befehle:** enthält für jedes bekannte Fahrzeug ab Nummer 2 die fertigen Befehle (bisher nur Hinweise zum Abtippen).
+- **Nach einem Update** startet die Befehlsbrücke gleich wieder, nicht erst mit dem nächsten Minutentakt.
+- Kleinigkeiten: Eine von Hand vertauschte Vorklima-Grenze (kalt nicht unter heiß) und eine ungültige Uhrzeit der Kabelwarnung fallen auch im Dienst auf ihre Vorgabe zurück, wie im Formular. Beanstandete Zahlenfelder im Reiter MQTT zeigen die Eingabe wieder an. Die Installationsskripte prüfen Wurzel und Ordnernamen überall gleich, die Sicherung wird unteilbar zurückgespielt, und eine beschädigte Zugangsdatei hinterlässt keinen Python-Fehler mehr. Die Reiterleiste ist ausgeschrieben.
 
 ## Neu in 0.9.42
 

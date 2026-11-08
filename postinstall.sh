@@ -32,6 +32,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-skodaconnect}"
+# 0.9.43: ein Ordnername mit "/" oder "." waere ein Pfad hinaus - wie preupgrade.sh (bis 0.9.42 hier ungeprueft).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
 # Bis 0.9.23 stand hier ein Rueckfall auf feste Ebenen ueber dem eigenen
@@ -59,7 +63,7 @@ sk_wurzel_suchen() {
 BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
-       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+       && [ -d "$LBHOMEDIR/data/plugins" ] && [ -f "$LBHOMEDIR/config/system/general.json" ]; then
         BASE="$LBHOMEDIR"
     else
         # LoxBerry::System taugt hier nicht, weil es den Pluginordner aus dem
@@ -73,7 +77,8 @@ fi
 # ist - wortgleich mit preupgrade.sh, das die Pruefung seit 0.9.14 hat.
 # Ohne sie arbeitet dieses Skript gegen "/config/plugins/..." und "/data/...",
 # legt dort Ordner an und meldet am Ende trotzdem Erfolg.
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then     # 0.9.43: general.json wie preinstall.sh (Regeln/06)
     echo "<FAIL> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
     echo "<FAIL> weder das fuenfte Argument noch \$LBHOMEDIR noch der eigene"
     echo "<FAIL> Ablageort fuehrten auf einen Ordner mit config/plugins und"
@@ -256,9 +261,14 @@ if [ "$UPG_MARKE" = 1 ]; then   # Upgrade-Marke (upgrade_laeuft) lag beim Start
                     echo "<WARNING> $f: python3 fehlt - die Sicherung liess sich nicht pruefen und wurde nicht zurueckgespielt ($BK)."
                 elif [ "$sk_rc" != 0 ]; then
                     echo "<INFO> $f: Sicherung ohne Einstellungen oder kein gueltiges JSON-Objekt - nichts zurueckgespielt."
-                elif cp -p "$BK" "$CF" && chmod 600 "$CF" && json_mit_inhalt "$CF"; then
+                # 0.9.43: unteilbar ueber eine Nebendatei (umask 077, Vergleich, dann mv) - bis 0.9.42 schrieb cp
+                # direkt in die Konfiguration, ein Leser dazwischen sah eine halbe Datei (Bauart Saugroboter).
+                elif SK_NEU="$CF.neu.$$" && rm -f "$SK_NEU" 2>/dev/null \
+                     && (umask 077; cp "$BK" "$SK_NEU") 2>/dev/null && cmp -s "$BK" "$SK_NEU" \
+                     && chmod 600 "$SK_NEU" && mv -f "$SK_NEU" "$CF" && json_mit_inhalt "$CF"; then
                     echo "<OK> $f aus Sicherung wiederhergestellt."
                 else
+                    rm -f "$CF.neu.$$" 2>/dev/null
                     echo "<WARNING> $f liess sich aus der Sicherung nicht zurueckspielen ($BK)."
                 fi
             fi
@@ -339,11 +349,15 @@ for Z in "$PCONFIG/zugang.json" "$BASE/config/plugins/$PFOLDER.backup.zugang.jso
     fi
     PYBIN="python3"
     [ -x "$PBIN/venv/bin/python3" ] && PYBIN="$PBIN/venv/bin/python3"
-    if "$PYBIN" - "$Z" <<'PYENDE'
+    "$PYBIN" - "$Z" <<'PYENDE'
 import json, os, sys
 p = sys.argv[1]
-with open(p, 'r', encoding='utf-8') as f:
-    d = json.load(f)
+# 0.9.43: kein gueltiges JSON -> 3 (Meldung unten, ohne Python-Traceback); kein Schluessel spin -> 2 (nichts zu tun).
+try:
+    with open(p, 'r', encoding='utf-8') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(3)
 if not isinstance(d, dict) or 'spin' not in d:
     sys.exit(2)
 d.pop('spin', None)
@@ -361,9 +375,12 @@ with open(p, 'r+b') as f:
     os.fsync(f.fileno())
 os.chmod(p, 0o600)
 PYENDE
-    then
+    SK_SPIN_RC=$?
+    if [ "$SK_SPIN_RC" = 0 ]; then
         SPIN_WEG=$((SPIN_WEG + 1))
         echo "<OK> Die nicht mehr benutzte S-PIN wurde aus $(basename "$Z") entfernt."
+    elif [ "$SK_SPIN_RC" = 2 ]; then
+        :   # 0.9.43: das Wort steht in der Datei, ist aber kein Schluessel - nichts zu entfernen, kein <FAIL>
     else
         echo "<FAIL> Die S-PIN liess sich aus $Z NICHT entfernen."
         echo "<FAIL> Bitte die Datei von Hand pruefen - sie enthaelt noch ein Geheimnis,"

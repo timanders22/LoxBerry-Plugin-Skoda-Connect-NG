@@ -89,8 +89,9 @@ sk_wurzel_suchen() {
     done
     return 1
 }
+# 0.9.43: auch general.json, wie die Aufwaertssuche und befehlsbruecke.php (bb_wurzel_ok(), Regeln/06).
 if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
-   && [ -d "$LBHOMEDIR/data/plugins" ]; then
+   && [ -d "$LBHOMEDIR/data/plugins" ] && [ -f "$LBHOMEDIR/config/system/general.json" ]; then
     LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
 else
     LBHOMEDIR=$(sk_wurzel_suchen) || LBHOMEDIR=""

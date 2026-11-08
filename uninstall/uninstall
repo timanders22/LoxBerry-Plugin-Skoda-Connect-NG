@@ -99,7 +99,7 @@ sk_wurzel_suchen() {
 BASE="${5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
-       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+       && [ -d "$LBHOMEDIR/data/plugins" ] && [ -f "$LBHOMEDIR/config/system/general.json" ]; then
         BASE="$LBHOMEDIR"
     else
         BASE=$(sk_wurzel_suchen) || BASE=""
@@ -111,7 +111,8 @@ fi
 # nicht laeuft: bis 0.9.14 arbeitete dieses hier gegen "/config/plugins" und
 # "/data/plugins/skodaconnect", fand nichts, loeschte nichts - und meldete am
 # Ende trotzdem, die Zugangsdaten seien entfernt.
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then     # 0.9.43: general.json wie preinstall.sh (Regeln/06)
     echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
     echo "<WARNING> bestimmen. Es wurde NICHTS entfernt."
     echo "<WARNING> Von Hand nachsehen: <loxberry>/config/plugins/$PDIR.backup.*"

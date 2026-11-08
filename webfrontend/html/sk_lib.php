@@ -3719,7 +3719,31 @@ function sk_vorlage_befehle()
     }
     $bp = bb_pfade();
     $port = $bp ? bb_broker($bp)['udpin'] : 11884;
-    return array('VQ_skodaconnect_mqtt.xml', bb_vorlage($l, sk_rechnername(), $port));
+    $xml = bb_vorlage($l, sk_rechnername(), $port);
+    /* 0.9.43: fuer jedes bekannte Fahrzeug ab Nummer 2 (sk_v2_fahrzeugnummern(), aus dem Abbild) die Befehle als echte
+     * Zeilen statt der Kommentare "Muster {nr}/...: je Wert selbst anlegen" (Hinweis eines Pruefers; Bauart Saugroboter
+     * 1.1.33). Gebaut wie bb_vorlage() fuer Fahrzeug 1, mit eingesetzter Nummer; mit nur einem Fahrzeug bleibt die
+     * Vorlage wie bisher. bb_vorlage() ist Stammcode der Befehlsbruecke und bleibt unveraendert. */
+    $nrn = array();
+    foreach (sk_v2_fahrzeugnummern() as $n) { if ((int) $n >= 2) { $nrn[] = (int) $n; } }
+    if ($nrn) {
+        $zeilen = array();
+        foreach ($nrn as $n) {
+            foreach ($l['befehle'] as $b) {
+                if (empty($b['muster']) || !isset($b['loxone']['ein'])) { continue; }
+                $titel = str_replace('Fahrzeug N ', 'Fahrzeug ' . $n . ' ', $b['titel']);
+                $kom = $b['art'] . ($b['eingreifend'] ? ', eingreifend' : '') . ', nie retain';
+                if ($b['art'] === 'ganz' || $b['art'] === 'zahl') { $kom = $b['min'] . ' bis ' . $b['max'] . ', ' . $kom; }
+                $ers = function ($s) use ($n) { return str_replace('{nr}', (string) $n, (string) $s); };
+                $zeilen[] = bb_vorlage_befehl($titel, $kom, $ers($b['loxone']['ein']), $ers($b['loxone']['aus']), $b['loxone']['analog']);
+            }
+        }
+        if ($zeilen) {
+            $xml = preg_replace('/\t<!-- Muster [^\r\n]*-->\r\n/', '', $xml);
+            $xml = str_replace('</VirtualOut>', implode("\r\n", $zeilen) . "\r\n" . '</VirtualOut>', $xml);
+        }
+    }
+    return array('VQ_skodaconnect_mqtt.xml', $xml);
 }
 
 /* ---------------- G4/G5: Haus-Quellen fuer den Reiter Test ---------------- */

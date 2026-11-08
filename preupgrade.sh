@@ -50,7 +50,7 @@ sk_wurzel_suchen() {
 BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
-       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+       && [ -d "$LBHOMEDIR/data/plugins" ] && [ -f "$LBHOMEDIR/config/system/general.json" ]; then
         BASE="$LBHOMEDIR"
     else
         # LoxBerry::System taugt hier nicht - es leitet den Pluginordner aus
@@ -67,7 +67,8 @@ fi
 # trotzdem "<OK> preupgrade abgeschlossen". Das Upgrade lief dann ohne
 # Sicherung, und niemand sah es. Ein Rueckgabewert ungleich 0 und eine
 # <WARNING>-Zeile sind hier das Mindeste.
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then     # 0.9.43: general.json wie preinstall.sh (Regeln/06)
     echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
     echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
     echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
