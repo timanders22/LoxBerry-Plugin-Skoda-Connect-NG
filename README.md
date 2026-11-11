@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.44 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.45 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,10 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.45
+
+- **Vorprüfung der Sprachausgabe wie die Brücke:** Steht die Sprachausgabe in der Konfiguration als leere Liste (`"tts": []`), nimmt die Vorprüfung im Dienst sie jetzt wie die Brücke als „aus“. Bisher hielt der Dienst sie für „an“ und rief die Brücke auf, die dann mit „aus“ ablehnte. Gesprochen wurde in beiden Fassungen nichts; es entfallen nur der vergebliche Aufruf und seine Protokollzeile. Eine nicht leere Liste weist die Brücke ab und nimmt den Werksblock; dabei bleibt es. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
 
 ## Neu in 0.9.44
 
