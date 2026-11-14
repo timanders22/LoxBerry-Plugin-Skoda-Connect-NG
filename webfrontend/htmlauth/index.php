@@ -916,50 +916,70 @@ if ($sk_post && isset($_POST['sk_sichern'])) {
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
 if ($sk_post && isset($_POST['sk_zurueck'])) {
-    if (!isset($_FILES['sk_sicherung']) || !is_array($_FILES['sk_sicherung'])
-        || !isset($_FILES['sk_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['sk_sicherung']['tmp_name'])) {
-        $sk_fehler[] = sk_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['sk_sicherung']['size'] > 65536) {
-        // 64 kB. Eine Sicherung dieses Plugins ist wenige Kilobyte gross.
-        $sk_fehler[] = sk_t('EINST.SICH_ZU_GROSS');
+    /* 0.9.46: Haken, hochgeladene Datei und Groessengrenze prueft das gemeinsame Sicherungsmodul
+     * (sicherung_eingang(), Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich, und
+     * vor is_uploaded_file() steht der Haken zurueck_ok: ohne ihn wird nichts gelesen und nichts geaendert. */
+    list($sk_roh, $sk_ein_ab) = sicherung_eingang(sk_sicherung_beschreibung(), $_POST, $_FILES, 'sk_sicherung');
+    if ($sk_ein_ab !== null) {
+        $sk_ein_m = sicherung_meldungen(sk_sicherung_beschreibung(), $sk_ein_ab);
+        foreach ($sk_ein_m['fehler'] as $sk_ein_x) { $sk_fehler[] = $sk_ein_x; }
     } else {
-        list($sk_neu, $sk_mangel, $sk_n, $sk_neuzugang, $sk_hinw) = sk_sicherung_lesen(
-            (string) @file_get_contents($_FILES['sk_sicherung']['tmp_name']));
-        if ($sk_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. Eine zur Haelfte uebernommene Konfiguration ist
-             * schlimmer als die alte, und man sieht es ihr nicht an. */
-            $sk_fehler[] = sk_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $sk_mangel);
-            sk_log_zeile('Sicherung abgelehnt: ' . implode(' ', $sk_mangel));
-        } elseif (sk_config_speichern($sk_neu)) {
-            $sk_meldungen[] = sprintf(sk_t('EINST.SICH_UEBERNOMMEN'), $sk_n);
-            sk_log_zeile('Einstellungen zurueckgespielt (' . $sk_n . ' Werte).');
-            // O7: ein leeres Token in der Datei - das geltende bleibt, gesagt wird es.
-            foreach ((array) $sk_hinw as $sk_h) {
-                $sk_warnungen[] = $sk_h;
+        /* 0.9.46: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen(), Beschreibung
+         * sk_sicherung_beschreibung()) liest, prueft, verwirft Unbekanntes mit Namen, laesst leere Werte
+         * den bisherigen stehen und aendert bei einer Beanstandung GAR NICHTS (alle Beanstandungen, nicht
+         * nur die erste - eine zur Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+         * sieht es ihr nicht an). Die Schritte dieser Linie davor und danach stehen in den Rueckrufen -
+         * dieselben wie bis 0.9.45. */
+        $sk_b = sk_sicherung_beschreibung();
+        $sk_spaet = array();
+        $sk_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$sk_spaet) {
+            list($neu, $sk_spaet) = sk_sicherung_vorbereiten($neu, $jetzt, $r);
+            return $neu;
+        };
+        $sk_b['speichern'] = function ($neu) { return sk_config_speichern($neu); };
+        $sk_b['zweitschrift'] = function () { $p = sk_paths(); return array($p['config'], $p['sicherung']); };
+        $sk_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$sk_fehler, &$sk_warnungen, &$sk_teil, &$sk_spaet, $sk_b) {
+            $h = array();
+            /* O7 (Durchgang 01.10.2026): ein leeres Token in der Datei - das geltende bleibt, gesagt wird es; gab
+             * es hier noch keins, erzeugt die Oberflaeche eines, und die Adressen im Miniserver muessen nach. */
+            $roh = call_user_func($sk_b['roh']);
+            if (is_string($roh['token']) && trim($roh['token']) === '') {
+                $sk_warnungen[] = sk_t((string) $neu['aktionstoken'] !== '' ? 'EINST.SICH_TOKEN_LEER' : 'EINST.SICH_TOKEN_LEER_NEU');
             }
-            if ($sk_neuzugang !== null) {
-                if (sk_zugang_speichern($sk_neuzugang['email'], $sk_neuzugang['passwort'])) {
-                    $sk_meldungen[] = sk_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
+            /* Nr. 36 b: eine Sicherung von 0.9.29 oder frueher kennt die Sprachausgabe nicht - deren
+             * Einstellungen bleiben, und die Seite sagt es. */
+            if (array_intersect(sk_ansage_neue_schluessel(), $r['fehlt_behalten'])) {
+                $sk_warnungen[] = sk_t('EINST.SICH_OHNE_ANSAGE');
+            }
+            /* Welle Mehrfach-Ziele (0.9.34): fehlte die Liste der weiteren Ziele in der Sicherung (aeltere
+             * Fassung), gelten die jetzigen weiteren Ziele - der Hinweis nennt sie. */
+            if ($sk_spaet) {
+                $sk_warnungen[] = sprintf(sk_t('EINST.SICH_SPAET'), htmlspecialchars(implode(', ', $sk_spaet), ENT_QUOTES, 'UTF-8'));
+            }
+            /* Die Zugangsdaten gehen in ihre eigene Datei mit Rechten 0600, nur wenn die Sicherung sie traegt.
+             * Ein fehlendes Feld heisst "unveraendert" (null), ein leeres traegt nach Regel 3 den geltenden Wert. */
+            $zg = isset($r['teile']['zugang']) && is_array($r['teile']['zugang']) ? $r['teile']['zugang'] : null;
+            if ($zg !== null) {
+                if (sk_zugang_speichern($zg['email'], $zg['passwort'])) {
+                    $h[] = sk_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
                     sk_log_zeile('Zugangsdaten aus der Sicherung uebernommen.');
                 } else {
                     $sk_fehler[] = sk_t('EINST.FEHLER_ZUGANG_SPEICHERN');
                     $sk_teil = true;
                 }
             }
-            /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
-             * ihm geschehen ist. Der Dienst liest seine Konfiguration in jedem
-             * Takt neu, ein Neustart ist also nicht noetig - aber das weiss
-             * niemand, dem es keiner sagt. Laeuft er nicht, wird auch das
-             * gesagt statt stillschweigend nichts zu tun. */
-            $sk_meldungen[] = sk_dienst_pid()
-                ? sk_t('EINST.SICH_DIENST_LAEUFT')
-                : sk_t('EINST.SICH_DIENST_STEHT');
-        } else {
-            $sk_fehler[] = sk_t('EINST.SICH_SCHREIBFEHLER');
-        }
+            /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit ihm geschehen ist. Der Dienst
+             * liest seine Konfiguration in jedem Takt neu, ein Neustart ist also nicht noetig - aber das weiss
+             * niemand, dem es keiner sagt. Laeuft er nicht, wird auch das gesagt statt stillschweigend nichts
+             * zu tun. */
+            $h[] = sk_dienst_pid() ? sk_t('EINST.SICH_DIENST_LAEUFT') : sk_t('EINST.SICH_DIENST_STEHT');
+            return $h;
+        };
+        $sk_b['log'] = 'sk_log_zeile';
+        $sk_r = sicherung_zurueckspielen($sk_b, $sk_roh);
+        $sk_m = sicherung_meldungen($sk_b, $sk_r);
+        foreach ($sk_m['fehler'] as $sk_x) { $sk_fehler[] = $sk_x; }
+        foreach ($sk_m['hinweise'] as $sk_x) { $sk_meldungen[] = $sk_x; }
     }
 }
 
@@ -1558,6 +1578,7 @@ if ($sk_x3) { ?>
     <?= sk_formfeld() ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="sk_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(sk_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="sk_zurueck" value="1"><?= sk_e(sk_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>

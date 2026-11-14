@@ -28,6 +28,10 @@ if (!function_exists('sk_e')) {
  * 0.9.30; seit 0.9.34 Stamm 1.2.1 mit weiteren Ausgabezielen, sk_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 0.9.46: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
+ * anderen Linien. Die Beschreibung dieser Linie steht in sk_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -301,7 +305,7 @@ function sk_regeln()
         'ansage_klima'         => array('schalt'),
         'ansage_ausfall'       => array('schalt'),
         /* 'tts' steht hier nicht: der Block wird mit den Regeln des gemeinsamen Moduls geprueft
-         * (ansage_wert_pruefen(), sk_config_lage(), sk_sicherung_lesen()). */
+         * (ansage_wert_pruefen(), sk_config_lage(), sk_sicherung_beschreibung()). */
         /* Das Aktionstoken: bewusst WEIT gefasst. sk_token_erzeugen() bildet
          * nur Kleinbuchstaben und Ziffern - aber ein Token kann von Hand
          * gesetzt, aus einer aelteren Fassung uebernommen oder von einem
@@ -2789,248 +2793,198 @@ function sk_ansage_satz($anlass, $nr, $name, $soc = null, $grenze = null)
 }
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 0.9.46: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026). Bis 0.9.45 las sk_sicherung_lesen() die Datei selbst; was sie
+ * tat, steht jetzt hier als Beschreibung, und die Regeln des Moduls kommen
+ * dazu:
+ *   - Kennzeichen 'skodaconnect', wie seit 0.9.13 in jeder Sicherung dieser
+ *     Linie (gemessen an allen Fassungen 0.9.13 bis 0.9.45 im Arbeitsordner).
+ *     Ein Uebersetzer fuer aeltere Sicherungen ist deshalb nicht noetig; eine
+ *     Datei ohne oder mit fremdem Kennzeichen wird als Ganzes abgewiesen (bis
+ *     0.9.45 nur an ihren unbekannten Schluesseln erkannt).
+ *   - Unbekannte Schluessel oben, in tts, in ansage_regeln und im Teil zugang
+ *     werden verworfen und mit Namen gemeldet. Bis 0.9.45 wies einer oben, in
+ *     tts oder in ansage_regeln die ganze Datei ab, und einer im Teil zugang
+ *     fiel still weg.
+ *   - Ein leerer Wert ueberschreibt keinen bestehenden (bis 0.9.45 nur das
+ *     Aktionstoken; eine leere E-Mail im Teil zugang loeschte die geltende).
+ * Wie bisher: jeder Wert durch sk_wert_pruefen() und in dessen Normalform
+ * gespeichert, tts durch ansage_wert_pruefen() (eine Datei mit Sprechtoken
+ * wird abgewiesen), ansage_regeln durch ansage_regeln_wert(), temp_min <=
+ * temp_max; die Schluessel seit 0.9.30 (Sprachausgabe) und 0.9.34/0.9.36
+ * (Hausform) duerfen fehlen und behalten den Wert dieser Anlage, alle uebrigen
+ * muessen da sein; eine halb gueltige Datei aendert gar nichts. Der Vermerk
+ * ansage_token_herkunft kommt nie aus einer Datei.
  *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
- * Zugangsdaten|null, Hinweise[], Namen der beanstandeten Werte[]). Die beiden
- * letzten seit dem Durchgang 01.10.2026: Hinweise fuer ein leeres Token (O7),
- * Namen fuer die Warnung beim Sichern (X-3, O6).
+ * $mit_zugang bestimmt nur den Kopf _hinweis beim Sichern.
  */
-function sk_sicherung_lesen($roh)
+function sk_sicherung_beschreibung($mit_zugang = false)
 {
+    $roh = array('token' => null);     // das Aktionstoken wie in der DATEI (vor Regel 3) - fuer den Hinweis O7
+    $tts = array_merge(array_keys(ansage_vorgaben()), ansage_geheim());
+    if (sk_mit_zielen()) { $tts[] = 'ziele'; }
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'tts' => sicherung_block($tts, $tts_knoten) + array(
+            'sichern' => 'ansage_sicherung_bereinigen',
+            'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                /* Nr. 36 b (seit 0.9.30): eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die
+                 * Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus "Einstellungen sichern" und
+                 * wird abgewiesen; die geltenden Sprechtoken bleiben. Gemessen am Block der DATEI, denn Regel 3
+                 * setzt ein leeres Feld vorher auf den geltenden Wert. Ausgabeart, Adresse und Vorlage werden
+                 * wie im Formular geprueft (Heimnetz). */
+                $tm = ansage_sicherung_mangel($roh);
+                if ($tm) {
+                    return sprintf(sk_t('EINST.SICH_TTS_TOKEN'), htmlspecialchars(implode(', ', $tm), ENT_QUOTES, 'UTF-8'));
+                }
+                $g = '';
+                if (ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, sk_ansage_modi()) === null) {
+                    return sprintf(sk_t('EINST.SICH_TTS'),
+                        htmlspecialchars(ansage_kennung_text($g, sk_ansage_k()), ENT_QUOTES, 'UTF-8'));
+                }
+                return '';
+            },
+            'wandeln' => function ($w) {
+                $g = '';
+                return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, sk_ansage_modi());
+            }),
+        /* S2: ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'pruefen' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g) === null ? sk_t('EINST.SICH_REGELN') : ''; },
+            'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+        'zugang' => sicherung_block(array('email', 'passwort')),
+    );
+    /* Jeder einfache Wert wird in der Normalform von sk_wert_pruefen() gespeichert (Zahl als Zahl, Text
+     * ohne Rand), wie bis 0.9.45. */
+    foreach (array_keys(sk_regeln()) as $s) {
+        $schluessel[$s] = array('wandeln' => function ($w) use ($s) { list(, $r) = sk_wert_pruefen($s, $w); return $r; });
+    }
+    /* Nr. 36 b und Gruppe 41: eine Sicherung von 0.9.29 bzw. 0.9.33/0.9.35 oder frueher kennt diese Schluessel
+     * nicht; sie behalten den Wert dieser Anlage, und die Meldung nennt sie. Seit 0.9.46 ebenso empf_alter (seit
+     * 0.9.15): eine Sicherung von 0.9.13 oder 0.9.14 wurde bis 0.9.45 deshalb als unvollstaendig abgewiesen
+     * (gemessen 12.11.2026 mit Werkzeuge/sicherung_pruefstand.py an 0.9.45). */
+    foreach (array_merge(sk_ansage_neue_schluessel(), sk_neue_schluessel_0934(), array('empf_alter')) as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
+    }
+    return array(
+        'kennzeichen' => 'skodaconnect',
+        'hinweis' => 'Einstellungen des LoxBerry-Plugins Skoda Connect. Enthaelt das '
+                   . 'Aktionstoken dieser Anlage'
+                   . ($mit_zugang ? ' UND die Zugangsdaten des MySkoda-Kontos' : '')
+                   . ' - wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
+        /* Die Fassung im Kopf kommt wie bis 0.9.45 aus sk_fassung(): LoxBerry selbst (Plugin-Datenbank ueber
+         * LBSystem::pluginversion()), sonst plugin.cfg - keine fuenfte Stelle neben den vier, die
+         * Werkzeuge/fassung_setzen.py pflegt. */
+        'fassung' => 'sk_fassung',
+        'vorgaben' => sk_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'teile' => array('zugang' => 'sk_sicherung_zugang_lesen'),
+        'teile_jetzt' => array('zugang' => 'sk_sicherung_zugang_jetzt'),
+        'pruefen' => function ($k, $w) {
+            list($ok) = sk_wert_pruefen($k, $w);
+            return $ok ? '' : sprintf(sk_t('EINST.SICH_WERT'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+        },
+        /* Die Grenzen, die kein einzelner Wert kennt. */
+        'quer' => function ($neu) {
+            if (isset($neu['temp_min'], $neu['temp_max']) && (int) $neu['temp_min'] > (int) $neu['temp_max']) {
+                return array(array('temp_min', sk_t('EINST.FEHLER_TEMP_TAUSCH')));
+            }
+            return array();
+        },
+        'vorbehandeln' => function ($bereit, $jetzt, $daten) use (&$roh) {
+            $roh['token'] = (is_array($daten) && array_key_exists('aktionstoken', $daten)) ? $daten['aktionstoken'] : null;
+            /* O7 (Durchgang 01.10.2026), wie bisher: ein Token aus lauter Leerraum heisst ebenfalls "keins
+             * gesichert" - das geltende bleibt (die leere Zeichenkette faengt Regel 3 des Moduls ab). */
+            if (is_string($roh['token']) && $roh['token'] !== '' && trim($roh['token']) === ''
+                && isset($jetzt['aktionstoken']) && is_string($jetzt['aktionstoken'])) {
+                $bereit['aktionstoken'] = $jetzt['aktionstoken'];
+            }
+            return $bereit;
+        },
+        'roh' => function () use (&$roh) { return $roh; },
+        'jetzt' => function () { return sk_config(); },
+        't' => 'sk_t',
+    );
+}
+
+/** 0.9.46: Die Zugangsdaten fuer Sicherung und Regel 3, ungekuerzt aus zugang.json. */
+function sk_sicherung_zugang_jetzt()
+{
+    $z = sk_json_lesen(sk_paths()['zugang']);
+    return array(
+        'email'    => isset($z['email']) ? (string) $z['email'] : '',
+        'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
+    );
+}
+
+/**
+ * Der Teil "zugang" einer Sicherung (nur mit dem Haken beim Sichern). Er
+ * gehoert NICHT in die Konfiguration, sondern in zugang.json (0600).
+ * Rueckgabe fuer das Sicherungsmodul: array(Zugangsdaten|null,
+ * Beanstandungen[]). Unbekannte Felder hat das Modul schon verworfen und
+ * genannt; ein leeres Feld traegt den geltenden Wert (Regel 3).
+ *
+ * JEDES FELD TYPGEPRUEFT (O8, Durchgang 01.10.2026), wie bisher: bis 0.9.28
+ * wurde eine Liste in zugang.email oder zugang.passwort still zu '' - mit
+ * 0 Beanstandungen, und die gespeicherte Adresse war danach geloescht. Jeder
+ * Wert, der kein Text ist, ist eine Beanstandung, und es gilt nichts aus der
+ * Datei. Dieselbe Regel wie im Formular (sk_email_pruefen, sk_passwort_max).
+ * Ein fehlendes Feld heisst seit 0.9.46 "unveraendert" (null an
+ * sk_zugang_speichern()); bis 0.9.45 wurde eine fehlende E-Mail zu ''.
+ */
+function sk_sicherung_zugang_lesen($w)
+{
+    if (!is_array($w)) {
+        return array(null, array(sprintf(sk_t('EINST.SICH_WERT'), 'zugang')));
+    }
     $mangel = array();
-    $hinweise = array();
-    $namen = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(sk_t('EINST.SICH_KEIN_JSON')), 0, null);
+    $email = null;
+    $pw = null;
+    if (array_key_exists('email', $w)) {
+        list($ok_e, $email) = sk_email_pruefen($w['email']);
+        if (!$ok_e) {
+            $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.email');
+        }
     }
-    $neu = sk_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    $zugang = null;
+    if (array_key_exists('passwort', $w)) {
+        if (!is_string($w['passwort']) || strlen($w['passwort']) > sk_passwort_max()) {
+            $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.passwort');
+        } else {
+            $pw = $w['passwort'];
+        }
+    }
+    return $mangel ? array(null, $mangel) : array(array('email' => $email, 'passwort' => $pw), array());
+}
 
-    foreach ($daten as $k => $w) {
-        /* ---- 1. Der eigene Kopf ----
-         * Schluessel mit fuehrendem Unterstrich sind Beschriftung, keine
-         * Einstellung: _hinweis, _plugin, _fassung, _stand. Sie werden
-         * uebersprungen und NICHT als fremd beanstandet - sonst wiese das
-         * Plugin seine eigene Sicherungsdatei ab. */
-        if ((string) $k !== '' && $k[0] === '_') {
-            continue;
-        }
-
-        /* ---- 2. Die Zugangsdaten ----
-         * Sie stehen nur in der Datei, wenn beim Sichern der Haken gesetzt
-         * war. Sie gehoeren NICHT in die Konfiguration, sondern in ihre
-         * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und dem
-         * Aufrufer gesondert zurueckgegeben. */
-        /* JEDES FELD TYPGEPRUEFT (O8, Durchgang 01.10.2026). Bis 0.9.28 wurde
-         * eine Liste in zugang.email oder zugang.passwort still zu '' - mit
-         * 0 Beanstandungen, und die gespeicherte Adresse war danach geloescht
-         * (gemessen, Codebericht Nr. 6, Oberflaechenbericht F9d). Jetzt ist
-         * jeder Wert, der kein Text ist, eine Beanstandung, und es gilt nichts
-         * aus der Datei. Dieselbe Regel wie im Formular (sk_email_pruefen,
-         * sk_passwort_max). */
-        if ((string) $k === 'zugang') {
-            if (!is_array($w)) {
-                $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang');
-                $namen[] = 'zugang';
-                continue;
-            }
-            $email = '';
-            $pw = '';
-            $gut = true;
-            if (array_key_exists('email', $w)) {
-                list($ok_e, $email) = sk_email_pruefen($w['email']);
-                if (!$ok_e) {
-                    $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.email');
-                    $namen[] = 'zugang.email';
-                    $gut = false;
-                }
-            }
-            if (array_key_exists('passwort', $w)) {
-                if (!is_string($w['passwort']) || strlen($w['passwort']) > sk_passwort_max()) {
-                    $mangel[] = sprintf(sk_t('EINST.SICH_WERT'), 'zugang.passwort');
-                    $namen[] = 'zugang.passwort';
-                    $gut = false;
-                } else {
-                    $pw = $w['passwort'];
-                }
-            }
-            if ($gut) {
-                $zugang = array('email' => $email, 'passwort' => $pw);
-                $anzahl++;
-            }
-            continue;
-        }
-
-        /* ---- 3. Unbekannte Schluessel ----
-         * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
-         * anderen Fassung oder aus einem anderen Plugin. */
-        if ((string) $k === 'tts') {
-            /* Nr. 36 b (seit 0.9.30): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
-             * traegt die Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus
-             * "Einstellungen sichern" und wird abgewiesen; die geltenden Sprechtoken bleiben.
-             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
-            $sk_tm = ansage_sicherung_mangel($w);
-            if ($sk_tm) {
-                $mangel[] = sprintf(sk_t('EINST.SICH_TTS_TOKEN'),
-                                    htmlspecialchars(implode(', ', $sk_tm), ENT_QUOTES, 'UTF-8'));
-                $namen[] = 'tts';
-                continue;
-            }
-            $sk_tg = '';
-            $sk_tp = ansage_wert_pruefen($w, $sk_tg, sk_ansage_modi());
-            if ($sk_tp === null) {
-                $mangel[] = sprintf(sk_t('EINST.SICH_TTS'),
-                    htmlspecialchars(ansage_kennung_text($sk_tg, sk_ansage_k()), ENT_QUOTES, 'UTF-8'));
-                $namen[] = 'tts';
-                continue;
-            }
-            $sk_tj = sk_tts();
-            /* Welle Mehrfach-Ziele (0.9.34): "$sk_tp + $sk_tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
-            $sk_tneu = array('tts' => $sk_tp);
-            $sk_tjetzt = array('tts' => $sk_tj);
-            $sk_spaet = array();
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $sk_spaete = array();
-            if (is_array($sk_tneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($sk_tneu['tts'], $sk_spaete) = ansage_sicherung_spaet($sk_tneu['tts'],
-                    (isset($sk_tjetzt['tts']) && is_array($sk_tjetzt['tts'])) ? $sk_tjetzt['tts'] : null);
-            }
-            foreach ($sk_spaete as $sk_sn) { $sk_spaet[] = $sk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            if ($sk_spaet) {
-                $hinweise[] = sprintf(sk_t('EINST.SICH_SPAET'), htmlspecialchars(implode(', ', $sk_spaet), ENT_QUOTES, 'UTF-8'));
-            }
-            list($sk_tv) = ansage_vervollstaendigen($sk_tneu['tts'] + $sk_tj, 'aus');
-            $neu['tts'] = ansage_sicherung_tokens_behalten($sk_tv, $sk_tj);
-            $anzahl++;
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = sk_t('EINST.SICH_REGELN'); $namen[] = 'ansage_regeln'; continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(sk_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-
-        /* EIN LEERES TOKEN BEHAELT DAS GELTENDE (O7, Durchgang 01.10.2026;
-         * Klasse 10, Regeln/05: leer ist kein unzulaessiger Wert, sondern
-         * "keins gesichert"). Bis 0.9.28 wurde es angenommen, und die Seite
-         * wuerfelte gleich danach still ein NEUES - jede Adresse im
-         * Miniserver bekam 403, die Meldung lautete "zurueckgespielt"
-         * (gemessen, Codebericht Nr. 5, Oberflaechenbericht F9c). Ein Token als
-         * Liste oder Objekt bleibt eine Beanstandung (Typfehler, unten). */
-        if ((string) $k === 'aktionstoken' && is_string($w) && trim($w) === '') {
-            $geltend = (string) sk_config()['aktionstoken'];
-            $neu['aktionstoken'] = $geltend;
-            $hinweise[] = sk_t($geltend !== '' ? 'EINST.SICH_TOKEN_LEER' : 'EINST.SICH_TOKEN_LEER_NEU');
-            continue;
-        }
-
-        /* ---- 4. Und jetzt der WERT ----
-         *
-         * DAS IST DIE HAELFTE, DIE BIS 0.9.12 GEFEHLT HAT. Geprueft wurde nur
-         * der Schluessel; der Wert wurde unbesehen uebernommen. Gemessen mit
-         * einer von Hand gebauten Datei gingen "abc" als Takt, -99 als
-         * Stammdatenzyklus, ein Feld im Verlaufsfeld, ein Objekt im
-         * Sitzungsfeld und ein Themenpraefix mit Leerzeichen glatt durch.
-         *
-         * ABGEWIESEN, NICHT GEKAPPT: beim Speichern ueber das Formular waere
-         * Kappen vertretbar, denn der Bediener sieht das Ergebnis sofort. Bei
-         * einer Datei saehe niemand, dass aus 99999 eine 3600 wurde. */
-        list($ok, $rein) = sk_wert_pruefen($k, $w);
-        if (!$ok) {
-            $mangel[] = sprintf(sk_t('EINST.SICH_WERT'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = $rein;
-        $anzahl++;
+/**
+ * 0.9.46: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Das Modul
+ * beginnt bei den Vorgaben; der Vermerk ansage_token_herkunft nimmt hier den
+ * Wert dieser Anlage an. Der Block tts wird wie bis 0.9.45 vervollstaendigt:
+ * fehlt die Liste der weiteren Ziele (Datei einer aelteren Fassung), gelten
+ * die jetzigen (Spaetliste, genannt); fehlende Felder nehmen den geltenden
+ * Wert; die geltenden Sprechtoken bleiben. Rueckgabe: array(Konfiguration,
+ * Spaetliste).
+ */
+function sk_sicherung_vorbereiten(array $neu, array $jetzt, array $r)
+{
+    if (array_key_exists('ansage_token_herkunft', $jetzt)) {
+        $neu['ansage_token_herkunft'] = $jetzt['ansage_token_herkunft'];
     }
-
-    /* Die Grenzen, die kein einzelner Wert kennt. */
-    if (!$mangel && $neu['temp_min'] > $neu['temp_max']) {
-        $mangel[] = sk_t('EINST.FEHLER_TEMP_TAUSCH');
-        $namen[] = 'temp_min';
-        $namen[] = 'temp_max';
-    }
-    if ($anzahl === 0) {
-        $mangel[] = sk_t('EINST.SICH_LEER');
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    $sk_ohne_ansage = false;
-    foreach (array_keys(sk_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Gruppe 41 (0.9.34): eine Sicherung von 0.9.33 oder frueher kennt die neuen Schluessel nicht.
-             * Sie bleibt zurueckspielbar; die Anlage behaelt den jetzigen Wert (auch endpunkt_ein). */
-            if (in_array($fk, sk_neue_schluessel_0934(), true)) {
-                $sk_jetzt = sk_config();
-                $neu[$fk] = $sk_jetzt[$fk];
-                continue;
-            }
-            /* Nr. 36 b: eine Sicherung von 0.9.29 oder frueher kennt die Sprachausgabe noch
-             * nicht. Sie bleibt zurueckspielbar; die Sprachausgabe behaelt ihren jetzigen Stand,
-             * und die Seite sagt es. */
-            if (in_array($fk, sk_ansage_neue_schluessel(), true)) {
-                $sk_jetzt = sk_config();
-                $neu[$fk] = $sk_jetzt[$fk];
-                $sk_ohne_ansage = true;
-                continue;
-            }
-            $fehlend[] = $fk;
+    $spaet = array();
+    $tj = sk_tts();
+    if (!in_array('tts', $r['fehlt_behalten'], true) && is_array($neu['tts'])) {
+        $t = $neu['tts'];
+        if (function_exists('ansage_sicherung_spaet')) {
+            list($t, $spaet) = ansage_sicherung_spaet($t, is_array($tj) ? $tj : null);
         }
+        list($t) = ansage_vervollstaendigen($t + (is_array($tj) ? $tj : array()), 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($t, $tj);
     }
-    if ($sk_ohne_ansage) {
-        $hinweise[] = sk_t('EINST.SICH_OHNE_ANSAGE');
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(sk_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-        $namen = array_merge($namen, $fehlend);
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
-                 $hinweise, array_values(array_unique($namen)));
+    return array($neu, $spaet);
 }
 
 /**
@@ -3042,79 +2996,52 @@ function sk_sicherung_lesen($roh)
  *    erkennen koennen, was sie ist.
  * 2. GESIEBT AUS DEN VORGABEN, nicht die gelesene Konfiguration ausgegeben.
  *    Sonst kann ein Schluessel in die Datei geraten, den die Leseseite
- *    danach ablehnt - das Plugin verweigerte seine eigene Sicherung. Heute
- *    gibt es keinen solchen Rest; die Bauart liess ihn nur zu.
- * 3. DIE ZUGANGSDATEN, wenn der Bediener es will. Der Warntext am Knopf sagte
- *    bis 0.9.12 "Die Datei enthaelt Ihre Zugangsdaten" - und das stimmte
- *    nicht: sk_config() kennt weder E-Mail noch Passwort, die wohnen in
- *    zugang.json. Damit war der erklaerte Zweck, der Umzug auf einen zweiten
- *    LoxBerry, nicht erfuellbar: dort stuenden alle Felder richtig, und das
- *    Plugin kaeme trotzdem nicht an die Anlage. Jetzt entscheidet der
- *    Bediener, und der Dateiname sagt es mit.
+ *    danach ablehnt - das Plugin verweigerte seine eigene Sicherung.
+ * 3. DIE ZUGANGSDATEN, wenn der Bediener es will. sk_config() kennt weder
+ *    E-Mail noch Passwort, die wohnen in zugang.json. Ohne sie waere der
+ *    erklaerte Zweck, der Umzug auf einen zweiten LoxBerry, nicht erfuellbar.
+ *    Der Bediener entscheidet, und der Dateiname sagt es mit.
+ *
+ * 0.9.46: Kopf und Inhalt baut das gemeinsame Sicherungsmodul
+ * (sicherung_bauen()) nach sk_sicherung_beschreibung(): _hinweis, _plugin =
+ * 'skodaconnect' (wie seit 0.9.13), _fassung, _stand; dahinter alle
+ * Einstellungen in der Reihenfolge der Vorgaben samt Aktionstoken, mit dem
+ * Haken der Teil "zugang". Der Vermerk ansage_token_herkunft und die
+ * Sprechtoken bleiben draussen. X-3 wie bisher: wuerde das eigene
+ * Zurueckspielen die Datei abweisen, sagt es der Kopf (_warnung, nur Namen);
+ * geliefert wird sie trotzdem. $pruefen bleibt der Form halber; das Modul
+ * prueft immer. json_encode kann scheitern - dann '' und der Aufrufer meldet
+ * einen Fehler, statt eine 0-Byte-Datei zu liefern.
  */
 function sk_sicherung_schreiben($mit_zugang = false, $pruefen = true)
 {
-    $cfg = sk_config();
-    $aus = array(
-        '_hinweis' => 'Einstellungen des LoxBerry-Plugins Skoda Connect. Enthaelt das '
-                    . 'Aktionstoken dieser Anlage'
-                    . ($mit_zugang ? ' UND die Zugangsdaten des MySkoda-Kontos' : '')
-                    . ' - wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
-        '_plugin'  => 'skodaconnect',
-        '_fassung' => sk_fassung(),
-        '_stand'   => date('Y-m-d H:i:s'),
-    );
-    foreach (array_keys(sk_vorgaben()) as $k) {
-        $aus[$k] = isset($cfg[$k]) ? $cfg[$k] : '';
-    }
-    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung (Entwurf 5). */
-    if (isset($aus['tts']) && is_array($aus['tts'])) {
-        $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']);
-    }
-    unset($aus['ansage_token_herkunft']);     // Stamm 1.3.2: der Vermerk geht nie in eine Sicherung
-    if ($mit_zugang) {
-        $z = sk_json_lesen(sk_paths()['zugang']);
-        $aus['zugang'] = array(
-            'email'    => isset($z['email']) ? (string) $z['email'] : '',
-            'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
-        );
-    }
-    /* X-3 (Durchgang 01.10.2026): die Sicherung geht durch DIESELBE Pruefung
-     * wie das Zurueckspielen (sk_sicherung_maengel -> sk_sicherung_lesen).
-     * Wuerde sie dort abgewiesen, traegt sie eine Warnung im Kopf - nur die
-     * Namen, nie die Werte - und die Seite warnt gelb am Knopf. Geliefert wird
-     * sie trotzdem. Bis 0.9.28 nahm das Formular ein Passwort mit 300 Zeichen
-     * an, und die eigene Sicherung wurde danach abgewiesen, ohne dass es vorher
-     * jemand sagte (gemessen, Oberflaechenbericht F8). */
-    $namen = $pruefen ? sk_sicherung_maengel($mit_zugang) : array();
-    if ($namen) {
-        $kopf = array();
-        foreach ($aus as $k => $v) {
-            $kopf[$k] = $v;
-            if ($k === '_hinweis') {
-                $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen. '
-                                  . 'Beanstandet: ' . implode(', ', $namen) . '.';
-            }
-        }
-        $aus = $kopf;
-    }
-    $js = json_encode($aus, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    return $js === false ? '' : $js;
+    return sicherung_json(sk_sicherung_daten($mit_zugang));
+}
+
+/** 0.9.46: Die Sicherung als Feld (Kopf und Inhalt, mit dem Haken samt Zugangsdaten). */
+function sk_sicherung_daten($mit_zugang = false)
+{
+    $teile = $mit_zugang ? array('zugang' => sk_sicherung_zugang_jetzt()) : array();
+    return sicherung_bauen(sk_sicherung_beschreibung($mit_zugang), sk_config(), $teile);
 }
 
 /**
  * Welche Werte der Sicherung wuerde das Zurueckspielen beanstanden? (X-3)
- * Leer heisst: keiner. Gerechnet mit sk_sicherung_lesen() an der Sicherung
- * selbst (ohne Warnung gebaut), nicht nachgebaut.
+ * Leer heisst: keiner. Gerechnet seit 0.9.46 mit der Pruefung des
+ * Sicherungsmoduls (sicherung_selbstpruefung()) an genau der Datei, die
+ * "Einstellungen sichern" liefert. Nur Namen, nie Werte.
  */
 function sk_sicherung_maengel($mit_zugang = false)
 {
-    $js = sk_sicherung_schreiben($mit_zugang, false);
-    if ($js === '') {
-        return array('json');
+    $b = sk_sicherung_beschreibung($mit_zugang);
+    $cfg = sk_config();
+    $daten = sk_sicherung_daten($mit_zugang);
+    unset($daten['_warnung']);
+    $namen = array();
+    foreach (sicherung_selbstpruefung($b, $daten, $cfg) as $n) {
+        $namen[] = ($n === '-') ? 'json' : $n;
     }
-    $r = sk_sicherung_lesen($js);
-    return $r[0] === null ? $r[5] : array();
+    return array_values(array_unique($namen));
 }
 
 /* ==================================================================
