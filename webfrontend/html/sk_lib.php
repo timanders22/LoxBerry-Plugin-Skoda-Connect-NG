@@ -545,6 +545,30 @@ function sk_json_lage($pfad)
     return array($d, 'ok');
 }
 
+/**
+ * Frage 46 (Entscheidung des Hausherrn 18.11.2026). Diese Funktion steht wortgleich in sieben Linien:
+ * Abfahrtsassistent, Alexa-NG, AudiConnect, BYD-Autos, Beschattungswaechter, Skoda-Connect-NG und VolkswagenID.
+ * Ein unbekannter Unterschluessel im Block tts wird verworfen und mit Namen genannt, nie mit Wert; die uebrigen
+ * Eintraege bleiben samt Sprechtoken. Unbekannt heisst: die Pruefung der Linie ($pruefen, ein Eintrag allein,
+ * Rueckgabe der Grund oder '') nennt ihn mit TTS_EINTRAG. Ein bekannter Eintrag mit ungueltigem Wert bleibt stehen;
+ * ihn weist die Pruefung des ganzen Blocks ab, wie bisher. Bliebe nichts Bekanntes uebrig, bleibt der Block, wie er
+ * ist. Rueckgabe: array(Block, Liste der Namen 'tts.<eintrag>').
+ */
+function tts_unbekannte_verwerfen($tts, $pruefen)
+{
+    if (!is_array($tts)) { return array($tts, array()); }
+    $rest = $tts;
+    $namen = array();
+    foreach ($tts as $s => $w) {
+        $g = (string) call_user_func($pruefen, array($s => $w));
+        if (strpos($g, 'TTS_EINTRAG|') === 0) {
+            unset($rest[$s]);
+            $namen[] = 'tts.' . substr($g, strlen('TTS_EINTRAG|'));
+        }
+    }
+    return ($namen && $rest) ? array($rest, $namen) : array($tts, array());
+}
+
 function sk_config()
 {
     $lage = sk_config_lage();
@@ -559,6 +583,7 @@ function sk_config()
  *
  * 'fehlend'    steht in den Vorgaben, nicht in der Datei  -> kommt aus der Vorgabe
  * 'fremd'      steht in der Datei, nicht in den Vorgaben  -> wirkt NICHT
+ *              (seit dem 18.11.2026, Frage 46, auch ein unbekannter Eintrag im Block tts als 'tts.<eintrag>')
  * 'abgewiesen' steht in der Datei, ist aber unzulaessig   -> Vorgabe tritt ein
  *
  * Der Reiter Test nennt alle drei. Ein fremder Schluessel wirkt nicht, und
@@ -602,10 +627,19 @@ function sk_config_lage()
             /* Nr. 36 b (seit 0.9.30): der Block der Sprachausgabe nach den Regeln des Moduls
              * (Heimnetz, Token-Form, Ausgabearten ohne audioserver). Fehlende Eintraege bekommen
              * ihre Vorgabe; ein unzulaessiger Block steht unter 'abgewiesen' (nur der Name). */
+            /* Frage 46 (Entscheidung des Hausherrn 18.11.2026): ein unbekannter Unterschluessel wird vorher verworfen
+             * und unter 'fremd' genannt (nur der Name, er wirkt nicht); der Block bleibt samt Sprechtoken. Bis
+             * 0.9.48 wies er den ganzen Block ab, es galt die Vorgabe, und beim Zurueckspielen waren die Sprechtoken
+             * leer. tts_unbekannte_verwerfen() steht wortgleich in sieben Linien. */
+            list($w, $sk_tu) = tts_unbekannte_verwerfen($w, function ($t) {
+                $g = '';
+                return ansage_wert_pruefen($t, $g, sk_ansage_modi()) === null ? $g : '';
+            });
             $sk_tg = '';
             $sk_tp = ansage_wert_pruefen($w, $sk_tg, sk_ansage_modi());
             if ($sk_tp !== null) {
                 list($cfg['tts']) = ansage_vervollstaendigen($sk_tp, 'aus');
+                foreach ($sk_tu as $sk_n) { $fremd[] = $sk_n; }
             } else {
                 $abgewiesen[] = 'tts';
             }
