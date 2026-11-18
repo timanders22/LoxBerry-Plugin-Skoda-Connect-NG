@@ -258,21 +258,27 @@ function sk_pruefungen($netz = true)
      *
      * Bis 0.9.12 nannte der Reiter Test nichts davon. */
     $lage = sk_config_lage();
-    if (!$lage['fremd'] && !$lage['abgewiesen'] && !$lage['fehlend']) {
+    /* Frage 59 (18.11.2026): verworfene und ungueltige Eintraege im Block tts mit den Saetzen des Sprachmoduls. */
+    $sk_tm = sk_tts_saetze(isset($lage['tts_lage']) && is_array($lage['tts_lage']) ? $lage['tts_lage'] : array());
+    if (!$lage['fremd'] && !$lage['abgewiesen'] && !$lage['fehlend'] && !$sk_tm) {
         $zeilen[] = sk_pruefzeile(1, sk_t('TEST.F_CFG_LAGE'), sk_t('TEST.A_CFG_SAUBER'));
     } else {
         $teile = array();
         if ($lage['fremd']) {
             $teile[] = sprintf(sk_t('TEST.A_CFG_FREMD'), sk_e(implode(', ', $lage['fremd'])));
         }
-        if ($lage['abgewiesen']) {
+        $sk_ab = $sk_tm ? array_values(array_diff($lage['abgewiesen'], array('tts'))) : $lage['abgewiesen'];     // Frage 76
+        if ($sk_ab) {
             $teile[] = sprintf(sk_t('TEST.A_CFG_ABGEWIESEN'),
-                               sk_e(implode(', ', $lage['abgewiesen'])));
+                               sk_e(implode(', ', $sk_ab)));
         }
         if ($lage['fehlend']) {
             $teile[] = sprintf(sk_t('TEST.A_CFG_FEHLEND'), count($lage['fehlend']));
         }
-        $zeilen[] = sk_pruefzeile($lage['fremd'] || $lage['abgewiesen'] ? 0 : -1,
+        if ($sk_tm) {
+            $teile[] = sk_e(implode(' ', $sk_tm));
+        }
+        $zeilen[] = sk_pruefzeile($lage['fremd'] || $lage['abgewiesen'] || $sk_tm ? 0 : -1,
                                   sk_t('TEST.F_CFG_LAGE'), implode(' ', $teile));
     }
 

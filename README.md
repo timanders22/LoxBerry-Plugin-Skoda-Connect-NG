@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.48 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.49 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,12 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.49
+
+- **Behoben – Takt lief während des Updates:** Während einer Aktualisierung ruht jetzt der Minutentakt, bevor irgendetwas angelegt wird. Bis 0.9.48 lief er in der Lücke zwischen dem Löschen der alten Fassung und `postinstall.sh` und legte im Datenordner `befehle/` neu an. Ist die Marke eine Stunde oder älter, liegt sie in der Zukunft oder enthält sie keine Unixzeit, gilt sie nicht, damit eine abgebrochene Aktualisierung den Takt nicht dauerhaft stilllegt. Alle Plugins dieser Reihe fragen die Marke mit demselben Block ab. Es wirkt schon beim Update auf diese Fassung, denn der Installer legt die Takte der neuen Fassung vor der Lücke an, und das `preupgrade.sh` der neuen Fassung legt die Marke an. Gemessen in einer Nachstellung des Update-Ablaufs auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Befehlsbrücke 1.0.3:** Während einer Aktualisierung legen Wächter und Start der Befehlsbrücke nichts mehr an. Bis 1.0.2 entstanden in der Lücke `befehle/`, die Optionsdateien und die Sperrdatei, bevor die Marke den Start abwies. Gemessen in einer Nachstellung auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Prüfung der Sprachausgabe über das gemeinsame Sprachmodul 1.4.4:** Die Einstellungen der Sprachausgabe in der Konfiguration prüft jetzt das gemeinsame Modul in einem Schritt. Unbekannte Einträge werden wie bisher verworfen und genannt. Ist die Einstellung der Sprachausgabe ungültig, wird sie wie bisher als abgewiesen genannt, die Sprachausgabe bleibt aber jetzt aus; bis 0.9.48 galt dann die Vorgabe (ab Werk an). Das Protokoll nennt die Lage einmal je Änderung; der Reiter „Test“ nennt sie mit den gemeinsamen Sätzen des Moduls und führt die Sprachausgabe dann nicht mehr unter den Einstellungen, für die die Voreinstellung gilt. Gemessen mit Handproben auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (gültiger Block, unbekannter Eintrag, ungültiger Wert, beides, ohne Block); am Gerät nicht gemessen.
 
 ## Neu in 0.9.48
 
