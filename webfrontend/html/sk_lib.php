@@ -2906,7 +2906,17 @@ function sk_sicherung_beschreibung($mit_zugang = false)
             return $bereit;
         },
         'roh' => function () use (&$roh) { return $roh; },
-        'jetzt' => function () { return sk_config(); },
+        /* Modul 1.2.9 (Bauform des Hausherrn 15.11.2026): die geltende Konfiguration samt der Schluessel aus der Datei,
+         * die diese Fassung nicht kennt - oben und im Block tts. sk_config() sortiert sie aus; das Modul sah sie nie, und
+         * sie fielen beim Zurueckspielen still weg. Jetzt fallen sie weiter weg und werden mit Namen genannt. */
+        'jetzt' => function () use ($tts) {
+            $c = sk_config();
+            list($d) = sk_json_lage(sk_paths()['config']);
+            if (isset($c['tts'], $d['tts']) && is_array($c['tts']) && is_array($d['tts'])) {
+                $c['tts'] += array_diff_key($d['tts'], array_flip($tts));
+            }
+            return $c + $d;
+        },
         't' => 'sk_t',
     );
 }
