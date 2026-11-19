@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uhrabgleich  # gemeinsames Uhrmodul (Frage 95), Abschrift bin/uhrabgleich.py
 import logging
 import math
 import os
@@ -4610,7 +4611,9 @@ async def dienst(einmal: bool = False) -> int:
     # ueberlebt.
     ANMELDEWARTEN = (60, 300, 900, 1800, 3600)
 
-    async with ClientSession(timeout=ClientTimeout(total=GRENZE_SITZUNG, connect=15)) as sitzung:
+    _uhr_spur = uhrabgleich.uhr_aiohttp_spur(str(PDATA))  # Uhrmodul (Frage 95), nur lesend
+    async with ClientSession(timeout=ClientTimeout(total=GRENZE_SITZUNG, connect=15),
+                             trace_configs=[_uhr_spur] if _uhr_spur is not None else None) as sitzung:
         # mqtt_enabled=False mit Absicht: die Ereignisleitung der Bibliothek
         # laeuft ueber Firebase Cloud Messaging und meldet dazu ein Geraet beim
         # Anbieter an. Fuer einen Dienst, der ohnehin im Takt abruft, ist das

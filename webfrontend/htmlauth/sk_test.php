@@ -441,6 +441,13 @@ function sk_pruefungen($netz = true)
         $zeilen[] = sk_pruefzeile($sk_vz[0] === 2 ? -1 : (int) $sk_vz[0], sk_t('HAUS.VK_FRAGE'), sk_e($sk_vz[1]));
     }
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden. */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Skoda', 't' => 'sk_t'));
+    $uhr_z = sk_pruefzeile($uhr_s === 1 ? 1 : -1, htmlspecialchars(uhr_frage(array('t' => 'sk_t')), ENT_QUOTES, 'UTF-8'),
+        htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
+    $uhr_z['uhr'] = $uhr_s;
+    $zeilen[] = $uhr_z;
+
     return $zeilen;
 }
 

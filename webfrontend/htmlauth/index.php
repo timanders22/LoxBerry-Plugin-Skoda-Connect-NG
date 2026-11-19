@@ -2441,7 +2441,8 @@ foreach (sk_bausteinliste($sk_bnr) as $sk_bs) { ?>
 <tr><th style="width:36px;">&nbsp;</th><th><?= sk_e(sk_t('TEST.T_FRAGE')) ?></th><th><?= sk_e(sk_t('TEST.T_BEFUND')) ?></th></tr>
 <?php foreach (sk_pruefungen($sk_tab === 'tab-test') as $sk_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($sk_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($sk_z['uhr'])) { echo uhr_zeichen($sk_z['uhr']); }
+    elseif ($sk_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($sk_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $sk_z['frage'] ?></td><td><?= $sk_z['antwort'] ?></td></tr>
