@@ -362,6 +362,17 @@ _LETZTE_MELDUNG: dict[str, float] = {}
 # takt_stamm Zyklen: bei Vorgabe einmal pro Stunde. So lange scheiterte jeder
 # Abruf, ohne dass sich der Dienst neu anmeldete.
 _NEU_ANMELDEN = False
+# 0.9.51 (21.11.2026): EINE 403 ALLEIN IST KEIN ANMELDEFEHLER. Bis 0.9.50 verwarf jede 401 und jede 403 - auch an
+# einem einzelnen Endpunkt - die gemerkte Sitzung und meldete mit Benutzername und Passwort neu an, in jedem Lauf
+# aufs Neue (Befund aus Renault NG 2.1.40; dort am Geraet: 403 FUNCTIONAL err.func.privacy.on). myskoda 2.16.1
+# reicht die Ausnahme von aiohttp raise_for_status() weiter: Status, Grund und Kopfzeilen, KEIN Rumpf - eine
+# funktionale Kennung ist hier also nicht zu sehen. Belegt ist (myskoda Issue 627, Juli/September 2026): 403 an
+# einzelnen Endpunkten bei abgelaufener Berechtigung (LICENSE_EXPIRED), waehrend andere Endpunkte 200 liefern.
+# Deshalb: 401 und die Anmeldefehler der Bibliothek wie bisher; eine 403 verwirft nur, wenn in DIESEM Lauf kein
+# Abruf mit der Anmeldung geantwortet hat (anmeldung_verwerfen()).
+_ABGEWIESEN_403: list = []     # Stellen, die in diesem Lauf mit 403 abgewiesen wurden
+_ANTWORT_IM_LAUF = False       # hat in diesem Lauf irgendein Abruf mit dieser Anmeldung geantwortet?
+_403_GEMELDET: tuple = ()      # zuletzt protokollierte Menge (Eintritt und Ende je einmal)
 
 
 class WachsameRotation(RotatingFileHandler):
@@ -1303,16 +1314,50 @@ ANMELDEFEHLER = ("TokenExpiredError", "NotAuthorizedError",
 
 
 def ist_anmeldefehler(err: Exception) -> bool:
+    """401 oder ein Anmeldefehler der Bibliothek. Eine 403 allein nicht (0.9.51, siehe _ABGEWIESEN_403)."""
     if type(err).__name__ in ANMELDEFEHLER:
         return True
     status = getattr(err, "status", None)
-    return status in (401, 403)
+    return status == 401
 
 
-def anmeldung_vormerken(err: Exception) -> None:
+def ist_abweisung_403(err: Exception) -> bool:
+    """HTTP 403 ohne Anmeldefehler der Bibliothek - entschieden wird erst am Ende des Laufs."""
+    return type(err).__name__ not in ANMELDEFEHLER and getattr(err, "status", None) == 403
+
+
+def anmeldung_vormerken(err: Exception, wo: str = "") -> None:
     global _NEU_ANMELDEN
     if ist_anmeldefehler(err):
         _NEU_ANMELDEN = True
+    elif ist_abweisung_403(err):
+        _ABGEWIESEN_403.append(wo or "?")
+
+
+def antwort_vermerken() -> None:
+    """Ein Abruf hat mit der aktuellen Anmeldung geantwortet."""
+    global _ANTWORT_IM_LAUF
+    _ANTWORT_IM_LAUF = True
+
+
+def anmeldung_verwerfen(neu_anmelden: bool, abgewiesen: list, antwort: bool) -> bool:
+    """Verwerfen bei einem Anmeldefehler - oder wenn eine 403 kam und in diesem Lauf nichts geantwortet hat."""
+    return bool(neu_anmelden or (abgewiesen and not antwort))
+
+
+def abweisung_403_melden(abgewiesen: list) -> None:
+    """Eintritt (WARNING) und Ende (INFO) je einmal, dazwischen keine Zeile. Gerufen nur nach einem Lauf, in dem
+    etwas geantwortet hat und nichts verworfen wurde."""
+    global _403_GEMELDET
+    jetzt = tuple(sorted(set(abgewiesen)))
+    if jetzt and jetzt != _403_GEMELDET:
+        _LOG.warning("Die Skoda-Cloud weist %s mit HTTP 403 ab, andere Abrufe desselben Laufs wurden beantwortet. "
+                     "Das ist kein Anmeldefehler - die Anmeldung bleibt. Meist fehlt die Berechtigung fuer diese "
+                     "Funktion, etwa ein abgelaufener Dienst im Skoda-Konto (MySkoda-App).",
+                     ", ".join("'%s'" % n for n in jetzt))
+    elif not jetzt and _403_GEMELDET:
+        _LOG.info("Die Abweisung mit HTTP 403 (%s) ist vorbei.", ", ".join("'%s'" % n for n in _403_GEMELDET))
+    _403_GEMELDET = jetzt
 
 
 def fehlertext(err: Exception) -> str:
@@ -3108,7 +3153,7 @@ async def auftrag_ausfuehren(ms, vins: list, cfg: dict, b: dict) -> tuple:
     try:
         ok, meldung, zusatz = await asyncio.wait_for(befehl_ausfuehren(ms, vins, cfg, b), timeout=GRENZE_BEFEHL)
     except Exception as err:  # noqa: BLE001
-        anmeldung_vormerken(err)
+        anmeldung_vormerken(err, "auftrag")
         ok, meldung, zusatz = 0, fehlertext(err), {}
     if ok == 1 and zusatz.get("vin"):
         _BREMSE.befehl_buchen(f"{b.get('aktion')}@{zusatz['vin']}", f"{b.get('temp', '')}|{b.get('prozent', '')}")
@@ -3609,7 +3654,7 @@ async def warteschlange(ms, vins: list[str], cfg: dict) -> bool:
             # Schreibbefehl nur den Fehlschlag, ohne je eine Neuanmeldung
             # auszuloesen. Schreibbefehle scheiterten damit bis zum naechsten
             # Zufallstreffer der Stammdatenabfrage.
-            anmeldung_vormerken(err)
+            anmeldung_vormerken(err, "befehl")
             ok, meldung, zusatz = 0, fehlertext(err), {}
         # Gebucht wird genau hier: nach dem Absetzen, nur bei Erfolg, und nur
         # fuer die schreibenden Befehle - 'abruf' hat seine eigene Bremse.
@@ -3632,12 +3677,19 @@ async def warteschlange(ms, vins: list[str], cfg: dict) -> bool:
 # ---------------------------------------------------------------------------
 async def endpunkt(ausfaelle: dict, name: str, koro, grenze: int = GRENZE_ABRUF):
     try:
-        return await asyncio.wait_for(koro, timeout=grenze)
+        ergebnis = await asyncio.wait_for(koro, timeout=grenze)
     except Exception as err:  # noqa: BLE001
         ausfaelle[name] = fehlertext(err)
-        anmeldung_vormerken(err)
-        melde_gebremst(f"ep_{name}", f"Abruf '{name}' fehlgeschlagen: {ausfaelle[name]}", 900)
+        if ist_abweisung_403(err):
+            ausfaelle[name] = ("Die Skoda-Cloud hat diesen Abruf abgewiesen (HTTP 403). Antworten andere Abrufe "
+                               "desselben Laufs, ist das kein Anmeldefehler, und die Anmeldung bleibt: meist fehlt die "
+                               "Berechtigung fuer diese Funktion, etwa ein abgelaufener Dienst im Skoda-Konto.")
+        anmeldung_vormerken(err, name)
+        if not ist_abweisung_403(err):  # 403: Eintritt und Ende ueber abweisung_403_melden() (0.9.51)
+            melde_gebremst(f"ep_{name}", f"Abruf '{name}' fehlgeschlagen: {ausfaelle[name]}", 900)
         return None
+    antwort_vermerken()  # ein Fahrzeug-Endpunkt hat geantwortet
+    return ergebnis
 
 
 def kann(stamm: dict, kennung: str) -> bool:
@@ -4716,7 +4768,7 @@ async def dienst(einmal: bool = False) -> int:
         # ueber die falsche Ursache.
         ok = 0
 
-        global _NEU_ANMELDEN
+        global _NEU_ANMELDEN, _ANTWORT_IM_LAUF
         while _LAUF:
             cfg = config()  # Aenderungen aus der Oberflaeche ohne Neustart uebernehmen
             beginn = time.time()
@@ -4724,6 +4776,8 @@ async def dienst(einmal: bool = False) -> int:
             fehler = ""
             fahrzeuge: dict[str, dict] = {}
             _NEU_ANMELDEN = False
+            _ABGEWIESEN_403.clear()     # Merker je Lauf (0.9.51)
+            _ANTWORT_IM_LAUF = False
             # Hat die Cloud die Fahrzeugliste IN DIESEM LAUF geliefert? Nur dann
             # gilt ein fehlendes Fahrzeug als entfernt (M4) - ein Ausfall des
             # Abrufs ist keine Aussage ueber das Konto.
@@ -4732,6 +4786,7 @@ async def dienst(einmal: bool = False) -> int:
                 if not vins or zyklus % cfg["takt_stamm"] == 0:
                     vins = sorted(await asyncio.wait_for(
                         ms.list_vehicle_vins(), timeout=GRENZE_ABRUF))
+                    antwort_vermerken()  # die Fahrzeugliste hat geantwortet
                     vins_frisch = True
                 nummern = nummern_zuordnen(vins)
                 for vin in sorted(vins):
@@ -4767,7 +4822,7 @@ async def dienst(einmal: bool = False) -> int:
                         # einer Ausnahme AUSSERHALB von endpunkt() aus, verwarf
                         # das aeussere except bis 0.9.12 den ganzen Zyklus -
                         # auch die bereits erfolgreich abgerufenen Fahrzeuge.
-                        anmeldung_vormerken(err)
+                        anmeldung_vormerken(err, "fahrzeug")
                         _LOG.error("Fahrzeug %d (%s) uebersprungen: %s",
                                    i, vin[-6:], fehlertext(err))
                 ok = 1 if fahrzeuge and any(f.get("ok") for f in fahrzeuge.values()) else 0
@@ -4778,12 +4833,20 @@ async def dienst(einmal: bool = False) -> int:
                 fehler = fehlertext(err)
                 fehler_folge += 1
                 melde_gebremst("abruf", f"Abruf fehlgeschlagen: {fehler}", 900)
-                anmeldung_vormerken(err)
+                anmeldung_vormerken(err, "abruf")
 
             # Die Neuanmeldung haengt jetzt am Merker, nicht am aeusseren
             # except - sie wird also auch ausgeloest, wenn der 401 an einem
             # einzelnen Endpunkt oder an einem Schreibbefehl aufgetreten ist.
-            if _NEU_ANMELDEN and _LAUF:
+            # 0.9.51: eine 403 verwirft nur, wenn in diesem Lauf kein Abruf geantwortet hat (anmeldung_verwerfen()).
+            verwerfen = anmeldung_verwerfen(_NEU_ANMELDEN, _ABGEWIESEN_403, _ANTWORT_IM_LAUF)
+            if verwerfen and _LAUF and not _NEU_ANMELDEN:
+                melde_gebremst("abweisung_403_alle",
+                               "Alle Abrufe dieses Laufs wurden mit HTTP 403 abgewiesen, keiner hat geantwortet - die "
+                               "Anmeldung wird verworfen und neu aufgebaut (%s)." % ", ".join(sorted(set(_ABGEWIESEN_403))), 900)
+            if not verwerfen and _ANTWORT_IM_LAUF and _LAUF:
+                abweisung_403_melden(_ABGEWIESEN_403)
+            if verwerfen and _LAUF:
                 _NEU_ANMELDEN = False
                 sitzung_loeschen()
                 # 0.9.43: der Zugang wird auch hier frisch gelesen (wie in anmelden_mit_geduld()). Bis 0.9.42 nahm die

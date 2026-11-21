@@ -94,7 +94,8 @@ if (preg_match($sk_muster, sk_post('activetab'))) {
 $sk_upgrade = sk_upgrade_laeuft();
 if ($sk_upgrade) {
     if (class_exists('LBWeb', false)) {
-        LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
+        require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+        LBWeb::lbheader(plugin_kopftitel('Skoda Connect', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
     }
     echo '<div class="sm-wrap" style="max-width:980px;margin:0 auto;'
        . 'font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;color:#333;">' . "\n"
@@ -1081,7 +1082,8 @@ $sk_verlauftag = (isset($_GET['tag']) && is_string($_GET['tag'])
 $sk_rahmen = class_exists('LBWeb', false);
 
 if ($sk_rahmen) {
-    LBWeb::lbheader('Skoda Connect', 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Skoda Connect', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>

@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.50 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.51 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,11 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.51
+
+- **Behoben – eine Abweisung mit HTTP 403 an einem einzelnen Abruf verwirft nicht mehr die Anmeldung:** Bis 0.9.50 hielt der Dienst jede Antwort 401 oder 403 für eine abgewiesene Anmeldung, auch wenn sie nur an einem einzelnen Abruf kam (etwa der Reichweite) und alle anderen Abrufe desselben Laufs geantwortet hatten: Er löschte die gemerkte Anmeldung und meldete sich mit Benutzername und Passwort neu an – in jedem Lauf aufs Neue, und wiederholte Anmeldungen drosselt die Anmeldeschnittstelle. Belegt ist eine solche 403 bei abgelaufener Berechtigung einer Funktion im Skoda-Konto, während andere Abrufe weiter antworten (Bibliothek myskoda, Issue 627). Den Antworttext reicht myskoda 2.16.1 nicht weiter; feiner als nach dem Statuscode lässt sich deshalb nicht unterscheiden. Jetzt gilt: 401 und die Anmeldefehler der Bibliothek verwerfen die Anmeldung wie bisher, eine 403 nur dann, wenn in diesem Lauf kein Abruf geantwortet hat. Bleibt die Anmeldung, steht beim Eintritt eine WARNING-Zeile mit den betroffenen Abrufen und der wahrscheinlichen Ursache im Protokoll und beim Ende eine INFO-Zeile, dazwischen keine; der Ausfall erscheint wie bisher beim Fahrzeug in der Oberfläche (mit einem neuen Text) und im Reiter „Test“. Gemessen mit nachgebildeten Antworten, der Dienst läuft dabei wirklich über mehrere Läufe; an der echten Cloud und am Gerät nicht gemessen.
+- Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
 
 ## Neu in 0.9.50
 
