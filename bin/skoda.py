@@ -1305,10 +1305,11 @@ def zeitstempel(wert):
 # Zeitueberlauf (nichts antwortet) oder EHOSTUNREACH (kein Weg dorthin).
 # ---------------------------------------------------------------------------
 # Die Fehler, nach denen eine Neuanmeldung sinnvoll ist. AuthorizationFailedError
-# gehoert dazu, obwohl er meist ein falsches Passwort bedeutet: die Bibliothek
-# wirft ihn auch, wenn der Refresh-Weg abgewiesen wurde. Ein Versuch mit
-# Benutzername und Passwort klaert das - und wenn der auch scheitert, steht der
-# richtige Grund im Protokoll.
+# gehoert dazu: myskoda wirft ihn, wenn der Anmeldeablauf nicht wie erwartet zu Ende
+# kam - bei einem falschen Passwort ebenso wie bei einer Antwort ohne die erwartete
+# Weiterleitung oder einem abgewiesenen Refresh-Weg (myskoda 2.16.1, authorization.py;
+# 0.9.53, Issue #1). Ein Versuch mit Benutzername und Passwort klaert den Refresh-Fall -
+# und wenn der auch scheitert, steht die Ursache im Protokoll.
 ANMELDEFEHLER = ("TokenExpiredError", "NotAuthorizedError",
                  "AuthorizationFailedError", "InvalidUrlError")
 
@@ -1360,6 +1361,45 @@ def abweisung_403_melden(abgewiesen: list) -> None:
     _403_GEMELDET = jetzt
 
 
+def ursache_text(err: BaseException) -> str:
+    """Klasse und Text der Ursache einer Ausnahme (__cause__, sonst __context__) fuer Protokoll und Status.
+    E-Mail-Adressen werden x@x, alles hinter ? oder # einer Adresse faellt weg (dort koennen Anmeldecodes
+    stehen), hoechstens 200 Zeichen, eine Zeile. Leer, wenn es keine Ursache gibt."""
+    u = err.__cause__ if err.__cause__ is not None else err.__context__
+    if u is None:
+        return ""
+    t = str(u)
+    t = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "x@x", t)
+    t = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^\s?#'\"]*)[?#][^\s'\"]*", r"\1?...", t)
+    t = " ".join(t.split())[:200]
+    return "%s: %s" % (type(u).__name__, t) if t else type(u).__name__
+
+
+def anmeldung_nicht_abgeschlossen(err: BaseException) -> str:
+    """Meldung fuer AuthorizationFailedError (0.9.53, Issue #1). Bis 0.9.52 hiess es "Benutzername oder
+    Passwort stimmen nicht" - das weiss das Plugin aber nicht: myskoda 2.16.1 wirft diesen Fehler fuer jeden
+    InvalidUrlClientError oder KeyError im ganzen Anmeldeablauf (etwa eine Antwort ohne Kopfzeile Location) und
+    wenn keine Sitzung entstand. Die Meldung nennt die Ursache und ein falsches Passwort nur als einen moeglichen
+    Grund."""
+    u = err.__cause__ if err.__cause__ is not None else err.__context__
+    ursache = ursache_text(err)
+    satz = ("Anmeldung bei Skoda nicht abgeschlossen: der Anmeldeablauf von myskoda ist nicht wie erwartet zu "
+            "Ende gekommen (AuthorizationFailedError).")
+    if u is None:
+        satz += " Eine Ursache hat myskoda nicht mitgegeben."
+    elif isinstance(u, KeyError):
+        satz += (" Eine Antwort des Anmeldedienstes trug nicht den erwarteten Eintrag (Ursache: %s) - meist "
+                 "fehlte die Weiterleitung, die der Ablauf erwartet." % ursache)
+    elif any("InvalidUrl" in k.__name__ for k in type(u).__mro__):
+        satz += (" Der Anmeldedienst leitete an eine Adresse weiter, der myskoda nicht folgen kann (Ursache: %s); "
+                 "myskoda nennt dafuer ein falsches Passwort als moegliche Ursache." % ursache)
+    else:
+        satz += " Ursache: %s." % ursache
+    return satz + (" Moegliche Gruende: ein falsches Passwort oder ein falscher Benutzername des MySkoda-Kontos "
+                   "(nicht eines Haendlerportals), eine offene Zustimmung in der MySkoda-App oder ein geaenderter "
+                   "Anmeldeablauf bei Skoda. Aus dem Fehler allein laesst sich das nicht unterscheiden.")
+
+
 def fehlertext(err: Exception) -> str:
     name = type(err).__name__
     inhalt = str(err) or name
@@ -1374,9 +1414,12 @@ def fehlertext(err: Exception) -> str:
     if name in ("MarketingConsentError",):
         return ("Skoda verlangt eine Angabe zur Werbeeinwilligung. Einmal in der MySkoda-App "
                 "anmelden und die Abfrage beantworten.")
-    if name in ("AuthorizationFailedError", "NotAuthorizedError"):
-        return ("Anmeldung abgewiesen: Skoda-Benutzername oder Passwort stimmen nicht. Es sind "
-                "die Zugangsdaten des MySkoda-Kontos, nicht die eines Haendlerportals.")
+    if name == "AuthorizationFailedError":
+        return anmeldung_nicht_abgeschlossen(err)
+    if name == "NotAuthorizedError":
+        return ("Nicht angemeldet: myskoda hatte in diesem Moment keine gueltige Anmeldung "
+                "(NotAuthorizedError). Der Dienst meldet sich beim naechsten Versuch neu an. Ob "
+                "Benutzername und Passwort stimmen, laesst sich daraus nicht erkennen.")
     if name == "TokenExpiredError":
         return ("Die gespeicherte Sitzung ist abgelaufen. Der Dienst meldet sich beim naechsten "
                 "Versuch neu mit Benutzername und Passwort an.")
@@ -3003,7 +3046,26 @@ def kabel_nacht(cfg: dict, hm: str) -> bool:
     return (v <= hm < b) if v < b else (hm >= v or hm < b)
 
 
-def kabel_entscheiden(f: dict, m: dict, cfg: dict, abfahrt_in, jetzt: float, alter) -> tuple:
+def kabel_regeln_heute():
+    """0.9.53 (Entscheidung des Hausherrn 22.11.2026, Sprachmodul 1.5.0): die Nachtruhe fuer heute aus der Bruecke sk_ansage.php
+    (Frage regeln_heute; an Nicht-Schultagen mit dem spaeteren Ende) - der gemeinsame Weg ueber das Sprachmodul, kein
+    Nachbau hier. Rueckgabe (an, von, bis, nacht) oder None (dann gelten die Regeln, wie sie sind)."""
+    try:
+        e = subprocess.run(["php", str(SKRIPT_ANSAGE), PNAME], input=b'{"frage": "regeln_heute"}',
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=ANSAGE_FRIST_S, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        melde_gebremst("kabel_regeln", "Kabel vergessen: die Bruecke sk_ansage.php war nicht aufrufbar (%s)." % type(err).__name__, 3600)
+        return None
+    for z in e.stdout.decode("ascii", "replace").splitlines():
+        if z.startswith("REGELN;"):
+            f = dict(t.split("=", 1) for t in z.strip().split(";")[1:] if "=" in t)
+            v, b = f.get("VON", ""), f.get("BIS", "")
+            if f.get("AN") in ("0", "1") and f.get("NACHT") in ("0", "1") and len(v) == 5 and v[2] == ":" and len(b) == 5 and b[2] == ":":
+                return (f["AN"] == "1", v, b, f["NACHT"] == "1")
+    return None
+
+
+def kabel_entscheiden(f: dict, m: dict, cfg: dict, abfahrt_in, jetzt: float, alter, heute=None) -> tuple:
     """Die Warnung "Kabel vergessen" (Form mg_kabel_entscheiden()): zu Hause, Kabel nicht gesteckt, Akku unter der
     Schwelle, Stand bis 12 h; abends (ab kabel_uhr), am Morgen nach der Nachtruhe oder wenn die Abfahrt naht.
     Unbekannt heisst nie warnen. Hoechstens einmal je Standzeit und Tag. In der Nachtruhe wird nichts verbraucht.
@@ -3024,11 +3086,18 @@ def kabel_entscheiden(f: dict, m: dict, cfg: dict, abfahrt_in, jetzt: float, alt
     hm, tag = time.strftime("%H:%M", z), time.strftime("%Y%m%d", z)
     if m.get("gesagt") or kabel_nacht(cfg, hm) or str(m.get("tag")) == tag:
         return (False, m)
+    an, _v, bis = kabel_regeln(cfg)
+    # 0.9.53: an Nicht-Schultagen endet die Nachtruhe spaeter. Am Vormittag fragt der Takt die Bruecke nach den Regeln
+    # fuer heute (heute(), hoechstens einmal je Takt); ohne Antwort gelten die Regeln, wie sie sind.
+    r = heute() if (heute is not None and an and hm < "12:00") else None
+    if r is not None:
+        if r[3]:
+            return (False, m)        # Nachtruhe nach den Regeln fuer heute: nichts verbraucht
+        bis = r[2]
     uhr = str(cfg.get("kabel_uhr") or "")
     if len(uhr) != 5 or uhr[2] != ":":
         uhr = "20:00"
     abends = hm >= uhr
-    an, _v, bis = kabel_regeln(cfg)
     morgen = an and hm < "12:00" and int(m["seit"]) < time.mktime(time.strptime(tag + " " + bis, "%Y%m%d %H:%M"))
     grenze = ganz(cfg.get("kabel_abfahrt_min"), 0)
     abfahrt = grenze > 0 and abfahrt_in is not None and 1 <= int(abfahrt_in) <= grenze
@@ -3049,11 +3118,18 @@ def kabel_takt(horcher, cfg: dict, stand: dict, jetzt: float) -> list:
     if ganz(cfg.get("kabel_abfahrt_min"), 0) > 0 and cfg.get("abfahrt_ein") and horcher is not None:
         in_min, _h = vorklima_minuten(horcher, cfg, jetzt)
     gewarnt = []
+    merk: dict = {}
+
+    def heute():
+        # 0.9.53: die Regeln fuer heute hoechstens einmal je Takt, erst wenn ein Fahrzeug sie braucht
+        if "r" not in merk:
+            merk["r"] = kabel_regeln_heute()
+        return merk["r"]
     for nr in sorted(fahrzeuge, key=lambda n: ganz(n, 0)):
         f = fahrzeuge[nr]
         if not isinstance(f, dict):
             continue
-        faellig, m = kabel_entscheiden(f, alt.get(str(nr)) or {}, cfg, in_min, jetzt, haus_fz_alter(f, stand, jetzt))
+        faellig, m = kabel_entscheiden(f, alt.get(str(nr)) or {}, cfg, in_min, jetzt, haus_fz_alter(f, stand, jetzt), heute)
         neu[str(nr)] = m
         if faellig:
             gewarnt.append(str(nr))

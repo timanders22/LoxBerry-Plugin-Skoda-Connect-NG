@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.52 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.53 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,14 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.53
+
+- **Berichtigt – irreführende Meldung bei einer nicht gelungenen Anmeldung (Issue #1):** Bis 0.9.52 hieß es „Anmeldung abgewiesen: Skoda-Benutzername oder Passwort stimmen nicht“, sobald die Bibliothek myskoda `AuthorizationFailedError` meldete. Das weiß das Plugin aber nicht: myskoda 2.16.1 wirft diesen Fehler für jeden Anmeldeablauf, der nicht wie erwartet zu Ende kommt – bei einem falschen Passwort ebenso wie bei einer Antwort des Anmeldedienstes ohne die erwartete Weiterleitung (nachgelesen im Quelltext von myskoda, `myskoda/auth/authorization.py`). Die Meldung sagt jetzt „Anmeldung bei Skoda nicht abgeschlossen“, nennt die Ursache, die myskoda mitgibt (Klasse und Text; E-Mail-Adressen als `x@x`, alles hinter `?` einer Adresse entfernt, höchstens 200 Zeichen), und führt ein falsches Passwort nur als einen möglichen Grund neben einer offenen Zustimmung in der MySkoda-App und einem geänderten Anmeldeablauf. Bei `NotAuthorizedError` heißt es „Nicht angemeldet“; auch dort behauptet die Meldung nichts mehr über die Zugangsdaten. Die Meldung steht im Protokoll, im Zustand und oben auf der Seite unter „Letzte Störung“; Kennungen, MQTT-Themen und das Verhalten des Dienstes (Neuanmeldung, Wartezeiten) bleiben unverändert.
+- Gemessen auf dem Arbeitsrechner mit nachgebauten Ausnahmen (ohne myskoda, ohne Netz): neun Fälle, jede der sieben Stellen einzeln zurückgebaut, jede ergab mindestens einen roten Fall; der Vorzustand 0.9.52 ergibt sieben rote Fälle. **Nicht gemessen:** eine echte Anmeldung an der Skoda-Cloud – dafür fehlt ein Konto; am Gerät nicht gemessen.
+- Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
+- Reiter Test: neue Zeile zum Ende der Nachtruhe an Nicht-Schultagen (Quelle der Zeit, Art des heutigen Tages).
+- Die Warnung „Kabel vergessen“ am Morgen kommt an Nicht-Schultagen erst nach dem späteren Ende der Nachtruhe und wird bis dahin nicht verbraucht. Die Regeln für heute fragt das Plugin nur am Vormittag und nur, wenn es sonst warnen würde (über die Brücke bin/sk_ansage.php und das Sprachmodul).
 
 ## Neu in 0.9.52
 
