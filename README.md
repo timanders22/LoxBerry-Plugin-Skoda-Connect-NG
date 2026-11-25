@@ -6,7 +6,7 @@ Klimatisierung, Standort, Warnleuchten sowie Inspektions- und
 Ölservice-Fristen. Auf Wunsch lassen sich Klimatisierung, Ladevorgang,
 Ladegrenze und Scheibenheizung schalten.
 
-> **Fassung 0.9.54 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
+> **Fassung 0.9.55 — ungeprüft.** Das Plugin wurde ohne Skoda-Konto und ohne
 > Fahrzeug gebaut. Aufbau, Oberfläche, Endpunkt, Absicherung und Sprachdateien
 > sind geprüft; ob die Anmeldung an der Skoda-Cloud gelingt, ob ein Fahrzeug
 > alle abgefragten Endpunkte beantwortet und ob die schreibenden Befehle die
@@ -16,6 +16,10 @@ Ladegrenze und Scheibenheizung schalten.
 > und deshalb sind schreibende Befehle ab Werk gesperrt. Die
 > Selbstaktualisierung zeigt auf dieses Repository; bei gleicher Fassung wird
 > niemandem ein Update angeboten.
+
+## Neu in 0.9.55
+
+- **Neuanmeldung nach einem abgewiesenen Befehl:** Wurde ein Befehl aus der Warteschlange (oder die Vorklimatisierung) zwischen zwei Abrufen mit einem Anmeldefehler abgewiesen, merkte sich der Dienst die nötige Neuanmeldung zwar, löschte den Merker aber zu Beginn des nächsten Abrufs wieder. Die Anmeldung wurde deshalb nicht erneuert, und weitere Befehle konnten an derselben Stelle scheitern. Jetzt wird nach einem solchen Fehler beim nächsten Abruf neu angemeldet. Gemessen mit einem Prüfstand, in dem der Dienst gegen eine nachgebildete Skoda-Cloud läuft; an einem echten Konto nicht gemessen.
 
 ## Neu in 0.9.54
 

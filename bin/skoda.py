@@ -4914,7 +4914,9 @@ async def dienst(einmal: bool = False) -> int:
             ok = 0
             fehler = ""
             fahrzeuge: dict[str, dict] = {}
-            _NEU_ANMELDEN = False
+            # _NEU_ANMELDEN wird hier NICHT geloescht (0.9.55): ein Anmeldefehler aus dem Wartetakt (Befehl in
+            # warteschlange() oder g41_takt()) setzt ihn NACH dem Lauf; bis 0.9.54 loeschte diese Zeile ihn, bevor
+            # anmeldung_verwerfen() ihn las, und die Neuanmeldung ging verloren. Geloescht wird nach Gebrauch.
             _ABGEWIESEN_403.clear()     # Merker je Lauf (0.9.51)
             _ANTWORT_IM_LAUF = False
             # Hat die Cloud die Fahrzeugliste IN DIESEM LAUF geliefert? Nur dann
