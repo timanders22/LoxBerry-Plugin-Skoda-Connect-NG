@@ -155,6 +155,9 @@ function sk_pruefungen($netz = true)
      * HTTP anbindet, hatte damit ein dauerhaftes rotes Kreuz im Reiter Test.
      * Wer sich daran gewoehnt, uebersieht das naechste. Die Zeile darueber
      * macht es fuer denselben Sachverhalt seit 0.9.13 richtig und nimmt -1. */
+    // 0.9.54: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $sk_hb = sk_pruef_praefix_haus($cfg);
+    $zeilen[] = sk_pruefzeile($sk_hb[0], sk_e(sk_t('HAUSBEREICH.F_TEST')), $sk_hb[1]);
     $m = sk_mqtt_zustand();
     $mqtt_noetig = !empty($cfg['mqtt_ein']);
     if (!$m['gefunden']) {

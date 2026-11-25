@@ -106,6 +106,22 @@ if (is_array($sk_d) && isset($sk_d['frage']) && $sk_d['frage'] === 'regeln_heute
         . ';NACHT=' . (ansage_nachtruhe($sk_rg, time()) ? 1 : 0) . "\n";
     exit(0);
 }
+/* 0.9.54 (Entscheidung des Hausherrn 24.11.2026, F1 "Abloesen"): eine Meldung an SignalBot ueber das gemeinsame Modul -
+ * der Dienst gibt Anlass, Fahrzeugnummer und Text; Haken, Sperre (60 min je Anlass und Fahrzeug), Bremse und Versand
+ * stehen im Modul. Antwort EINE Zeile MELDUNG;REGEL=<r>;LAGE=<l>, Rueckgabe 0 (2 bei einem unbrauchbaren Auftrag). */
+if (is_array($sk_d) && isset($sk_d['meldung']) && is_string($sk_d['meldung'])) {
+    $sk_ma = (isset($sk_d['anlass']) && is_string($sk_d['anlass'])) ? $sk_d['anlass'] : '';
+    $sk_mn = (isset($sk_d['nr']) && is_int($sk_d['nr'])) ? $sk_d['nr'] : 0;
+    if (!array_key_exists($sk_ma, sk_meld_anlaesse()) || trim($sk_d['meldung']) === '' || strlen($sk_d['meldung']) > 2000) {
+        echo "MELDUNG;REGEL=AUFRUF;LAGE=-\n";
+        exit(2);
+    }
+    $sk_mr = sk_meld_senden(array(array('schluessel' => $sk_ma . '|' . $sk_mn, 'anlass' => $sk_ma, 'text' => $sk_d['meldung'])), sk_config(false));
+    $sk_ml = (is_array($sk_mr) && is_array($sk_mr['q']) && isset($sk_mr['q']['lage'])) ? (string) $sk_mr['q']['lage'] : '-';
+    echo 'MELDUNG;REGEL=' . (is_array($sk_mr) ? ($sk_mr['regel'] !== '' ? $sk_mr['regel'] : 'GESENDET') : 'AUS')
+        . ';LAGE=' . preg_replace('/[^a-z_-]/', '', $sk_ml) . "\n";
+    exit(0);
+}
 $sk_anlaesse = sk_ansage_anlaesse();
 $sk_zahl = function ($w) {
     if ($w === null) { return null; }

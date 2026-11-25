@@ -578,6 +578,13 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
         if (!$sk_ok_topic) {
             $sk_fehler[] = sk_t('EINST.FEHLER_TOPIC');
             $sk_falsch[] = 'mqtt_topic';
+        } elseif (hb_bereich($sk_rein_topic) !== '' && $sk_rein_topic !== (string) $sk_mcfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+            // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+            /* 0.9.54 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+             * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+             * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+            $sk_fehler[] = sprintf(sk_t('HAUSBEREICH.FEHLER'), sk_e($sk_rein_topic), sk_e(hb_bereich($sk_rein_topic)));
+            $sk_falsch[] = 'mqtt_topic';
         } else {
             $sk_mcfg['mqtt_topic'] = $sk_rein_topic;
         }
@@ -619,7 +626,7 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
         $sk_mcfg[$sk_feld] = isset($_POST[$sk_feld]) ? 1 : 0;
     }
     foreach (array('abfahrt_fahrzeug', 'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle',
-                   'ladeempf_quelle', 'signal_praefix', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $sk_feld) {
+                   'ladeempf_quelle', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $sk_feld) {     // 0.9.54: ohne signal_praefix
         $sk_name = sk_t('EINST.L_' . strtoupper($sk_feld));
         $sk_roh = isset($_POST[$sk_feld]) ? $_POST[$sk_feld] : '';
         if (!is_string($sk_roh)) {
@@ -667,7 +674,7 @@ if ($sk_post && isset($_POST['save_mqtt'])) {
             'abfahrt_thema', 'abfahrt_vorlauf', 'abfahrt_temp',
             'abfahrt_fahrzeug', 'haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein',
             'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_ein', 'ankunft_quelle',
-            'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein', 'signal_praefix', 'signal_laden_fertig',
+            'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein', 'signal_laden_fertig',     // 0.9.54: ohne signal_praefix
             'signal_laden_abbruch', 'signal_offen', 'signal_ausfall', 'signal_vorklima', 'haus_fahrzeug_ein',
             'signal_kabel', 'vorklima_nur_kabel', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc'), $sk_falsch);
     } elseif (sk_config_speichern($sk_mcfg)) {
@@ -1777,11 +1784,7 @@ if ($sk_x3) { ?>
   </label>
   <div class="sm-hilfe"><?= sk_t('EINST.H_SIGNAL_EIN') ?></div>
 </div>
-<div class="sm-feld">
-  <label for="signal_praefix"><?= sk_e(sk_t('EINST.L_SIGNAL_PRAEFIX')) ?></label>
-  <input data-role="none" type="text" id="signal_praefix" name="signal_praefix" value="<?= sk_e(sk_fw('mqtt', 'signal_praefix', (string) $sk_cfg['signal_praefix'])) ?>"<?= sk_fm('signal_praefix') ?> placeholder="signalbot">
-  <div class="sm-hilfe"><?= sk_t('EINST.H_SIGNAL_PRAEFIX') ?></div>
-</div>
+<?php /* 0.9.54: das Feld Praefix entfaellt - Meldungen gehen unter haus/meldung/<ordner> (gemeinsames Modul) */ ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="signal_laden_fertig" value="1" <?= sk_fh('mqtt', 'signal_laden_fertig', !empty($sk_cfg['signal_laden_fertig'])) ? 'checked' : '' ?>>
